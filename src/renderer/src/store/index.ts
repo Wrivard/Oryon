@@ -24,6 +24,10 @@ interface AppStore {
   projectFiles: string[] // basenames (file-tagging « tag X » → « @X »)
   setProjectContext: (terms: string[], files: string[]) => void
 
+  /** Demande d'ouverture d'un fichier dans l'éditeur (inspect→code du Browser). nonce = re-déclenche. */
+  openFileRequest: { path: string; line?: number; nonce: number } | null
+  requestOpenFile: (path: string, line?: number) => void
+
   setWorkspaces: (ws: Workspace[]) => void
   setActiveWorkspace: (id: string | null) => void
   setTerminals: (t: Terminal[]) => void
@@ -48,11 +52,14 @@ export const useAppStore = create<AppStore>((set) => ({
   mailbox: [],
   projectVocab: [],
   projectFiles: [],
+  openFileRequest: null,
 
   setTasks: (tasks) => set({ tasks }),
   setMailbox: (mailbox) => set({ mailbox }),
   addMailbox: (m) => set((s) => ({ mailbox: [...s.mailbox, m].slice(-200) })),
   setProjectContext: (projectVocab, projectFiles) => set({ projectVocab, projectFiles }),
+  requestOpenFile: (path, line) =>
+    set((s) => ({ openFileRequest: { path, line, nonce: (s.openFileRequest?.nonce ?? 0) + 1 } })),
 
   setWorkspaces: (workspaces) => set({ workspaces }),
   setActiveWorkspace: (activeWorkspaceId) => set({ activeWorkspaceId, maximizedTerminalId: null }),

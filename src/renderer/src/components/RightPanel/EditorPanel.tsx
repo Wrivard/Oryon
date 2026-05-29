@@ -112,6 +112,29 @@ export function EditorPanel({ projectPath, active }: { projectPath: string; acti
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allFiles, openPathsKey, setProjectContext])
 
+  // Inspect→code (Browser) : ouvre le fichier demandé et place le curseur sur la ligne source.
+  const openFileRequest = useAppStore((s) => s.openFileRequest)
+  useEffect(() => {
+    if (!openFileRequest) return
+    void (async () => {
+      await openFile(openFileRequest.path)
+      const line = openFileRequest.line
+      if (line) {
+        // Laisser Monaco basculer de modèle (path) avant de révéler la ligne.
+        setTimeout(() => {
+          try {
+            editorRef.current?.revealLineInCenter(line)
+            editorRef.current?.setPosition({ lineNumber: line, column: 1 })
+            editorRef.current?.focus()
+          } catch {
+            /* éditeur pas prêt */
+          }
+        }, 180)
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openFileRequest?.nonce])
+
   // Raccourcis : Cmd/Ctrl+P (Quick Open), Cmd/Ctrl+S (save) — uniquement quand le panneau est actif.
   useEffect(() => {
     if (!active) return

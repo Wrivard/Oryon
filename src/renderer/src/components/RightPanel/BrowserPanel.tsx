@@ -1,20 +1,88 @@
 import { useEffect, useRef, useState } from 'react'
-import { RotateCw, Play, Square, ArrowLeft, ArrowRight } from 'lucide-react'
+import { RotateCw, Play, Square, ArrowLeft, ArrowRight, MousePointerSquareDashed } from 'lucide-react'
 import { IconButton } from '../ui/IconButton'
 import { Button } from '../ui/Button'
+import { cn } from '../../lib/cn'
 import { useAppStore } from '../../store'
+import { INSPECT_INSTALL, INSPECT_SENTINEL } from '../../lib/browser-inspect'
 
 export function BrowserPanel({ workspaceId }: { workspaceId: string }) {
   const workspace = useAppStore((s) => s.workspaces.find((w) => w.id === workspaceId))
+  const requestOpenFile = useAppStore((s) => s.requestOpenFile)
   const [url, setUrl] = useState('')
   const [status, setStatus] = useState<'idle' | 'starting' | 'running'>('idle')
   const [logs, setLogs] = useState<string>('')
   const [devCommand, setDevCommand] = useState(workspace?.dev_command ?? 'npm run dev')
+  const [inspecting, setInspecting] = useState(false)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const webviewRef = useRef<any>(null)
+  const inspectingRef = useRef(false)
+  inspectingRef.current = inspecting
 
   const statusRef = useRef(status)
   statusRef.current = status
+
+  // Inspect→code : injecte le script dans le webview, capte les clics via console-message → ouvre la source.
+  useEffect(() => {
+    const w = webviewRef.current
+    if (!w || !url) return
+    const projectRoot = workspace?.project_path?.replace(/\\/g, '/').replace(/\/$/, '') ?? ''
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const onConsole = (e: any) => {
+      const msg: string = e?.message ?? ''
+      if (!msg.startsWith(INSPECT_SENTINEL)) return
+      let data: { fileName?: string; lineNumber?: number; none?: boolean }
+      try {
+        data = JSON.parse(msg.slice(INSPECT_SENTINEL.length))
+      } catch {
+        return
+      }
+      if (!data.fileName) return // élément non mappable : on ignore
+      let p = data.fileName.replace(/\\/g, '/')
+      const abs = /^[a-zA-Z]:\//.test(p) || p.startsWith('/')
+      if (!abs && projectRoot) p = projectRoot + '/' + p.replace(/^\.?\//, '')
+      requestOpenFile(p, data.lineNumber)
+      setInspecting(false) // one-shot : un clic ouvre puis sort du mode inspect
+      void w.executeJavaScript('window.__oryonInspect&&window.__oryonInspect.disable()').catch(() => {})
+    }
+    const onDomReady = () => {
+      if (inspectingRef.current) {
+        void w.executeJavaScript(INSPECT_INSTALL + '\nwindow.__oryonInspect&&window.__oryonInspect.enable()').catch(() => {})
+      }
+    }
+    w.addEventListener('console-message', onConsole)
+    w.addEventListener('dom-ready', onDomReady)
+    return () => {
+      w.removeEventListener('console-message', onConsole)
+      w.removeEventListener('dom-ready', onDomReady)
+    }
+  }, [url, workspace?.project_path, requestOpenFile])
+
+  // Échap sort du mode inspect (quand le focus est côté hôte).
+  useEffect(() => {
+    if (!inspecting) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setInspecting(false)
+        void webviewRef.current?.executeJavaScript('window.__oryonInspect&&window.__oryonInspect.disable()').catch(() => {})
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [inspecting])
+
+  const toggleInspect = async () => {
+    const w = webviewRef.current
+    if (!w) return
+    const next = !inspecting
+    setInspecting(next)
+    try {
+      if (next) await w.executeJavaScript(INSPECT_INSTALL + '\nwindow.__oryonInspect&&window.__oryonInspect.enable()')
+      else await w.executeJavaScript('window.__oryonInspect&&window.__oryonInspect.disable()')
+    } catch {
+      /* webview pas prêt */
+    }
+  }
 
   useEffect(() => {
     window.bridge.browser.onDevLog((line) => setLogs((l) => (l + line).slice(-8000)))
@@ -69,6 +137,15 @@ export function BrowserPanel({ workspaceId }: { workspaceId: string }) {
         </IconButton>
         <IconButton label="Recharger" size="sm" onClick={() => wv()?.reload?.()} disabled={!url}>
           <RotateCw size={13} />
+        </IconButton>
+        <IconButton
+          label={inspecting ? 'Inspect actif — clique un élément (Échap pour sortir)' : 'Inspect → code'}
+          size="sm"
+          active={inspecting}
+          onClick={toggleInspect}
+          disabled={!url}
+        >
+          <MousePointerSquareDashed size={13} className={cn(inspecting && 'text-accent')} />
         </IconButton>
         <input
           value={url}

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
 import { FileCode, Globe, ListTree, GitCompareArrows, KanbanSquare, type LucideIcon } from 'lucide-react'
 import { cn } from '../../lib/cn'
@@ -28,6 +28,12 @@ export default function RightPanel() {
   const [active, setActive] = useState('editor')
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const workspace = useAppStore((s) => s.workspaces.find((w) => w.id === activeWorkspaceId))
+  const openFileNonce = useAppStore((s) => s.openFileRequest?.nonce)
+
+  // Inspect→code (ou toute demande d'ouverture) : bascule sur l'onglet Editor.
+  useEffect(() => {
+    if (openFileNonce != null) setActive('editor')
+  }, [openFileNonce])
 
   return (
     <div className="flex h-full flex-col bg-bg-panel">
