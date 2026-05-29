@@ -1,11 +1,36 @@
 import { ipcMain } from 'electron'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { readFileSync, existsSync, rmSync } from 'fs'
-import { join, extname } from 'path'
+import { readFileSync, existsSync, mkdirSync, renameSync, appendFileSync } from 'fs'
+import { join, extname, dirname } from 'path'
 import type { SourceStatus, SourceFileChange, SourceFileStatus, SourceDiff, GitCommit } from '../../shared/types'
 
 const exec = promisify(execFile)
+
+// Sécurité (audit prod) : reject/revert ne DÉTRUIT plus. Avant toute opération destructive on prend un point
+// de récupération (git stash create = commit du WT sans toucher l'arbre) loggé dans .oryon/trash/recovery.log ;
+// les fichiers non suivis sont DÉPLACÉS dans .oryon/trash/ au lieu d'être supprimés.
+let trashSeq = 0
+function moveToTrash(projectPath: string, file: string): void {
+  try {
+    const dest = join(projectPath, '.oryon', 'trash', `${Date.now()}-${++trashSeq}`, file)
+    mkdirSync(dirname(dest), { recursive: true })
+    renameSync(join(projectPath, file), dest)
+  } catch (e) {
+    console.error('[source] corbeille échouée, fichier CONSERVÉ :', file, (e as Error).message)
+  }
+}
+async function snapshotRecovery(projectPath: string, label: string): Promise<void> {
+  try {
+    const sha = (await git(projectPath, ['stash', 'create'])).trim()
+    if (!sha) return
+    const log = join(projectPath, '.oryon', 'trash', 'recovery.log')
+    mkdirSync(dirname(log), { recursive: true })
+    appendFileSync(log, `${new Date().toISOString()}  ${label}  ->  git stash apply ${sha}\n`)
+  } catch {
+    /* pas de repo / rien à snapshotter */
+  }
+}
 
 // Détection de langage (dupliqué volontairement d'editor.ipc : petit lookup, évite un couplage inter-IPC).
 const LANG_BY_EXT: Record<string, string> = {
@@ -158,7 +183,7 @@ async function rejectFile(projectPath: string, file: string): Promise<void> {
       }
     }
     try {
-      rmSync(join(projectPath, file), { force: true })
+      moveToTrash(projectPath, file)
     } catch {
       /* ignore */
     }
@@ -171,7 +196,7 @@ async function rejectFile(projectPath: string, file: string): Promise<void> {
       /* ignore */
     }
     try {
-      rmSync(join(projectPath, file), { force: true })
+      moveToTrash(projectPath, file)
     } catch {
       /* ignore */
     }
@@ -207,6 +232,7 @@ export function registerSourceIpc(): void {
   })
 
   ipcMain.handle('source:reject', async (_e, projectPath: string, file: string): Promise<void> => {
+    await snapshotRecovery(projectPath, `reject ${file}`)
     await rejectFile(projectPath, file)
   })
 
@@ -215,6 +241,7 @@ export function registerSourceIpc(): void {
   })
 
   ipcMain.handle('source:rejectAll', async (_e, projectPath: string): Promise<void> => {
+    await snapshotRecovery(projectPath, 'rejectAll')
     // Rejeter chaque fichier individuellement (plus sûr que `git clean -fd`).
     for (const f of await gitStatus(projectPath)) {
       try {
@@ -257,6 +284,7 @@ export function registerSourceIpc(): void {
   )
 
   ipcMain.handle('source:revertFile', async (_e, projectPath: string, file: string, ref: string): Promise<void> => {
+    await snapshotRecovery(projectPath, `revert ${file} -> ${ref}`)
     await git(projectPath, ['checkout', ref, '--', file])
   })
 }
