@@ -175,6 +175,12 @@ export interface MemoryGraph {
   nodes: MemoryGraphNode[]
   edges: { from: string; to: string }[]
 }
+export interface MemorySearchHit {
+  name: string
+  title: string
+  excerpt: string
+  score: number
+}
 /** Statistique « mot le plus corrigé » (agrégée sur voice_corrections_log). */
 export interface VoiceCorrectionStat {
   word: string
@@ -366,13 +372,24 @@ export interface BridgeApi {
     /** Restaure un fichier à une révision (revert). */
     revertFile: (projectPath: string, file: string, ref: string) => Promise<void>
   }
-  /** Oryon Memory (Phase 5) : notes markdown locales (.oryon/memory) + graphe de [[wikilinks]]. */
+  /** Oryon Memory (Phase 5) : notes markdown locales (.oryon/memory) + graphe de [[wikilinks]], partagées avec les agents (MCP). */
   memory: {
     list: (projectPath: string) => Promise<MemoryNote[]>
     read: (projectPath: string, name: string) => Promise<string>
     write: (projectPath: string, name: string, content: string) => Promise<MemoryNote>
-    delete: (projectPath: string, name: string) => Promise<void>
+    delete: (projectPath: string, name: string) => Promise<{ deleted: boolean }>
     graph: (projectPath: string) => Promise<MemoryGraph>
+    /** Recherche plein-texte (titre + corps), classée. */
+    search: (projectPath: string, query: string, limit?: number) => Promise<MemorySearchHit[]>
+    /** Append atomique (sans conflit) avec provenance optionnelle. */
+    append: (projectPath: string, name: string, content: string, author?: string, role?: string) => Promise<{ name: string; updated: number; existed: boolean }>
+    /** Renomme une note + réécrit les [[wikilinks]] qui la visent. */
+    rename: (projectPath: string, oldName: string, newName: string) => Promise<{ name: string }>
+    /** Watch le dossier mémoire du projet → 'memory:changed' (reflète les écritures des agents en direct). */
+    watch: (projectPath: string) => void
+    unwatch: () => void
+    onChanged: (cb: () => void) => void
+    offChanged: () => void
   }
   settings: {
     /** Réglages app-global (clé/valeur). */

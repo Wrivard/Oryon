@@ -113,6 +113,16 @@ const bridge: BridgeApi = {
     write: (projectPath, name, content) => ipcRenderer.invoke('memory:write', projectPath, name, content),
     delete: (projectPath, name) => ipcRenderer.invoke('memory:delete', projectPath, name),
     graph: (projectPath) => ipcRenderer.invoke('memory:graph', projectPath),
+    search: (projectPath, query, limit) => ipcRenderer.invoke('memory:search', projectPath, query, limit),
+    append: (projectPath, name, content, author, role) =>
+      ipcRenderer.invoke('memory:append', projectPath, name, content, author, role),
+    rename: (projectPath, oldName, newName) => ipcRenderer.invoke('memory:rename', projectPath, oldName, newName),
+    watch: (projectPath) => ipcRenderer.send('memory:watch', projectPath),
+    unwatch: () => ipcRenderer.send('memory:unwatch'),
+    onChanged: (cb) => {
+      ipcRenderer.on('memory:changed', () => cb())
+    },
+    offChanged: () => ipcRenderer.removeAllListeners('memory:changed'),
   },
   source: {
     status: (projectPath) => ipcRenderer.invoke('source:status', projectPath),

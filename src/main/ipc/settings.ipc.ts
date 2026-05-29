@@ -63,9 +63,9 @@ function addConnector(input: McpConnectorInput): McpConnector {
 }
 
 /**
- * Construit le fichier de config MCP pour un projet donné (chemin) : connecteurs scope 'app' (toujours)
- * + scope 'project' du projet, tous activés. Renvoie le chemin du fichier, ou null si aucun connecteur
- * → dans ce cas l'agent ne reçoit pas de --mcp-config (config MCP par défaut de claude inchangée).
+ * Construit le fichier de config MCP pour un projet donné : le serveur **oryon** (toujours, pour donner aux
+ * agents les outils Oryon Memory + état, pointé sur CE projet via ORYON_PROJECT_DIR) + les connecteurs MCP
+ * scope 'app'/'project' activés. Renvoie toujours un chemin (l'oryon est toujours présent).
  */
 export function buildProjectMcpConfigForPath(projectPath: string): string | null {
   const projectId = getDb().prepare('SELECT id FROM projects WHERE path = ?').pluck().get(projectPath) as
@@ -76,14 +76,16 @@ export function buildProjectMcpConfigForPath(projectPath: string): string | null
       `SELECT * FROM mcp_connectors WHERE enabled = 1 AND (scope = 'app' OR (scope = 'project' AND project_id = ?))`,
     )
     .all(projectId ?? null) as Array<Record<string, unknown>>
-  if (rows.length === 0) return null
   const mcpServers: Record<string, unknown> = {}
+  // Serveur Oryon : outils mémoire partagée + état, adressés sur le projet travaillé (déterministe via env).
+  const serverPath = join(app.getAppPath(), 'src', 'mcp', 'server.mjs')
+  mcpServers['oryon'] = { command: 'node', args: [serverPath], env: { ORYON_PROJECT_DIR: projectPath } }
   for (const r of rows) {
     const name = String(r.name)
+    if (name === 'oryon') continue // ne pas écraser notre serveur
     if (r.transport === 'http' && r.url) mcpServers[name] = { type: 'http', url: r.url }
     else if (r.command) mcpServers[name] = { command: r.command, args: r.args ? JSON.parse(String(r.args)) : [] }
   }
-  if (Object.keys(mcpServers).length === 0) return null
   const file = join(app.getPath('userData'), `oryon-mcp-${projectId ?? 'app'}.json`)
   writeFileSync(file, JSON.stringify({ mcpServers }, null, 2))
   return file

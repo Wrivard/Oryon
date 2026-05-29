@@ -1,110 +1,70 @@
-import { ipcMain } from 'electron'
-import { promises as fs } from 'fs'
-import { join } from 'path'
-import type { MemoryNote, MemoryGraph, MemoryGraphNode } from '../../shared/types'
+import { ipcMain, BrowserWindow } from 'electron'
+import chokidar, { type FSWatcher } from 'chokidar'
+import * as core from '../../shared/memory-core.mjs'
+import type { MemoryNote, MemoryGraph } from '../../shared/types'
 
-// Oryon Memory (Phase 5) : knowledge graph local-first. Une note = un fichier markdown dans
-// <projet>/.oryon/memory/. Les liens [[wikilink]] tissent le graphe. (.oryon est déjà ignoré par
-// l'arbre de l'éditeur — les notes ne polluent pas le file-tree.)
+// Oryon Memory (Phase 5) — IPC fin par-dessus le cœur partagé (memory-core.mjs). La MÊME implémentation sert
+// le serveur MCP des agents → le graphe/backlinks humain et agent ne peuvent pas diverger. Un watcher chokidar
+// émet 'memory:changed' pour que l'UI reflète les écritures des agents en direct.
 
-const WIKILINK = /\[\[([^\]]+)\]\]/g
-
-function memDir(projectPath: string): string {
-  return join(projectPath, '.oryon', 'memory')
+async function noteFor(projectPath: string, name: string): Promise<MemoryNote> {
+  const r = await core.readMemory(projectPath, name)
+  return { name: r.name, title: r.title, excerpt: r.content.slice(0, 160), links: r.links, updated: r.updated }
 }
 
-/** Nom de fichier sûr (pas de traversée de chemin, pas de séparateurs), borné. */
-function safeName(name: string): string {
-  return (
-    name
-      .replace(/\.md$/i, '')
-      .replace(/[/\\:*?"<>|]+/g, '-')
-      .replace(/^\.+/, '')
-      .trim()
-      .slice(0, 120) || 'note'
-  )
+// ---- watcher (un seul, re-ciblé par le panneau Memory selon le projet actif) ----
+let watcher: FSWatcher | null = null
+let watchRoot: string | null = null
+let debounce: ReturnType<typeof setTimeout> | undefined
+
+function broadcastChanged(): void {
+  if (debounce) clearTimeout(debounce)
+  debounce = setTimeout(() => {
+    for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send('memory:changed')
+  }, 200)
 }
 
-function parseLinks(content: string): string[] {
-  const out = new Set<string>()
-  let m: RegExpExecArray | null
-  WIKILINK.lastIndex = 0
-  while ((m = WIKILINK.exec(content))) {
-    const t = m[1].split('|')[0].trim()
-    if (t) out.add(t)
-  }
-  return [...out]
+function watchMemory(projectPath: string): void {
+  const dir = core.memDir(projectPath)
+  if (watchRoot === dir && watcher) return
+  unwatchMemory()
+  watchRoot = dir
+  watcher = chokidar.watch(dir, {
+    ignoreInitial: true,
+    awaitWriteFinish: { stabilityThreshold: 150, pollInterval: 50 },
+    depth: 0,
+  })
+  watcher.on('all', () => broadcastChanged())
 }
-
-function titleOf(content: string, name: string): string {
-  const h = content.match(/^#\s+(.+)$/m)
-  return h ? h[1].trim() : name
-}
-
-function excerptOf(content: string): string {
-  const line = content
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .find((l) => l && !l.startsWith('#'))
-  return (line ?? '').replace(WIKILINK, '$1').slice(0, 140)
-}
-
-async function listMemories(projectPath: string): Promise<MemoryNote[]> {
-  const dir = memDir(projectPath)
-  await fs.mkdir(dir, { recursive: true }).catch(() => {})
-  const files = (await fs.readdir(dir).catch(() => [] as string[])).filter((f) => f.toLowerCase().endsWith('.md'))
-  const notes: MemoryNote[] = []
-  for (const f of files) {
-    const p = join(dir, f)
-    const content = await fs.readFile(p, 'utf8').catch(() => '')
-    const st = await fs.stat(p).catch(() => null)
-    const name = f.replace(/\.md$/i, '')
-    notes.push({ name, title: titleOf(content, name), excerpt: excerptOf(content), links: parseLinks(content), updated: st ? st.mtimeMs : 0 })
-  }
-  return notes.sort((a, b) => b.updated - a.updated)
-}
-
-async function noteToReturn(projectPath: string, name: string): Promise<MemoryNote> {
-  const p = join(memDir(projectPath), safeName(name) + '.md')
-  const content = await fs.readFile(p, 'utf8').catch(() => '')
-  const st = await fs.stat(p).catch(() => null)
-  const n = safeName(name)
-  return { name: n, title: titleOf(content, n), excerpt: excerptOf(content), links: parseLinks(content), updated: st ? st.mtimeMs : 0 }
-}
-
-async function buildGraph(projectPath: string): Promise<MemoryGraph> {
-  const notes = await listMemories(projectPath)
-  const byKey = new Map(notes.map((n) => [n.name.toLowerCase(), n.name]))
-  const nodes: MemoryGraphNode[] = notes.map((n) => ({ id: n.name, title: n.title, exists: true }))
-  const seen = new Set(nodes.map((n) => n.id.toLowerCase()))
-  const edges: { from: string; to: string }[] = []
-  for (const n of notes) {
-    for (const link of n.links) {
-      const resolved = byKey.get(link.toLowerCase())
-      const toId = resolved ?? link
-      if (!resolved && !seen.has(link.toLowerCase())) {
-        nodes.push({ id: link, title: link, exists: false }) // note fantôme (lien non résolu)
-        seen.add(link.toLowerCase())
-      }
-      edges.push({ from: n.name, to: toId })
-    }
-  }
-  return { nodes, edges }
+function unwatchMemory(): void {
+  void watcher?.close()
+  watcher = null
+  watchRoot = null
 }
 
 export function registerMemoryIpc(): void {
-  ipcMain.handle('memory:list', (_e, projectPath: string): Promise<MemoryNote[]> => listMemories(projectPath))
-  ipcMain.handle('memory:read', (_e, projectPath: string, name: string): Promise<string> =>
-    fs.readFile(join(memDir(projectPath), safeName(name) + '.md'), 'utf8').catch(() => ''),
-  )
+  ipcMain.handle('memory:list', (_e, projectPath: string): Promise<MemoryNote[]> => core.listMemories(projectPath))
+  // Renvoie le contenu ; ENOENT → '' (note neuve), toute autre erreur (verrou/EACCES) REJETTE
+  // → le renderer ne doit pas écraser une note qu'il n'a pas pu lire.
+  ipcMain.handle('memory:read', async (_e, projectPath: string, name: string): Promise<string> => {
+    const r = await core.readMemory(projectPath, name)
+    return r.content
+  })
   ipcMain.handle('memory:write', async (_e, projectPath: string, name: string, content: string): Promise<MemoryNote> => {
-    const dir = memDir(projectPath)
-    await fs.mkdir(dir, { recursive: true })
-    await fs.writeFile(join(dir, safeName(name) + '.md'), content, 'utf8')
-    return noteToReturn(projectPath, name)
+    await core.writeMemory(projectPath, name, content)
+    return noteFor(projectPath, name)
   })
-  ipcMain.handle('memory:delete', async (_e, projectPath: string, name: string): Promise<void> => {
-    await fs.unlink(join(memDir(projectPath), safeName(name) + '.md')).catch(() => {})
-  })
-  ipcMain.handle('memory:graph', (_e, projectPath: string): Promise<MemoryGraph> => buildGraph(projectPath))
+  ipcMain.handle('memory:append', (_e, projectPath: string, name: string, content: string, author?: string, role?: string) =>
+    core.appendMemory(projectPath, name, content, { author, role }),
+  )
+  ipcMain.handle('memory:delete', (_e, projectPath: string, name: string) => core.deleteMemory(projectPath, name))
+  ipcMain.handle('memory:graph', (_e, projectPath: string): Promise<MemoryGraph> => core.buildGraph(projectPath))
+  ipcMain.handle('memory:search', (_e, projectPath: string, query: string, limit?: number) =>
+    core.searchMemories(projectPath, query, limit),
+  )
+  ipcMain.handle('memory:rename', (_e, projectPath: string, oldName: string, newName: string) =>
+    core.renameMemory(projectPath, oldName, newName),
+  )
+  ipcMain.on('memory:watch', (_e, projectPath: string) => watchMemory(projectPath))
+  ipcMain.on('memory:unwatch', () => unwatchMemory())
 }

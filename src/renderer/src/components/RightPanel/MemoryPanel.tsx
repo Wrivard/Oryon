@@ -3,7 +3,7 @@ import { Plus, Trash2, Network, FileText, Search, ArrowUpRight, CornerDownLeft, 
 import { IconButton } from '../ui/IconButton'
 import { cn } from '../../lib/cn'
 import { forceLayout } from '../../lib/force-layout'
-import type { MemoryNote, MemoryGraph } from '@shared/types'
+import type { MemoryNote, MemoryGraph, MemorySearchHit } from '@shared/types'
 
 const WIKILINK = /\[\[([^\]]+)\]\]/g
 const INPUT = 'rounded-md border border-border bg-bg-inset px-2.5 py-1.5 text-[12px] text-fg outline-none focus:border-accent'
@@ -11,10 +11,17 @@ const INPUT = 'rounded-md border border-border bg-bg-inset px-2.5 py-1.5 text-[1
 function MemoryGraphView({ graph, selected, onPick }: { graph: MemoryGraph; selected: string | null; onPick: (id: string, exists: boolean) => void }) {
   const W = 640
   const H = 440
-  const layout = useMemo(
-    () => forceLayout(graph.nodes.map((n) => n.id), graph.edges, W, H),
+  // Clé stable du graphe → ne recalcule la mise en page que si la topologie change (pas à chaque reload).
+  const key = useMemo(
+    () => graph.nodes.map((n) => n.id).join('|') + '::' + graph.edges.map((e) => e.from + '>' + e.to).join('|'),
     [graph],
   )
+  const layout = useMemo(() => {
+    const ids = graph.nodes.map((n) => n.id)
+    const iter = Math.min(300, Math.max(60, Math.floor(30000 / Math.max(1, ids.length)))) // cap adaptatif (anti-freeze)
+    return forceLayout(ids, graph.edges, W, H, iter)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key])
   if (!graph.nodes.length)
     return <div className="flex h-full items-center justify-center text-[12px] text-fg-subtle">Aucune note à grapher.</div>
   return (
@@ -57,7 +64,14 @@ export function MemoryPanel({ projectPath }: { projectPath: string }) {
   const [search, setSearch] = useState('')
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
-  const loadedRef = useRef('')
+  const [searchHits, setSearchHits] = useState<MemorySearchHit[]>([])
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const loadedRef = useRef('') // contenu du dernier read RÉUSSI (gate l'autosave)
+  const readOkRef = useRef(false) // un read propre a-t-il eu lieu ? sinon on n'autosave pas (anti-erase)
+  const selectedRef = useRef<string | null>(null)
+  selectedRef.current = selected
+  const contentRef = useRef('')
+  contentRef.current = content
 
   const reload = async (refreshGraph = view === 'graph') => {
     setNotes(await window.bridge.memory.list(projectPath))
@@ -67,6 +81,7 @@ export function MemoryPanel({ projectPath }: { projectPath: string }) {
     void reload(false)
     setSelected(null)
     setContent('')
+    readOkRef.current = false
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectPath])
   useEffect(() => {
@@ -74,25 +89,69 @@ export function MemoryPanel({ projectPath }: { projectPath: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, projectPath, notes.length])
 
-  // Autosave (debounce) du contenu de la note sélectionnée.
+  // Watch : reflète en direct les écritures des AGENTS (MCP). Recharge la liste/graphe et la note ouverte si non éditée.
   useEffect(() => {
-    if (!selected || content === loadedRef.current) return
+    window.bridge.memory.watch(projectPath)
+    window.bridge.memory.onChanged(() => {
+      void reload()
+      const sel = selectedRef.current
+      if (sel && contentRef.current === loadedRef.current) {
+        void window.bridge.memory.read(projectPath, sel).then((c) => {
+          loadedRef.current = c
+          setContent(c)
+        }).catch(() => {})
+      }
+    })
+    return () => {
+      window.bridge.memory.offChanged()
+      window.bridge.memory.unwatch()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectPath])
+
+  // Recherche plein-texte (titre + corps) côté main, debounce.
+  useEffect(() => {
+    if (!search.trim()) {
+      setSearchHits([])
+      return
+    }
     const t = setTimeout(() => {
-      void window.bridge.memory.write(projectPath, selected, content).then(() => {
-        loadedRef.current = content
-        void reload(false)
-      })
+      void window.bridge.memory.search(projectPath, search, 40).then(setSearchHits)
+    }, 200)
+    return () => clearTimeout(t)
+  }, [search, projectPath, notes.length])
+
+  // Autosave (debounce), GATÉ : seulement si un read propre a eu lieu (sinon on écraserait avec '').
+  useEffect(() => {
+    if (!selected || !readOkRef.current || content === loadedRef.current) return
+    setSaveState('saving')
+    const t = setTimeout(() => {
+      window.bridge.memory
+        .write(projectPath, selected, content)
+        .then(() => {
+          loadedRef.current = content
+          setSaveState('saved')
+          void reload(false)
+        })
+        .catch(() => setSaveState('error'))
     }, 800)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content, selected, projectPath])
 
   const selectNote = async (name: string) => {
-    const c = await window.bridge.memory.read(projectPath, name)
-    loadedRef.current = c
-    setContent(c)
-    setSelected(name)
-    setView('editor')
+    try {
+      const c = await window.bridge.memory.read(projectPath, name)
+      loadedRef.current = c
+      readOkRef.current = true
+      setContent(c)
+      setSelected(name)
+      setSaveState('idle')
+      setView('editor')
+    } catch (e) {
+      readOkRef.current = false
+      window.alert(`Lecture de « ${name} » impossible : ${(e as Error).message}`)
+    }
   }
   const createNote = async (raw: string) => {
     const name = raw.trim()
@@ -130,9 +189,11 @@ export function MemoryPanel({ projectPath }: { projectPath: string }) {
     () => (selected ? notes.filter((n) => n.name !== selected && n.links.some((l) => l.toLowerCase() === selected.toLowerCase())) : []),
     [notes, selected],
   )
-  const filtered = notes.filter(
-    (n) => !search.trim() || n.title.toLowerCase().includes(search.toLowerCase()) || n.name.toLowerCase().includes(search.toLowerCase()),
-  )
+  const searching = search.trim().length > 0
+  // En recherche : résultats plein-texte (titre + CORPS) calculés côté main ; sinon toutes les notes.
+  const listItems: { name: string; title: string; excerpt: string }[] = searching
+    ? searchHits.map((h) => ({ name: h.name, title: h.title, excerpt: h.excerpt }))
+    : notes.map((n) => ({ name: n.name, title: n.title, excerpt: n.excerpt }))
 
   return (
     <div className="flex h-full flex-col">
@@ -171,7 +232,7 @@ export function MemoryPanel({ projectPath }: { projectPath: string }) {
         {/* Liste des notes */}
         <div className="flex w-48 shrink-0 flex-col border-r border-border">
           <div className="flex items-center justify-between px-2 py-1.5">
-            <span className="text-[10px] uppercase tracking-wide text-fg-subtle">{notes.length} note{notes.length > 1 ? 's' : ''}</span>
+            <span className="text-[10px] uppercase tracking-wide text-fg-subtle">{notes.length} note{notes.length !== 1 ? 's' : ''}</span>
             <button onClick={() => setCreating((c) => !c)} className="flex items-center gap-1 rounded px-1 text-[11px] text-fg-subtle hover:text-accent">
               <Plus size={12} /> Nouvelle
             </button>
@@ -195,10 +256,10 @@ export function MemoryPanel({ projectPath }: { projectPath: string }) {
             </div>
           )}
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
-            {filtered.length === 0 ? (
-              <p className="px-1 py-2 text-[11px] text-fg-subtle">Aucune note.</p>
+            {listItems.length === 0 ? (
+              <p className="px-1 py-2 text-[11px] text-fg-subtle">{searching ? 'Aucun résultat.' : 'Aucune note.'}</p>
             ) : (
-              filtered.map((n) => (
+              listItems.map((n) => (
                 <button
                   key={n.name}
                   onClick={() => void selectNote(n.name)}
@@ -233,7 +294,14 @@ export function MemoryPanel({ projectPath }: { projectPath: string }) {
             <div className="flex h-full flex-col">
               <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5">
                 <span className="truncate text-[12px] font-medium text-fg">{selected}</span>
-                <span className="ml-auto text-[10px] text-fg-subtle">.oryon/memory/{selected}.md</span>
+                <span
+                  className={cn(
+                    'ml-auto text-[10px]',
+                    saveState === 'error' ? 'text-danger' : saveState === 'saving' ? 'text-warning' : 'text-fg-subtle',
+                  )}
+                >
+                  {saveState === 'saving' ? 'enregistrement…' : saveState === 'error' ? 'échec d’enregistrement' : saveState === 'saved' ? 'enregistré' : `.oryon/memory/${selected}.md`}
+                </span>
                 <IconButton label="Supprimer la note" size="sm" onClick={() => void del()}>
                   <Trash2 size={13} />
                 </IconButton>
