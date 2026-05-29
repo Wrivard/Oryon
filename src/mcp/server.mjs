@@ -18,6 +18,9 @@ const STATE_DIR = process.env.ORYON_MCP_STATE || join(APPDATA, 'Oryon', 'mcp-sta
 // sinon cwd. (STATE_DIR global reste pour terminals/tasks/mailbox.)
 const PROJECT_DIR = process.env.ORYON_PROJECT_DIR || (await memory.findProjectDir(process.cwd()))
 const MEMORY_DIR = memory.memDir(PROJECT_DIR)
+// Identité de l'agent (injectée via l'env du PTY par Oryon) → provenance auto des écritures mémoire.
+const DEFAULT_AUTHOR = process.env.ORYON_AGENT_NAME || undefined
+const DEFAULT_ROLE = process.env.ORYON_AGENT_ROLE || undefined
 
 function readMeta() {
   try {
@@ -109,14 +112,16 @@ server.tool(
   'append_memory',
   'Ajoute (atomique, sans conflit) une entrée à une note (la crée si absente). PATTERN PRÉFÉRÉ pour journaliser du contexte quand plusieurs agents écrivent en parallèle. Renseigne author = ton nom d\'agent.',
   { name: z.string(), content: z.string(), author: z.string().optional(), role: z.string().optional() },
-  async ({ name, content, author, role }) => text(JSON.stringify(await memory.appendMemory(PROJECT_DIR, name, content, { author, role }), null, 2)),
+  async ({ name, content, author, role }) =>
+    text(JSON.stringify(await memory.appendMemory(PROJECT_DIR, name, content, { author: author ?? DEFAULT_AUTHOR, role: role ?? DEFAULT_ROLE }), null, 2)),
 )
 
 server.tool(
   'create_memory',
   'Crée une NOUVELLE note. N\'écrase pas si elle existe (renvoie existed:true). Le nom renvoyé est normalisé (slug).',
   { name: z.string(), content: z.string().optional(), author: z.string().optional(), role: z.string().optional() },
-  async ({ name, content, author, role }) => text(JSON.stringify(await memory.createMemory(PROJECT_DIR, name, content ?? '', { author, role }), null, 2)),
+  async ({ name, content, author, role }) =>
+    text(JSON.stringify(await memory.createMemory(PROJECT_DIR, name, content ?? '', { author: author ?? DEFAULT_AUTHOR, role: role ?? DEFAULT_ROLE }), null, 2)),
 )
 
 server.tool(

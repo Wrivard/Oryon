@@ -43,6 +43,7 @@ export interface CreateTerminalOpts {
   autostart?: string | null
   cols: number
   rows: number
+  env?: Record<string, string> // env additionnel (ex. ORYON_AGENT_NAME) — fusionné par-dessus ptyEnv()
   onData: (data: string) => void
   onExit: (code: number) => void
 }
@@ -73,7 +74,7 @@ export function createTerminal(opts: CreateTerminalOpts): string {
     cwd: opts.cwd,
     cols: Math.max(2, opts.cols),
     rows: Math.max(1, opts.rows),
-    env: ptyEnv(),
+    env: { ...ptyEnv(), ...(opts.env ?? {}) }, // ptyEnv() retire ANTHROPIC_API_KEY ($0) ; opts.env n'ajoute que ORYON_*
   })
 
   // Gardes par identité de process : si ce pty a été remplacé (kill + recreate même id),

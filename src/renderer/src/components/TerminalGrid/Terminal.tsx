@@ -149,6 +149,8 @@ export function Terminal({ term, focused }: { term: TermRow; focused: boolean })
         autostart: term.autostart_cmd,
         cols: xterm.cols,
         rows: xterm.rows,
+        // Identité de l'agent → provenance auto des écritures Oryon Memory (le serveur MCP lit ces env).
+        env: { ORYON_AGENT_NAME: term.name, ...(term.role ? { ORYON_AGENT_ROLE: term.role } : {}) },
       })
     })
 

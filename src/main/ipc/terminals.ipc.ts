@@ -27,6 +27,7 @@ export function registerTerminalsIpc() {
       autostart,
       cols: opts.cols,
       rows: opts.rows,
+      env: opts.env,
       onData: (data) => {
         if (!wc.isDestroyed()) wc.send(`terminal:data:${opts.id}`, data)
       },

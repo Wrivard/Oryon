@@ -287,6 +287,8 @@ export interface CreateTerminalInput {
   autostart?: string | null
   cols: number
   rows: number
+  /** Env additionnel injecté dans le PTY (ex. ORYON_AGENT_NAME/ROLE → provenance des écritures mémoire). */
+  env?: Record<string, string>
 }
 
 /** API exposée au renderer via contextBridge (`window.bridge`). */
