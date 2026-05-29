@@ -60,11 +60,17 @@ win:
   icon: build/icon.png
   artifactName: ${productName}-${version}-Setup.${ext}
 
+# Installeur one-click brandé (style Discord/VS Code) : un seul écran avec l'icône Oryon + barre de
+# progression, installe par-utilisateur puis lance l'app. L'icône installeur/désinstalleur est dérivée
+# automatiquement de win.icon (build/icon.png → .ico). One-click ⇒ les updates s'appliquent en silencieux.
 nsis:
-  oneClick: false
+  oneClick: true
   perMachine: false
-  allowToChangeInstallationDirectory: true
   deleteAppDataOnUninstall: false
+  runAfterFinish: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Oryon
 
 linux:
   target:

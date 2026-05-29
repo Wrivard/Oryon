@@ -89,7 +89,9 @@ export function downloadUpdate(): void {
   updater.downloadUpdate().catch((e: any) => patch({ phase: 'error', error: e?.message ?? String(e) }))
 }
 export function installUpdate(): void {
-  if (updater) setImmediate(() => updater.quitAndInstall(false, true))
+  // isSilent=true → l'installeur tourne en mode silencieux (/S) : pas d'assistant, l'update s'applique en
+  // un éclair (cohérent avec l'installeur one-click). isForceRunAfter=true → relance Oryon après l'update.
+  if (updater) setImmediate(() => updater.quitAndInstall(true, true))
 }
 export async function setUpdateChannel(ch: UpdateChannel): Promise<UpdaterState> {
   setAppSetting('update.channel', ch)
