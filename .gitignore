@@ -5,6 +5,9 @@ release
 .env
 *.db
 
+# Runtime ONNX copié depuis node_modules au build (cf. electron.vite.config copyOrtWasm)
+src/renderer/public/ort/
+
 # Local / machine-specific
 .claude/
 .oryon/

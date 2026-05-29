@@ -2,12 +2,25 @@
 // Le modèle ONNX (multilingue) est téléchargé au 1er usage puis mis en cache (IndexedDB).
 import { pipeline, env, type AutomaticSpeechRecognitionPipeline } from '@huggingface/transformers'
 
-env.allowLocalModels = false // modèles depuis le hub HF (rien de bundlé localement)
+env.allowLocalModels = false // poids du modèle depuis le hub HF (cachés en IndexedDB au 1er usage)
+
+// Runtime ONNX servi en LOCAL (même origine), jamais le CDN dev-version 404 (cf. electron.vite.config copyOrtWasm).
+// new URL('ort/', location.href) → http://localhost:5173/ort/ en dev, ./ort/ (file://) en prod.
+const ortBase = new URL('ort/', window.location.href).href
+const ortWasm = env.backends?.onnx?.wasm
+if (ortWasm) {
+  ortWasm.wasmPaths = {
+    mjs: ortBase + 'ort-wasm-simd-threaded.asyncify.mjs',
+    wasm: ortBase + 'ort-wasm-simd-threaded.asyncify.wasm',
+  }
+  ortWasm.numThreads = 1 // mono-thread déterministe : aucun SharedArrayBuffer/COI requis
+  ortWasm.proxy = false
+}
 
 let asrPromise: Promise<AutomaticSpeechRecognitionPipeline> | null = null
 let loadedModel = ''
 
-/** Charge (lazy, et recharge si le modèle change) le pipeline ASR. */
+/** Charge (lazy, et recharge si le modèle change) le pipeline ASR (WASM, q8). */
 export function loadAsr(
   model: string,
   onProgress?: (p: { status: string; progress?: number; file?: string }) => void,
@@ -15,9 +28,23 @@ export function loadAsr(
   if (asrPromise && model === loadedModel) return asrPromise
   loadedModel = model
   asrPromise = pipeline('automatic-speech-recognition', model, {
+    device: 'wasm',
+    dtype: 'q8',
     progress_callback: onProgress as never,
-  }) as Promise<AutomaticSpeechRecognitionPipeline>
+  } as never) as Promise<AutomaticSpeechRecognitionPipeline>
   return asrPromise
+}
+
+async function runAsr(model: string, pcm16k: Float32Array, language?: string): Promise<string> {
+  const asr = await loadAsr(model)
+  const out = await asr(pcm16k, {
+    chunk_length_s: 30,
+    stride_length_s: 5,
+    language: language || undefined,
+    task: 'transcribe',
+  } as never)
+  const text = Array.isArray(out) ? out.map((o) => o.text).join(' ') : (out as { text?: string }).text
+  return (text ?? '').trim()
 }
 
 /** Transcrit un PCM mono 16 kHz (Float32) → texte. `language` ex 'french' | 'english' | undefined (auto). */
@@ -25,15 +52,17 @@ export async function transcribe(
   pcm16k: Float32Array,
   opts: { model: string; language?: string },
 ): Promise<string> {
-  const asr = await loadAsr(opts.model)
-  const out = await asr(pcm16k, {
-    chunk_length_s: 30,
-    stride_length_s: 5,
-    language: opts.language || undefined,
-    task: 'transcribe',
-  } as never)
-  const text = Array.isArray(out) ? out.map((o) => o.text).join(' ') : (out as { text?: string }).text
-  return (text ?? '').trim()
+  try {
+    return await runAsr(opts.model, pcm16k, opts.language)
+  } catch (e) {
+    const msg = (e as Error)?.message ?? ''
+    // Repli défensif : si la session ONNX échoue, retente une fois sur un modèle plus léger.
+    if (/create a session|ORT_FAIL|failed to load/i.test(msg) && !/whisper-base/.test(opts.model)) {
+      asrPromise = null
+      return runAsr('Xenova/whisper-base', pcm16k, opts.language)
+    }
+    throw e
+  }
 }
 
 // ---- capture audio (PCM brut via Web Audio — PAS de MediaRecorder/decodeAudioData, source du bug) ----

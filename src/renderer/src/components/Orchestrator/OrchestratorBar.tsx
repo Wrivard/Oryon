@@ -4,6 +4,7 @@ import { Mic, ArrowUp, Sparkles, Square, ChevronDown, ChevronUp, History, Zap, L
 import { IconButton } from '../ui/IconButton'
 import { useVoice } from '../../hooks/useVoice'
 import { useVoiceCommand } from '../../hooks/useVoiceCommand'
+import { loadAsr } from '../../lib/voice'
 import { toast } from '../../store/toasts'
 import { useAppStore } from '../../store'
 import { cn } from '../../lib/cn'
@@ -91,6 +92,25 @@ export default function OrchestratorBar() {
     const t = setTimeout(() => setShowUndo(false), 8000)
     return () => clearTimeout(t)
   }, [showUndo])
+
+  // Préchauffe le modèle Whisper (différé, non bloquant) → 1re dictée instantanée ; mis en cache (IndexedDB).
+  useEffect(() => {
+    let cancelled = false
+    const t = setTimeout(() => {
+      void (async () => {
+        const s = await window.bridge.settings.getApp()
+        try {
+          await loadAsr('Xenova/whisper-' + (s['voice.model'] || 'small'))
+        } catch (e) {
+          if (!cancelled) toast.error((e as Error).message, { title: 'Modèle vocal' })
+        }
+      })()
+    }, 1500)
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
+  }, [])
 
   // Mode de décomposition persisté (défaut : Direct/instantané).
   useEffect(() => {
