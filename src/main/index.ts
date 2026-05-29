@@ -50,7 +50,10 @@ function createWindow() {
   // Filet de sécurité : si le renderer tarde/échoue à peindre, on montre quand même la fenêtre après 6 s
   // (sinon un échec de chargement laisse une fenêtre invisible → « l'app ne fait rien », non diagnosticable).
   const showTimer = setTimeout(() => {
-    if (!win.isDestroyed() && !win.isVisible()) win.show()
+    if (!win.isDestroyed() && !win.isVisible()) {
+      console.error('[window] show forcé après 6 s — ready-to-show jamais atteint (renderer bloqué ?)')
+      win.show()
+    }
   }, 6000)
   win.on('ready-to-show', () => {
     clearTimeout(showTimer)
@@ -68,6 +71,13 @@ function createWindow() {
   )
   win.webContents.on('render-process-gone', (_e, details) =>
     console.error(`[window] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`),
+  )
+  // Preuve POSITIVE que le renderer + ses sous-ressources (bundle module, CSS, wasm ORT) ont chargé
+  // (did-fail-load ne couvre QUE la navigation du document principal, pas les sous-ressources).
+  win.webContents.on('did-finish-load', () => console.log('[window] did-finish-load — renderer chargé'))
+  // Miroir des erreurs renderer dans le main : MIME module refusé, 404 de chunk hashé, exception non capturée.
+  win.webContents.on('console-message', (_e, level, message, line, sourceId) =>
+    console.error(`[renderer] level=${level} ${message} (${sourceId}:${line})`),
   )
 
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -92,9 +102,16 @@ app.whenReady().then(() => {
     app.quit()
     return
   }
-  registerIpcHandlers()
-  initMcpExport() // exporte l'état (terminaux/tasks/mailbox) pour le serveur MCP de debug
-  registerMediaPermissions() // autorise le micro (getUserMedia) pour la dictée Voice — sinon « micro indisponible »
+  // Setup post-DB GARDÉ : une exception dans l'un de ces appels avorterait whenReady AVANT createWindow()
+  // → aucune fenêtre, sans signal (« l'app ne fait rien »). On loggue et on continue : mieux vaut une
+  // fenêtre avec un sous-système dégradé qu'une app invisible.
+  try {
+    registerIpcHandlers()
+    initMcpExport() // exporte l'état (terminaux/tasks/mailbox) pour le serveur MCP de debug
+    registerMediaPermissions() // autorise le micro (getUserMedia) pour la dictée Voice — sinon « micro indisponible »
+  } catch (err) {
+    console.error('[startup] erreur durant le setup post-DB (la fenêtre sera quand même créée) :', err)
+  }
   // Sert le renderer packagé via app:// (out/renderer/*). En dev on utilise ELECTRON_RENDERER_URL (intact).
   // On LIT le fichier avec fs (compatible asar) et on renvoie une Response — surtout PAS net.fetch() sur une
   // URL file:// PROFONDE dans l'asar : asar est un patch fs Node, invisible au loader file:// de Chromium,
@@ -112,7 +129,8 @@ app.whenReady().then(() => {
       const data = await readFile(join(rendererRoot, rel))
       const type = MIME[extname(rel).toLowerCase()] ?? 'application/octet-stream'
       return new Response(new Uint8Array(data), { headers: { 'content-type': type } })
-    } catch {
+    } catch (err) {
+      console.error(`[app://] introuvable: ${rel} (root=${rendererRoot})`, (err as Error).message)
       return new Response('Not found', { status: 404, headers: { 'content-type': 'text/plain' } })
     }
   })

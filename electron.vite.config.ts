@@ -35,7 +35,7 @@ export default defineConfig({
   },
   renderer: {
     root: resolve('src/renderer'),
-    // Pas de base:'./' : les chemins absolus /assets/* se résolvent sous app:// via protocol.handle (racine = out/renderer).
+    // base relative (./assets/*) émise par electron-vite ; résolue sous app://oryon/ via protocol.handle (racine = out/renderer).
     build: {
       rollupOptions: {
         input: { index: resolve('src/renderer/index.html') }
