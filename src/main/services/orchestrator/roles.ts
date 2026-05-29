@@ -124,6 +124,7 @@ export function buildAgentPrompt(o: AgentPromptOpts): string {
       o.think ? 'ultrathink — reason deeply and carefully before acting.' : '',
       ROLE_SUMMARY[o.role],
       `Read your task file \`${o.taskFile}\` (relative to the repo root) and the result files of any dependencies it lists, then do the work now.`,
+      `You share an Oryon Memory with the other agents (MCP tools): call search_memories FIRST to reuse prior context, and append_memory to record key decisions, interfaces, and gotchas (set author to your agent name) so the others can build on them.`,
       `If \`${o.reviewFile}\` exists, a reviewer asked for changes — read it and address them.`,
       SAFETY,
       `When the task is GENUINELY finished, write the file \`${o.resultFile}\` with, on the FIRST line, exactly "STATUS: done" (or "STATUS: blocked" if you truly cannot proceed),`,
