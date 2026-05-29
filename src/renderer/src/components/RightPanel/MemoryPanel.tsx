@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Plus, Trash2, Network, FileText, Search, ArrowUpRight, CornerDownLeft, Sparkles } from 'lucide-react'
+import { Plus, Trash2, Network, FileText, Search, ArrowUpRight, CornerDownLeft, Sparkles, Pencil } from 'lucide-react'
 import { IconButton } from '../ui/IconButton'
 import { cn } from '../../lib/cn'
 import { forceLayout } from '../../lib/force-layout'
@@ -65,6 +65,8 @@ export function MemoryPanel({ projectPath }: { projectPath: string }) {
   const [search, setSearch] = useState('')
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
+  const [renaming, setRenaming] = useState(false)
+  const [renameValue, setRenameValue] = useState('')
   const [searchHits, setSearchHits] = useState<MemorySearchHit[]>([])
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const loadedRef = useRef('') // contenu du dernier read RÉUSSI (gate l'autosave)
@@ -174,6 +176,20 @@ export function MemoryPanel({ projectPath }: { projectPath: string }) {
     setSelected(null)
     setContent('')
     await reload(false)
+  }
+  // Renomme la note + réécrit les [[wikilinks]] qui la visent (cohérence du graphe), puis rouvre.
+  const doRename = async () => {
+    if (!renaming) return // évite le double-déclenchement Enter + blur
+    const nn = renameValue.trim()
+    setRenaming(false)
+    if (!selected || !nn || nn === selected) return
+    try {
+      const res = await window.bridge.memory.rename(projectPath, selected, nn)
+      await reload(false)
+      await selectNote(res.name)
+    } catch (e) {
+      toast.error((e as Error).message, { title: 'Renommage impossible' })
+    }
   }
 
   const outLinks = useMemo(() => {
@@ -294,15 +310,41 @@ export function MemoryPanel({ projectPath }: { projectPath: string }) {
           ) : selected ? (
             <div className="flex h-full flex-col">
               <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5">
-                <span className="truncate text-[12px] font-medium text-fg">{selected}</span>
-                <span
-                  className={cn(
-                    'ml-auto text-[10px]',
-                    saveState === 'error' ? 'text-danger' : saveState === 'saving' ? 'text-warning' : 'text-fg-subtle',
-                  )}
+                {renaming ? (
+                  <input
+                    autoFocus
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void doRename()
+                      if (e.key === 'Escape') setRenaming(false)
+                    }}
+                    onBlur={() => void doRename()}
+                    className="flex-1 rounded-md border border-border bg-bg-panel px-2 py-0.5 text-[12px] text-fg outline-none focus:border-accent"
+                  />
+                ) : (
+                  <span className="truncate text-[12px] font-medium text-fg">{selected}</span>
+                )}
+                {!renaming && (
+                  <span
+                    className={cn(
+                      'ml-auto text-[10px]',
+                      saveState === 'error' ? 'text-danger' : saveState === 'saving' ? 'text-warning' : 'text-fg-subtle',
+                    )}
+                  >
+                    {saveState === 'saving' ? 'enregistrement…' : saveState === 'error' ? 'échec d’enregistrement' : saveState === 'saved' ? 'enregistré' : `.oryon/memory/${selected}.md`}
+                  </span>
+                )}
+                <IconButton
+                  label="Renommer (réécrit les liens)"
+                  size="sm"
+                  onClick={() => {
+                    setRenameValue(selected)
+                    setRenaming(true)
+                  }}
                 >
-                  {saveState === 'saving' ? 'enregistrement…' : saveState === 'error' ? 'échec d’enregistrement' : saveState === 'saved' ? 'enregistré' : `.oryon/memory/${selected}.md`}
-                </span>
+                  <Pencil size={13} />
+                </IconButton>
                 <IconButton label="Supprimer la note" size="sm" onClick={() => void del()}>
                   <Trash2 size={13} />
                 </IconButton>

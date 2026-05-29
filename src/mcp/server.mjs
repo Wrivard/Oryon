@@ -166,6 +166,13 @@ server.tool(
   async ({ name }) => text(JSON.stringify(await memory.deleteMemory(PROJECT_DIR, name), null, 2)),
 )
 
+server.tool(
+  'rename_memory',
+  'Renomme une note ET réécrit tous les [[wikilinks]] qui la visent dans les autres notes (préserve la cohérence du graphe). Préfère ceci à supprimer+recréer.',
+  { oldName: z.string(), newName: z.string() },
+  async ({ oldName, newName }) => text(JSON.stringify(await memory.renameMemory(PROJECT_DIR, oldName, newName), null, 2)),
+)
+
 const transport = new StdioServerTransport()
 await server.connect(transport)
 console.error('[oryon-mcp] connecté (state: ' + STATE_DIR + ' | memory: ' + MEMORY_DIR + ')')
