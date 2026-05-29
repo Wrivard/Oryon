@@ -22,7 +22,15 @@ export interface TreeNode {
 export interface FileContent {
   content: string
   language: string
+  /** mtime (ms) + taille au moment de la lecture — base d'une écriture optimiste (détection de divergence). */
+  mtimeMs: number
+  size: number
 }
+
+/** Résultat d'une écriture éditeur : ok, ou divergence (le fichier a changé sur disque depuis l'ouverture). */
+export type WriteFileResult =
+  | { ok: true; mtimeMs: number; size: number }
+  | { ok: false; reason: 'diverged'; mtimeMs: number; size: number }
 
 export interface FsEvent {
   type: 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir'
@@ -37,7 +45,7 @@ export interface DevServerResult {
 // ---- Orchestrateur (Phase 3) ----
 
 export type AgentRole = 'builder' | 'reviewer' | 'scout' | 'coordinator'
-export type TaskStatus = 'proposed' | 'todo' | 'in-progress' | 'in-review' | 'complete' | 'cancelled'
+export type TaskStatus = 'proposed' | 'todo' | 'in-progress' | 'in-review' | 'complete' | 'cancelled' | 'blocked'
 
 /** Mode de soumission de l'orchestrateur : Direct (local), AI (LLM + routage), Plan (propose, à approuver). */
 export type SubmitMode = 'direct' | 'ai' | 'plan'
@@ -100,6 +108,19 @@ export interface GitCommit {
   author: string
   date: string
   subject: string
+}
+/** Branche/worktree d'un agent (vue Source quand les éditions sont committées par agent, pas dans MAIN). */
+export interface AgentBranch {
+  agent: string
+  branch: string
+  path: string
+  /** Nb de commits d'avance sur HEAD du tronc principal (≥1 = intégrable). */
+  ahead: number
+}
+/** Résultat d'une intégration (merge-back) d'une branche d'agent dans le tronc principal. */
+export interface MergeResult {
+  ok: boolean
+  message: string
 }
 
 // ---- Settings (app-global + project) ----
@@ -277,6 +298,8 @@ export interface Terminal {
   cwd: string
   autostart_cmd: string | null
   pane_index: number
+  /** Worktree git dédié de l'agent (migration 008) — le shell y démarre. null = projet non-git → cwd. */
+  worktree_path: string | null
 }
 
 /** State machine d'un terminal (renderer-side, heuristique). */
@@ -318,7 +341,13 @@ export const AGENT_NAMES = [
 /** Options de spawn d'un PTY (renderer -> main). */
 export interface CreateTerminalInput {
   id: string
+  /** Répertoire où le shell démarre — le WORKTREE de l'agent (isolation des éditions + git diff). */
   cwd: string
+  /**
+   * Arbre PRINCIPAL du projet, ancre de la mémoire partagée (ORYON_PROJECT_DIR) et du run d'orchestration.
+   * Distinct de `cwd` : si omis, on retombe sur cwd (projet non-git / pas de worktree).
+   */
+  mainProjectPath?: string
   autostart?: string | null
   cols: number
   rows: number
@@ -360,7 +389,8 @@ export interface BridgeApi {
   editor: {
     readDir: (path: string) => Promise<TreeNode[]>
     readFile: (path: string) => Promise<FileContent>
-    writeFile: (path: string, content: string) => Promise<void>
+    /** Écriture atomique avec garde de concurrence optimiste : `expect` = mtime/taille vus à l'ouverture. */
+    writeFile: (path: string, content: string, expect?: { mtimeMs: number; size: number }) => Promise<WriteFileResult>
     /** Liste plate des fichiers (pour Quick Open), dossiers lourds ignorés. */
     listFiles: (rootPath: string) => Promise<string[]>
     watch: (rootPath: string) => void
@@ -408,6 +438,12 @@ export interface BridgeApi {
     fileAtRef: (projectPath: string, file: string, ref: string) => Promise<{ content: string; language: string }>
     /** Restaure un fichier à une révision (revert). */
     revertFile: (projectPath: string, file: string, ref: string) => Promise<void>
+    /** Worktrees/branches d'agents enregistrés sous <projet>/.oryon/agents (run multi-agent). */
+    branches: (projectPath: string) => Promise<AgentBranch[]>
+    /** Diff par fichier d'une branche d'agent vs le tronc principal (range diff base...branch). */
+    branchDiff: (projectPath: string, branch: string) => Promise<SourceDiff[]>
+    /** Intègre (merge --no-ff, sérialisé + conflict-safe) une branche d'agent dans le tronc principal. */
+    mergeAgent: (projectPath: string, branch: string) => Promise<MergeResult>
   }
   /** Auto-update (canaux stable/dev). */
   update: {

@@ -18,6 +18,7 @@ const STATUS_DOT: Record<TaskStatus, string> = {
   'in-review': 'var(--warning)',
   complete: 'var(--accent)',
   cancelled: 'var(--danger)',
+  blocked: 'var(--danger)',
 }
 
 const MODES: { id: SubmitMode; label: string; icon: typeof Zap; title: string }[] = [

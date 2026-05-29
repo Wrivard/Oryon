@@ -33,7 +33,7 @@ const bridge: BridgeApi = {
   editor: {
     readDir: (path) => ipcRenderer.invoke('editor:readDir', path),
     readFile: (path) => ipcRenderer.invoke('editor:readFile', path),
-    writeFile: (path, content) => ipcRenderer.invoke('editor:writeFile', path, content),
+    writeFile: (path, content, expect) => ipcRenderer.invoke('editor:writeFile', path, content, expect),
     listFiles: (rootPath) => ipcRenderer.invoke('editor:listFiles', rootPath),
     watch: (rootPath) => ipcRenderer.send('editor:watch', rootPath),
     unwatch: (rootPath) => ipcRenderer.send('editor:unwatch', rootPath),
@@ -145,6 +145,9 @@ const bridge: BridgeApi = {
     log: (projectPath, file) => ipcRenderer.invoke('source:log', projectPath, file),
     fileAtRef: (projectPath, file, ref) => ipcRenderer.invoke('source:fileAtRef', projectPath, file, ref),
     revertFile: (projectPath, file, ref) => ipcRenderer.invoke('source:revertFile', projectPath, file, ref),
+    branches: (projectPath) => ipcRenderer.invoke('source:branches', projectPath),
+    branchDiff: (projectPath, branch) => ipcRenderer.invoke('source:branchDiff', projectPath, branch),
+    mergeAgent: (projectPath, branch) => ipcRenderer.invoke('source:mergeAgent', projectPath, branch),
   },
 }
 

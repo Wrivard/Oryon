@@ -14,6 +14,9 @@ interface OpenFile {
   content: string
   language: string
   dirty: boolean
+  /** mtime/taille vus à la dernière lecture/écriture → garde de concurrence optimiste (édits d'agents). */
+  mtimeMs: number
+  size: number
 }
 
 function baseName(p: string): string {
@@ -52,11 +55,11 @@ export function EditorPanel({ projectPath, active }: { projectPath: string; acti
       return
     }
     try {
-      const { content, language } = await window.bridge.editor.readFile(path)
+      const { content, language, mtimeMs, size } = await window.bridge.editor.readFile(path)
       setFiles((fs) =>
         fs.some((f) => f.path === path)
           ? fs
-          : [...fs, { path, name: baseName(path), content, language, dirty: false }],
+          : [...fs, { path, name: baseName(path), content, language, dirty: false, mtimeMs, size }],
       )
       setActivePath(path)
     } catch (err) {
@@ -84,9 +87,35 @@ export function EditorPanel({ projectPath, active }: { projectPath: string; acti
     const f = filesRef.current.find((x) => x.path === activeRef.current)
     if (!f || !f.dirty) return
     try {
-      await window.bridge.editor.writeFile(f.path, f.content)
+      const res = await window.bridge.editor.writeFile(f.path, f.content, { mtimeMs: f.mtimeMs, size: f.size })
+      if (!res.ok) {
+        // Le fichier a divergé sur disque depuis l'ouverture (probablement un agent / un merge-back).
+        const overwrite = window.confirm(
+          `« ${f.name} » a été modifié sur disque (probablement par un agent) depuis que tu l'as ouvert.\n\n` +
+            `OK = écraser avec ta version · Annuler = recharger depuis le disque (tes modifs non sauvées seront perdues).`,
+        )
+        if (!overwrite) {
+          const fresh = await window.bridge.editor.readFile(f.path)
+          setFiles((fs) =>
+            fs.map((x) =>
+              x.path === f.path
+                ? { ...x, content: fresh.content, dirty: false, mtimeMs: fresh.mtimeMs, size: fresh.size }
+                : x,
+            ),
+          )
+          return
+        }
+        const forced = await window.bridge.editor.writeFile(f.path, f.content) // override explicite (sans expect)
+        if (!forced.ok) return
+        recentWrites.current.set(f.path, Date.now())
+        setFiles((fs) =>
+          fs.map((x) => (x.path === f.path ? { ...x, dirty: false, mtimeMs: forced.mtimeMs, size: forced.size } : x)),
+        )
+        return
+      }
       recentWrites.current.set(f.path, Date.now())
-      setFiles((fs) => fs.map((x) => (x.path === f.path ? { ...x, dirty: false } : x)))
+      // Rafraîchit mtime/size sur la version écrite → la prochaine sauvegarde compare au bon état.
+      setFiles((fs) => fs.map((x) => (x.path === f.path ? { ...x, dirty: false, mtimeMs: res.mtimeMs, size: res.size } : x)))
     } catch (err) {
       console.error('[editor] writeFile a échoué', f.path, err)
       toast.error('Échec de la sauvegarde', { title: f.name })
@@ -160,15 +189,28 @@ export function EditorPanel({ projectPath, active }: { projectPath: string; acti
       if (ev.type === 'change') {
         const f = filesRef.current.find((x) => x.path === ev.path)
         const justWrote = (recentWrites.current.get(ev.path) ?? 0) > Date.now() - 1500
-        if (f && !f.dirty && !justWrote) {
-          window.bridge.editor
-            .readFile(ev.path)
-            .then(({ content }) => {
-              setFiles((fs) => fs.map((x) => (x.path === ev.path ? { ...x, content } : x)))
+        if (f && !justWrote) {
+          if (!f.dirty) {
+            // Pas de modifs locales → recharge silencieusement (et met à jour mtime/size).
+            window.bridge.editor
+              .readFile(ev.path)
+              .then((fresh) => {
+                setFiles((fs) =>
+                  fs.map((x) =>
+                    x.path === ev.path ? { ...x, content: fresh.content, mtimeMs: fresh.mtimeMs, size: fresh.size } : x,
+                  ),
+                )
+              })
+              .catch(() => {
+                /* fichier supprimé/illisible : on ignore */
+              })
+          } else {
+            // Modifs locales non sauvées : NE PAS clobber. On garde l'ancien mtime → la prochaine sauvegarde
+            // détectera la divergence et proposera recharger/écraser. On informe juste.
+            toast.info(`« ${f.name} » modifié par un agent — ta sauvegarde te demandera quoi faire`, {
+              title: 'Fichier modifié sur disque',
             })
-            .catch(() => {
-              /* fichier supprimé/illisible : on ignore */
-            })
+          }
         }
       } else {
         setTreeRefresh((n) => n + 1)

@@ -45,6 +45,19 @@ export function reviewFileName(n: number): string {
   return `${pad(n)}.review.md`
 }
 
+// Chemins ABSOLUS dans le tronc PRINCIPAL. Avec un worktree par agent (cwd = worktree), un chemin
+// relatif pointerait vers <worktree>/.oryon/run (inexistant, jamais surveillé) → dispatch silencieusement
+// cassé. Ces helpers garantissent que task/result/review vivent dans <principal>/.oryon/run/tasks.
+export function taskFilePath(main: string, name: string): string {
+  return join(tasksDir(main), name)
+}
+export function resultFilePath(main: string, n: number): string {
+  return join(tasksDir(main), resultFileName(n))
+}
+export function reviewFilePath(main: string, n: number): string {
+  return join(tasksDir(main), reviewFileName(n))
+}
+
 /** Reconnaît un nom de fichier de sortie d'agent : "NN.result.md" ou "NN.review.md". */
 export function parseOutputFileName(name: string): { n: number; kind: 'result' | 'review' } | null {
   const m = /^(\d+)\.(result|review)\.md$/i.exec(name)
@@ -88,8 +101,10 @@ export interface TaskFileInput {
 /** Écrit le fichier d'instructions d'une sub-task. Retourne son nom de fichier. */
 export function writeTaskFile(projectPath: string, t: TaskFileInput): string {
   const name = taskFileName(t.n, t.title)
+  // Chemins ABSOLUS dans le tronc principal : un agent dépendant (cwd = worktree) lit les prérequis
+  // dans <principal>/.oryon/run, pas dans un <worktree>/.oryon inexistant.
   const deps = t.depNumbers.length
-    ? t.depNumbers.map((d) => `- \`tasks/${resultFileName(d)}\``).join('\n')
+    ? t.depNumbers.map((d) => `- \`${resultFilePath(projectPath, d)}\``).join('\n')
     : '_(aucune)_'
   const body = [
     `# Task #${t.n} — ${t.title}`,
@@ -102,7 +117,7 @@ export function writeTaskFile(projectPath: string, t: TaskFileInput): string {
     ``,
     `## Contexte des dépendances`,
     ``,
-    `Lis le résultat de ces tasks avant de commencer :`,
+    `Lis le résultat de ces tasks (chemins absolus) avant de commencer :`,
     deps,
     ``,
   ].join('\n')

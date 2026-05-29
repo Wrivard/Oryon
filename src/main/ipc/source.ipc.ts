@@ -3,7 +3,17 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { readFileSync, existsSync, mkdirSync, renameSync, appendFileSync } from 'fs'
 import { join, extname, dirname } from 'path'
-import type { SourceStatus, SourceFileChange, SourceFileStatus, SourceDiff, GitCommit } from '../../shared/types'
+import type {
+  SourceStatus,
+  SourceFileChange,
+  SourceFileStatus,
+  SourceDiff,
+  GitCommit,
+  AgentBranch,
+  MergeResult,
+} from '../../shared/types'
+import { listAgentWorktrees } from '../services/worktrees'
+import { mergeAgentBranch } from '../services/orchestrator/merge-back'
 
 const exec = promisify(execFile)
 
@@ -57,6 +67,14 @@ async function git(cwd: string, args: string[]): Promise<string> {
     windowsHide: true,
   })
   return stdout.toString()
+}
+/** git qui avale l'erreur (null si code ≠ 0) — pour les sondes (merge-base, show d'un fichier absent). */
+async function tryGit(cwd: string, args: string[]): Promise<string | null> {
+  try {
+    return await git(cwd, args)
+  } catch {
+    return null
+  }
 }
 
 /** Chemin de DESTINATION d'une entrée numstat de rename (`old => new` ou `pre{old => new}post`). */
@@ -237,7 +255,18 @@ export function registerSourceIpc(): void {
   })
 
   ipcMain.handle('source:acceptAll', async (_e, projectPath: string): Promise<void> => {
-    await git(projectPath, ['add', '-A'])
+    // Stage UNIQUEMENT les fichiers listés par git status, par pathspec explicite (jamais `git add -A` :
+    // dans le tronc partagé d'un run, -A ramasserait le travail en vol d'autres agents + la corbeille .oryon).
+    const files = await gitStatus(projectPath)
+    const specs: string[] = []
+    for (const f of files) {
+      if (f.path.startsWith('.oryon/')) continue
+      specs.push(f.path)
+      if (f.status === 'R' && f.oldPath) specs.push(f.oldPath) // rename : stager la source ET la destination
+    }
+    for (let i = 0; i < specs.length; i += 200) {
+      await git(projectPath, ['add', '--', ...specs.slice(i, i + 200)])
+    }
   })
 
   ipcMain.handle('source:rejectAll', async (_e, projectPath: string): Promise<void> => {
@@ -286,5 +315,41 @@ export function registerSourceIpc(): void {
   ipcMain.handle('source:revertFile', async (_e, projectPath: string, file: string, ref: string): Promise<void> => {
     await snapshotRecovery(projectPath, `revert ${file} -> ${ref}`)
     await git(projectPath, ['checkout', ref, '--', file])
+  })
+
+  // Worktrees/branches d'agents (run multi-agent) : les éditions des agents vivent sur leur branche,
+  // pas dans l'arbre de travail de MAIN → source:status ne les montrerait pas. Ces trois handlers
+  // exposent la revue/intégration par branche.
+  ipcMain.handle('source:branches', async (_e, projectPath: string): Promise<AgentBranch[]> => {
+    return listAgentWorktrees(projectPath)
+  })
+
+  ipcMain.handle('source:branchDiff', async (_e, projectPath: string, branch: string): Promise<SourceDiff[]> => {
+    // Diff de plage merge-base(HEAD,branch)…branch : exactement ce que le merge-back intégrerait.
+    const base = ((await tryGit(projectPath, ['merge-base', 'HEAD', branch])) ?? 'HEAD').trim() || 'HEAD'
+    const nameStatus = (await tryGit(projectPath, ['diff', '--name-status', `${base}...${branch}`])) ?? ''
+    const out: SourceDiff[] = []
+    for (const line of nameStatus.split('\n')) {
+      if (!line.trim()) continue
+      const parts = line.split('\t')
+      const code = parts[0][0]
+      const isRename = code === 'R'
+      const file = isRename ? parts[2] : parts[1]
+      const oldPath = isRename ? parts[1] : undefined
+      if (!file) continue
+      const status: SourceFileStatus = code === 'A' ? 'A' : code === 'D' ? 'D' : isRename ? 'R' : 'M'
+      const headPath = isRename && oldPath ? oldPath : file
+      let original = ''
+      let modified = ''
+      if (code !== 'A') original = (await tryGit(projectPath, ['show', `${base}:${headPath}`])) ?? ''
+      if (code !== 'D') modified = (await tryGit(projectPath, ['show', `${branch}:${file}`])) ?? ''
+      out.push({ path: file, original, modified, language: langFor(file), status })
+    }
+    return out
+  })
+
+  ipcMain.handle('source:mergeAgent', async (_e, projectPath: string, branch: string): Promise<MergeResult> => {
+    // Passe par la MÊME chaîne sérialisée/conflict-safe que le merge-back automatique (jamais add -A).
+    return mergeAgentBranch(projectPath, branch)
   })
 }

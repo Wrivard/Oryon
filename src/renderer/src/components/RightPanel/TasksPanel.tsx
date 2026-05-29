@@ -6,6 +6,7 @@ const COLUMNS: { id: TaskStatus; label: string }[] = [
   { id: 'todo', label: 'Todo' },
   { id: 'in-progress', label: 'In Progress' },
   { id: 'in-review', label: 'In Review' },
+  { id: 'blocked', label: 'Blocked' },
   { id: 'complete', label: 'Complete' },
 ]
 
@@ -24,7 +25,7 @@ export function TasksPanel() {
   }
 
   return (
-    <div className="grid h-full grid-cols-4 gap-px overflow-hidden bg-border">
+    <div className="grid h-full grid-cols-5 gap-px overflow-hidden bg-border">
       {COLUMNS.map((col) => {
         const colTasks = tasks.filter((t) => t.status === col.id)
         return (

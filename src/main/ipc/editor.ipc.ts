@@ -1,8 +1,8 @@
 import { ipcMain } from 'electron'
 import { promises as fs } from 'fs'
-import { join, extname } from 'path'
+import { join, extname, dirname, basename } from 'path'
 import chokidar, { type FSWatcher } from 'chokidar'
-import type { TreeNode, FileContent, FsEvent } from '../../shared/types'
+import type { TreeNode, FileContent, FsEvent, WriteFileResult } from '../../shared/types'
 
 const IGNORE_DIRS = new Set([
   'node_modules', '.git', 'dist', 'out', '.next', '.turbo', '.cache',
@@ -49,12 +49,34 @@ export function registerEditorIpc() {
     if (stat.size > 5_000_000) throw new Error('Fichier trop volumineux (> 5 Mo)')
     const buf = await fs.readFile(p)
     if (buf.includes(0)) throw new Error('Fichier binaire — édition non supportée')
-    return { content: buf.toString('utf8'), language: langFor(p) }
+    // mtime/taille → base d'une écriture optimiste (l'agent/merge-back peut réécrire entre open et save).
+    return { content: buf.toString('utf8'), language: langFor(p), mtimeMs: stat.mtimeMs, size: stat.size }
   })
 
-  ipcMain.handle('editor:writeFile', async (_e, p: string, content: string): Promise<void> => {
-    await fs.writeFile(p, content, 'utf8')
-  })
+  ipcMain.handle(
+    'editor:writeFile',
+    async (_e, p: string, content: string, expect?: { mtimeMs: number; size: number }): Promise<WriteFileResult> => {
+      // Garde de concurrence optimiste : si le fichier a divergé depuis l'ouverture (un agent ou un
+      // merge-back l'a réécrit), on NE clobbe PAS — on renvoie l'état courant pour que l'UI décide.
+      if (expect) {
+        try {
+          const cur = await fs.stat(p)
+          if (cur.mtimeMs !== expect.mtimeMs || cur.size !== expect.size) {
+            return { ok: false, reason: 'diverged', mtimeMs: cur.mtimeMs, size: cur.size }
+          }
+        } catch {
+          /* fichier disparu → on le (re)crée, pas de divergence à signaler */
+        }
+      }
+      // Écriture atomique (temp + rename même dossier) : pas de troncature visible par une lecture
+      // concurrente d'agent, et le remplacement par rename évite la course avec chokidar.
+      const tmp = join(dirname(p), `.${basename(p)}.oryon-${process.pid}.tmp`)
+      await fs.writeFile(tmp, content, 'utf8')
+      await fs.rename(tmp, p)
+      const after = await fs.stat(p)
+      return { ok: true, mtimeMs: after.mtimeMs, size: after.size }
+    },
+  )
 
   // Liste plate des fichiers pour Quick Open (Cmd+P), dossiers lourds ignorés, plafonnée.
   ipcMain.handle('editor:listFiles', async (_e, root: string): Promise<string[]> => {

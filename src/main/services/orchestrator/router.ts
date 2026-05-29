@@ -14,10 +14,15 @@ import {
   taskFileName,
   resultFileName,
   reviewFileName,
+  taskFilePath,
+  resultFilePath,
+  reviewFilePath,
   parseOutputFileName,
   parseOutputFile,
 } from './run-files'
 import { getOrCreateProjectId, createTask, listTasks, getTask, updateTask } from './task-store'
+import { isGitRepo, worktreeDir, branchFor } from '../worktrees'
+import { enqueueMergeBack } from './merge-back'
 import type { OrchestratorEvent, PlanTask, SubmitMode, Task, TaskStatus, Workspace } from '../../../shared/types'
 
 interface SwarmState {
@@ -31,7 +36,10 @@ interface SwarmState {
 }
 
 const INJECT_ENTER_DELAY = 200 // ms : laisser claude consommer le paste avant l'Entrée séparée
-const SILENCE_TIMEOUT = 240000 // ms : terminal assigné silencieux > 4min → task probablement bloquée
+// 10 min : un builder Opus « ultracode » fait souvent des pauses > 4 min entre deux flushs stdout →
+// 4 min orphelinait des agents bien vivants (faux positif). 10 min reste un garde-fou utile.
+const SILENCE_TIMEOUT = 600000 // ms : terminal assigné silencieux > 10min → task probablement bloquée
+const MAX_REVIEW_ROUNDS = 3 // builder↔reviewer : au-delà → 'blocked' (stop le ping-pong qui épingle 2 terminaux)
 const WATCHDOG_INTERVAL = 20000 // ms
 
 let swarm: SwarmState | null = null
@@ -40,11 +48,14 @@ const swarmTerminals = new Set<string>()
 const numberToTaskId = new Map<number, string>()
 const taskIdToNumber = new Map<string, number>()
 const numberToTaskFile = new Map<number, string>() // numéro de task → nom du fichier d'instructions
+const reviewRounds = new Map<number, number>() // numéro de task → nb d'allers-retours builder↔reviewer
+const builderTerminal = new Map<number, string>() // numéro de task → terminal du BUILDER (≠ reviewer)
 let nextNumber = 1
 
 const terminalReady = new Map<string, boolean>()
 const terminalBusy = new Map<string, string | null>() // terminalId -> taskId | null
 const terminalLastData = new Map<string, number>() // terminalId -> dernier flux (ts)
+const interrupting = new Set<string>() // terminaux en cours d'interruption (ESC) → non réutilisables
 const buffers = new Map<string, string>() // tampon de readiness (jeté dès que prêt)
 let rr = 0
 let observerInstalled = false
@@ -88,12 +99,42 @@ function terminalName(id: string | null): string {
 }
 function pickFreeTerminal(workspaceId: string, exclude?: string): string | null {
   const ids = terminalIds(workspaceId).filter(
-    (id) => id !== exclude && hasLiveTerminal(id) && terminalReady.get(id) && !terminalBusy.get(id),
+    (id) =>
+      id !== exclude &&
+      hasLiveTerminal(id) &&
+      terminalReady.get(id) &&
+      !terminalBusy.get(id) &&
+      !interrupting.has(id), // un terminal encore en cours d'ESC n'est pas réutilisable (anti double-assignation)
   )
   if (ids.length === 0) return null
   const id = ids[rr % ids.length]
   rr++
   return id
+}
+
+const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Interrompt un agent orphelin (double ESC : le TUI claude a parfois besoin de deux pour casser un tour
+ * en cours), puis attend ~600 ms de silence (cap 3 s) avant de libérer le terminal. Gate via `interrupting`
+ * pour qu'un PTY encore en train de répondre ne soit PAS réassigné (sinon 2 agents sur 1 task → worktrees +
+ * merges dupliqués). Fire-and-forget : se gère lui-même.
+ */
+async function interruptTerminal(id: string): Promise<void> {
+  if (!hasLiveTerminal(id)) return
+  interrupting.add(id)
+  try {
+    writeTerminal(id, '\x1b')
+    await delay(120)
+    if (hasLiveTerminal(id)) writeTerminal(id, '\x1b')
+    const start = Date.now()
+    while (Date.now() - start < 3000) {
+      await delay(200)
+      if (Date.now() - (terminalLastData.get(id) ?? 0) > 600) break
+    }
+  } finally {
+    interrupting.delete(id)
+  }
 }
 function assignNumber(taskId: string): number {
   let n = taskIdToNumber.get(taskId)
@@ -104,12 +145,18 @@ function assignNumber(taskId: string): number {
   }
   return n
 }
-/** Chemin relatif au repo (cwd des agents = project_path) vers un fichier du run. */
-function rel(name: string): string {
-  return `.oryon/run/tasks/${name}`
+// swarm.projectPath = tronc PRINCIPAL TOUJOURS — le dossier de run, la surveillance chokidar et les
+// chemins absolus injectés aux agents y vivent, JAMAIS dans un worktree. Les agents ont un cwd = worktree
+// mais reçoivent ces chemins ABSOLUS pour écrire dans le seul .oryon/run surveillé.
+function taskFileAbs(main: string, num: number, title: string | null): string {
+  return taskFilePath(main, numberToTaskFile.get(num) ?? taskFileName(num, title ?? ''))
 }
-function taskFileRel(num: number, title: string | null): string {
-  return rel(numberToTaskFile.get(num) ?? taskFileName(num, title ?? ''))
+/** Worktree du builder d'une task (pour pointer le reviewer / cibler le merge-back). null si inconnu/non-git. */
+function builderWorktree(main: string, num: number): string | null {
+  if (!isGitRepo(main)) return null
+  const term = builderTerminal.get(num)
+  if (!term) return null
+  return worktreeDir(main, terminalName(term))
 }
 function onTask(terminalId: string, taskId: string): boolean {
   return !!swarm && swarmTerminals.has(terminalId) && terminalBusy.get(terminalId) === taskId
@@ -161,6 +208,8 @@ function dispatchReady(): void {
     const role = t.role === 'scout' ? 'scout' : 'builder'
     ensureTaskFileFor(num, t) // recovery : si la map a été vidée (swarm ré-établi), réécrire le fichier
     updateTask(t.id, { status: 'in-progress', assigned_terminal_id: term })
+    builderTerminal.set(num, term) // worktree porteur des éditions (≠ le terminal du reviewer ensuite)
+    if (!reviewRounds.has(num)) reviewRounds.set(num, 0)
     assigned.add(t.id)
     // re-run (après changes/blocked/timeout) : on autorise un nouveau result.md à re-déclencher
     processedOutputs.delete(resultFileName(num))
@@ -170,9 +219,9 @@ function dispatchReady(): void {
       buildAgentPrompt({
         number: num,
         role,
-        taskFile: taskFileRel(num, t.title),
-        resultFile: rel(resultFileName(num)),
-        reviewFile: rel(reviewFileName(num)),
+        taskFile: taskFileAbs(swarm.projectPath, num, t.title),
+        resultFile: resultFilePath(swarm.projectPath, num),
+        reviewFile: reviewFilePath(swarm.projectPath, num),
         think: swarm.think,
       }),
       effortPreCommand(),
@@ -192,9 +241,11 @@ function dispatchReady(): void {
       t.id,
       buildReviewPrompt({
         number: num,
-        taskFile: taskFileRel(num, t.title),
-        resultFile: rel(resultFileName(num)),
-        reviewFile: rel(reviewFileName(num)),
+        taskFile: taskFileAbs(swarm.projectPath, num, t.title),
+        resultFile: resultFilePath(swarm.projectPath, num),
+        reviewFile: reviewFilePath(swarm.projectPath, num),
+        // Le reviewer tourne dans SON worktree : on le pointe vers celui du builder (éditions non commitées).
+        targetWorktree: builderWorktree(swarm.projectPath, num) ?? undefined,
       }),
       effortPreCommand(),
     )
@@ -221,6 +272,7 @@ function handleOutputFile(fullPath: string): void {
   if (parsed.kind === 'result') {
     if (task.status !== 'in-progress') return // garde anti-rejeu
     const term = task.assigned_terminal_id
+    if (term) builderTerminal.set(parsed.n, term) // robustesse : capter le builder même après un restart
     broadcast({
       type: 'mailbox',
       workspaceId: swarm.workspaceId,
@@ -252,18 +304,51 @@ function handleOutputFile(fullPath: string): void {
       ),
     })
     freeTerminalForTask(taskId)
+    const wsId = swarm.workspaceId
+    const main = swarm.projectPath
     if (out.status === 'approved') {
+      // Intègre la branche du BUILDER (pas du reviewer) dans le tronc principal : sérialisé + conflict-safe.
+      const builderTerm = builderTerminal.get(parsed.n)
+      if (isGitRepo(main) && builderTerm) {
+        const agent = terminalName(builderTerm)
+        void enqueueMergeBack({
+          mainPath: main,
+          worktree: worktreeDir(main, agent),
+          branch: branchFor(agent),
+          agent,
+          task: String(parsed.n),
+          onDone: (m) => notice(wsId, m),
+          onConflict: (m) => notice(wsId, m),
+        })
+      }
       updateTask(taskId, { status: 'complete' })
+      reviewRounds.delete(parsed.n)
+      builderTerminal.delete(parsed.n)
+    } else if (out.status === 'changes') {
+      const round = (reviewRounds.get(parsed.n) ?? 0) + 1
+      reviewRounds.set(parsed.n, round)
+      if (round >= MAX_REVIEW_ROUNDS) {
+        // Stoppe le ping-pong builder↔reviewer qui épinglerait 2 terminaux indéfiniment.
+        notice(wsId, `#${parsed.n} bloquée après ${round} tours de revue — intervention requise (statut : blocked).`)
+        updateTask(taskId, { status: 'blocked', assigned_terminal_id: null })
+      } else {
+        // le builder reprend la task et lira le review.md pour les corrections.
+        processedOutputs.delete(resultFileName(parsed.n)) // un nouveau result.md doit re-déclencher
+        updateTask(taskId, { status: 'todo', assigned_terminal_id: null })
+      }
     } else {
-      // changes (ou autre) : le builder reprend la task et lira le review.md pour les corrections.
-      processedOutputs.delete(resultFileName(parsed.n)) // un nouveau result.md doit re-déclencher
-      updateTask(taskId, { status: 'todo', assigned_terminal_id: null })
+      // Verdict inconnu (parseOutputFile est permissif : tout mot après STATUS passe) → ne PAS boucler à
+      // l'infini sur un « STATUS: needs-work » mal orthographié ; on bloque pour intervention humaine.
+      notice(wsId, `#${parsed.n} : verdict de revue non reconnu (« ${out.status} ») — statut : blocked.`)
+      updateTask(taskId, { status: 'blocked', assigned_terminal_id: null })
     }
   }
   dispatchReady()
 }
 
 function startWatcher(projectPath: string): void {
+  // projectPath = tronc PRINCIPAL ALWAYS. UN seul point de surveillance, sur <principal>/.oryon/run/tasks ;
+  // les agents (cwd = worktree) y écrivent via les chemins ABSOLUS injectés dans leurs prompts.
   stopWatcher()
   processedOutputs.clear()
   watcher = chokidar.watch(tasksDir(projectPath), {
@@ -307,7 +392,8 @@ function watchdogTick(): void {
     if (!term) continue // in-review en attente d'un reviewer → géré par dispatchReady, pas un timeout
     if (now - (terminalLastData.get(term) ?? now) > SILENCE_TIMEOUT) {
       const num = taskIdToNumber.get(t.id)
-      notice(swarm.workspaceId, `timeout #${num ?? '?'} — terminal silencieux > 4 min, task remise en todo`)
+      notice(swarm.workspaceId, `timeout #${num ?? '?'} — terminal silencieux > 10 min, agent interrompu (ESC) et task remise en todo`)
+      void interruptTerminal(term) // ESC l'agent orphelin AVANT de libérer (sinon il continue + un 2e agent pile dessus)
       updateTask(t.id, { status: 'todo', assigned_terminal_id: null })
       terminalBusy.set(term, null)
       changed = true
@@ -341,6 +427,8 @@ function initSwarmState(workspaceId: string): void {
   numberToTaskId.clear()
   taskIdToNumber.clear()
   numberToTaskFile.clear()
+  reviewRounds.clear()
+  builderTerminal.clear()
   nextNumber = 1
 }
 
@@ -579,15 +667,18 @@ export function runTask(taskId: string): void {
   ensureTaskFileFor(num, t) // le run manuel peut viser une task sans fichier d'instructions → on l'écrit
   processedOutputs.delete(resultFileName(num))
   updateTask(taskId, { status: 'in-progress', assigned_terminal_id: term })
+  builderTerminal.set(num, term)
+  if (!reviewRounds.has(num)) reviewRounds.set(num, 0)
+  const main = swarm!.projectPath // ensureSwarmForWorkspace ci-dessus a garanti swarm
   inject(
     term,
     taskId,
     buildAgentPrompt({
       number: num,
       role,
-      taskFile: taskFileRel(num, t.title),
-      resultFile: rel(resultFileName(num)),
-      reviewFile: rel(reviewFileName(num)),
+      taskFile: taskFileAbs(main, num, t.title),
+      resultFile: resultFilePath(main, num),
+      reviewFile: reviewFilePath(main, num),
       think: swarm?.think,
     }),
     effortPreCommand(),
@@ -614,7 +705,12 @@ export function stopSwarm(workspaceId: string): void {
       updateTask(t.id, { status: 'todo', assigned_terminal_id: null })
     }
   }
-  for (const id of terminalIds(workspaceId)) terminalBusy.set(id, null)
+  // Interrompt (ESC) chaque terminal occupé AVANT de le libérer : sinon l'agent poursuit son tour en
+  // arrière-plan et un run ultérieur pourrait piler dessus (worktrees + merges dupliqués).
+  for (const id of terminalIds(workspaceId)) {
+    if (terminalBusy.get(id)) void interruptTerminal(id)
+    terminalBusy.set(id, null)
+  }
   if (swarm?.workspaceId === workspaceId) {
     swarm = null
     swarmTerminals.clear()

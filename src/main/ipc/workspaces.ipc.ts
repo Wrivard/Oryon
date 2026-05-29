@@ -3,6 +3,7 @@ import { v4 as uuid } from 'uuid'
 import { getDb } from '../db'
 import { buildClaudeCommand } from '../services/claude-launcher'
 import { killTerminal } from '../services/pty-manager'
+import { isGitRepo, ensureWorktree, pruneMergedWorktrees } from '../services/worktrees'
 import {
   AGENT_NAMES,
   LAYOUT_PANES,
@@ -42,16 +43,24 @@ export function registerWorkspacesIpc() {
       dev_command: null,
     }
     const autostart = buildClaudeCommand() // "claude"
-    const terminals: Terminal[] = Array.from({ length: paneCount }, (_, i) => ({
-      id: uuid(),
-      workspace_id: ws.id,
-      name: AGENT_NAMES[i % AGENT_NAMES.length],
-      color: null,
-      role: 'free',
-      cwd: data.projectPath,
-      autostart_cmd: autostart,
-      pane_index: i,
-    }))
+    // Un worktree git par agent (isolation des éditions + git diff). SERIAL (sync execFileSync dans cette
+    // boucle unique) → jamais de course sur .git/worktrees/index.lock. cwd reste = MAIN (ancre mémoire/run) ;
+    // le worktree ne sert que de cwd au shell (cf. terminals.ipc / Terminal.tsx). Projet non-git → null.
+    const isGit = isGitRepo(data.projectPath)
+    const terminals: Terminal[] = Array.from({ length: paneCount }, (_, i) => {
+      const name = AGENT_NAMES[i % AGENT_NAMES.length]
+      return {
+        id: uuid(),
+        workspace_id: ws.id,
+        name,
+        color: null,
+        role: 'free',
+        cwd: data.projectPath,
+        autostart_cmd: autostart,
+        pane_index: i,
+        worktree_path: isGit ? ensureWorktree(data.projectPath, name) : null,
+      }
+    })
 
     const tx = db.transaction(() => {
       db.prepare(
@@ -65,8 +74,8 @@ export function registerWorkspacesIpc() {
         data.projectPath,
       )
       const insTerm = db.prepare(
-        `INSERT INTO terminals (id, workspace_id, name, color, role, cwd, autostart_cmd, pane_index)
-         VALUES (@id, @workspace_id, @name, @color, @role, @cwd, @autostart_cmd, @pane_index)`,
+        `INSERT INTO terminals (id, workspace_id, name, color, role, cwd, autostart_cmd, pane_index, worktree_path)
+         VALUES (@id, @workspace_id, @name, @color, @role, @cwd, @autostart_cmd, @pane_index, @worktree_path)`,
       )
       for (const t of terminals) insTerm.run(t)
     })
@@ -101,19 +110,22 @@ export function registerWorkspacesIpc() {
     const db = getDb()
     const existing = listTerminals(workspaceId)
     const nextIndex = existing.reduce((m, t) => Math.max(m, t.pane_index), -1) + 1
+    const projectPath = db.prepare('SELECT project_path FROM workspaces WHERE id = ?').pluck().get(workspaceId) as string
+    const name = AGENT_NAMES[nextIndex % AGENT_NAMES.length]
     const t: Terminal = {
       id: uuid(),
       workspace_id: workspaceId,
-      name: AGENT_NAMES[nextIndex % AGENT_NAMES.length],
+      name,
       color: null,
       role: 'free',
-      cwd: db.prepare('SELECT project_path FROM workspaces WHERE id = ?').pluck().get(workspaceId) as string,
+      cwd: projectPath,
       autostart_cmd: buildClaudeCommand(),
       pane_index: nextIndex,
+      worktree_path: isGitRepo(projectPath) ? ensureWorktree(projectPath, name) : null,
     }
     db.prepare(
-      `INSERT INTO terminals (id, workspace_id, name, color, role, cwd, autostart_cmd, pane_index)
-       VALUES (@id, @workspace_id, @name, @color, @role, @cwd, @autostart_cmd, @pane_index)`,
+      `INSERT INTO terminals (id, workspace_id, name, color, role, cwd, autostart_cmd, pane_index, worktree_path)
+       VALUES (@id, @workspace_id, @name, @color, @role, @cwd, @autostart_cmd, @pane_index, @worktree_path)`,
     ).run(t)
     return t
   })
@@ -123,10 +135,20 @@ export function registerWorkspacesIpc() {
   })
 
   ipcMain.handle('workspaces:delete', (_e, id: string): void => {
+    const db = getDb()
+    const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as Workspace | undefined
     // Tue d'abord les PTY éventuellement vivants (no-op si jamais spawnés), puis supprime.
     for (const t of listTerminals(id)) killTerminal(t.id)
+    // Teardown des worktrees : retire UNIQUEMENT ceux entièrement mergés (+ leur branche). Les branches
+    // non mergées sont CONSERVÉES (travail récupérable) — on les signale en console (plus d'UI après delete).
+    if (ws && isGitRepo(ws.project_path)) {
+      const retained = pruneMergedWorktrees(ws.project_path)
+      if (retained.length) {
+        console.warn(`[worktrees] branches d'agents non mergées CONSERVÉES (merge manuel possible) :`, retained.join(', '))
+      }
+    }
     // FK terminals ON DELETE CASCADE (foreign_keys=ON) → terminaux supprimés en cascade.
-    getDb().prepare('DELETE FROM workspaces WHERE id = ?').run(id)
+    db.prepare('DELETE FROM workspaces WHERE id = ?').run(id)
   })
 
   ipcMain.handle('workspaces:update', (_e, id: string, data: UpdateWorkspaceInput): Workspace => {

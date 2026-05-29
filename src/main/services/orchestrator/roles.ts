@@ -109,9 +109,9 @@ function oneLine(s: string): string {
 export interface AgentPromptOpts {
   number: number
   role: 'builder' | 'scout'
-  taskFile: string // chemin relatif au repo, ex. ".oryon/run/tasks/02-export-csv.md"
-  resultFile: string // ex. ".oryon/run/tasks/02.result.md"
-  reviewFile: string // ex. ".oryon/run/tasks/02.review.md" (peut exister si on revient d'un "changes")
+  taskFile: string // chemin ABSOLU dans le run du projet principal (identique quel que soit le worktree)
+  resultFile: string // chemin ABSOLU, ex. "C:/.../projet/.oryon/run/tasks/02.result.md"
+  reviewFile: string // chemin ABSOLU (peut exister si on revient d'un "changes")
   think?: boolean // injecte le mot-clé Claude "ultrathink" (réflexion étendue) si demandé dans le goal
 }
 
@@ -123,7 +123,8 @@ export function buildAgentPrompt(o: AgentPromptOpts): string {
       `[${o.role} #${o.number}]`,
       o.think ? 'ultrathink — reason deeply and carefully before acting.' : '',
       ROLE_SUMMARY[o.role],
-      `Read your task file \`${o.taskFile}\` (relative to the repo root) and the result files of any dependencies it lists, then do the work now.`,
+      `Read your task file \`${o.taskFile}\` (an ABSOLUTE path — use it verbatim, do not resolve it against your working directory) and the result files of any dependencies it lists, then do the work now.`,
+      `Do your CODE edits with normal repo-relative paths in your current working directory (it is your own git worktree, a full mirror of the repo); ONLY the task/result/review files above use the absolute path.`,
       `You share an Oryon Memory with the other agents (MCP tools): call search_memories FIRST to reuse prior context, and append_memory to record key decisions, interfaces, and gotchas (set author to your agent name) so the others can build on them.`,
       `If \`${o.reviewFile}\` exists, a reviewer asked for changes — read it and address them.`,
       SAFETY,
@@ -139,18 +140,25 @@ export interface ReviewPromptOpts {
   taskFile: string
   resultFile: string
   reviewFile: string
+  /** Worktree du BUILDER (ses éditions y vivent, non commitées). Absent = arbre partagé (projet non-git). */
+  targetWorktree?: string
 }
 
 /** Prompt injecté dans le PTY d'un reviewer après le "done" d'un builder. */
 export function buildReviewPrompt(o: ReviewPromptOpts): string {
+  // Sous worktree-par-agent, le builder a édité dans SON worktree (≠ le tien) : on t'y pointe explicitement.
+  const inspect = o.targetWorktree
+    ? `The builder worked in their OWN git worktree at \`${o.targetWorktree}\` (their edits are there, uncommitted, NOT in your working directory). Inspect them with \`git -C "${o.targetWorktree}" diff\` (and read files under that path).`
+    : `Inspect their changes (git diff in your current working directory).`
   return oneLine(
     [
       `[reviewer #${o.number}]`,
       ROLE_SUMMARY.reviewer,
-      `A builder just finished the task described in \`${o.taskFile}\` (their summary is in \`${o.resultFile}\`).`,
-      `Inspect their changes (git diff), run the project's tests/typecheck/lint if available, and check correctness + conventions.`,
+      `A builder just finished the task described in \`${o.taskFile}\` (their summary is in \`${o.resultFile}\`) — both are ABSOLUTE paths, use them verbatim.`,
+      inspect,
+      `Run the project's tests/typecheck/lint if available, and check correctness + conventions.`,
       SAFETY,
-      `When done, write the file \`${o.reviewFile}\` with, on the FIRST line, exactly "STATUS: approved" if the work is good,`,
+      `When done, write the file \`${o.reviewFile}\` (absolute path) with, on the FIRST line, exactly "STATUS: approved" if the work is good,`,
       `or "STATUS: changes" if fixes are needed — then a "SUMMARY: " line with the specific, real fixes required (your own words; empty if approved).`,
       `Write that review file ONCE, only at the very end. Do not announce it in chat — just write the file.`,
     ].join(' '),

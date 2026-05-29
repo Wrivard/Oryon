@@ -12,10 +12,14 @@ export function registerTerminalsIpc() {
     // quelle que soit la commande stockée en DB (ancienne = "claude" nu).
     let autostart = opts.autostart ?? null
     if (autostart && /^claude(\s|$)/.test(autostart.trim())) {
-      ensureClaudeReady(opts.cwd)
+      ensureClaudeReady(opts.cwd) // trust per-path : claude démarre dans le worktree (opts.cwd)
       autostart = normalizeClaudeAutostart(autostart)
-      // Connecteurs MCP gérés par Oryon (app + projet) injectés à l'agent.
-      const mcpFile = buildProjectMcpConfigForPath(opts.cwd)
+      // ORYON_PROJECT_DIR + config MCP ancrés sur le projet PRINCIPAL (mémoire PARTAGÉE), jamais le worktree.
+      // Le piège #1 : un chemin de worktree n'a pas de ligne `projects` → la config retomberait sur
+      // oryon-mcp-app.json et SCINDERAIT la mémoire en 8 dossiers privés, sans aucune erreur. mainProjectPath
+      // absent (projet non-git, cwd partagé) → repli sur cwd.
+      const mcpAnchor = opts.mainProjectPath ?? opts.cwd
+      const mcpFile = buildProjectMcpConfigForPath(mcpAnchor)
       if (mcpFile && !/--mcp-config/.test(autostart)) autostart += ` --mcp-config '${mcpFile.replace(/'/g, "''")}'`
       // Modèle agent par défaut (réglage app-global), si défini et non déjà présent.
       const model = appSetting('agentModel')

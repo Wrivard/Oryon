@@ -87,6 +87,21 @@ export function Terminal({ term, focused }: { term: TermRow; focused: boolean })
     xterm.open(el)
     setStatus(term.id, 'spawning')
 
+    // Garde fit/resize : le layout 8 panneaux ("eight") monte des cellules cachées / à 0px → fit.fit()
+    // lève « Cannot read properties of undefined (reading 'dimensions') » et émet un resize PTY bidon.
+    const canFit = (): boolean =>
+      el.isConnected && el.offsetParent !== null && el.clientWidth > 0 && el.clientHeight > 0
+    const safeFit = (): void => {
+      if (!canFit()) return
+      try {
+        const dims = fit.proposeDimensions()
+        if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows) || dims.cols < 2 || dims.rows < 1) return
+        fit.fit()
+      } catch {
+        /* pane caché/détaché : le ResizeObserver réessaiera une fois visible */
+      }
+    }
+
     // Command-blocks (OSC 133) : A = ligne de commande, D;<exit> = fin de la commande précédente.
     // Inoffensif si l'intégration shell est désactivée (aucun marqueur n'arrive). Pas actif pendant le TUI claude.
     const blocks: CmdBlock[] = []
@@ -137,15 +152,15 @@ export function Terminal({ term, focused }: { term: TermRow; focused: boolean })
     // Defer fit()+spawn au frame suivant : le conteneur doit être dimensionné AVANT fit().
     let created = false
     const raf = requestAnimationFrame(() => {
-      try {
-        fit.fit()
-      } catch {
-        /* ignore */
-      }
+      safeFit()
       created = true
       window.bridge.terminals.create({
         id: term.id,
-        cwd: term.cwd,
+        // Le shell démarre dans le WORKTREE de l'agent (isolation des éditions + git diff) ; repli sur cwd
+        // (= projet principal) pour les projets non-git.
+        cwd: term.worktree_path ?? term.cwd,
+        // Ancre de la mémoire partagée + du run d'orchestration = projet PRINCIPAL (cf. terminals.ipc).
+        mainProjectPath: term.cwd,
         autostart: term.autostart_cmd,
         cols: xterm.cols,
         rows: xterm.rows,
@@ -155,12 +170,8 @@ export function Terminal({ term, focused }: { term: TermRow; focused: boolean })
     })
 
     const ro = new ResizeObserver(() => {
-      try {
-        fit.fit()
-        if (created) window.bridge.terminals.resize(term.id, xterm.cols, xterm.rows)
-      } catch {
-        /* ignore */
-      }
+      safeFit()
+      if (created && canFit()) window.bridge.terminals.resize(term.id, xterm.cols, xterm.rows)
     })
     ro.observe(el)
 
