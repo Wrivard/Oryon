@@ -13,12 +13,14 @@ import type { VoiceState } from '@shared/types'
 export function useVoice(onText: (text: string) => void, source: string) {
   const [state, setState] = useState<VoiceState>('idle')
   const recRef = useRef<Recorder | null>(null)
+  const startingRef = useRef(false) // garde synchrone : empêche un double-start pendant l'await (anti « capture déjà en cours »)
   const startedAt = useRef(0)
   const onTextRef = useRef(onText)
   onTextRef.current = onText
 
   const start = useCallback(async () => {
-    if (recRef.current) return
+    if (recRef.current || startingRef.current) return
+    startingRef.current = true
     try {
       recRef.current = await startRecording()
       startedAt.current = Date.now()
@@ -26,6 +28,8 @@ export function useVoice(onText: (text: string) => void, source: string) {
     } catch (e) {
       setState('idle')
       window.alert('Micro indisponible : ' + (e as Error).message)
+    } finally {
+      startingRef.current = false
     }
   }, [])
 

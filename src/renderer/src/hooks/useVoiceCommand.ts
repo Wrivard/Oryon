@@ -20,6 +20,7 @@ export function useVoiceCommand(target: CommandTarget) {
   const [state, setState] = useState<CommandState>('idle')
   const [slow, setSlow] = useState(false)
   const recRef = useRef<Recorder | null>(null)
+  const startingRef = useRef(false) // garde synchrone anti double-start (cf. useVoice)
   const selRef = useRef<{ value: string; start: number; end: number } | null>(null)
   const targetRef = useRef(target)
   targetRef.current = target
@@ -30,7 +31,8 @@ export function useVoiceCommand(target: CommandTarget) {
   }, [])
 
   const start = useCallback(async () => {
-    if (recRef.current) return
+    if (recRef.current || startingRef.current) return
+    startingRef.current = true
     selRef.current = targetRef.current.getSelection()
     try {
       recRef.current = await startRecording()
@@ -39,6 +41,8 @@ export function useVoiceCommand(target: CommandTarget) {
       recRef.current = null
       setState('idle')
       window.alert('Micro indisponible : ' + (e as Error).message)
+    } finally {
+      startingRef.current = false
     }
   }, [])
 

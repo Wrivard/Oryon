@@ -52,55 +52,70 @@ let capturing = false // garde-fou : une seule capture micro à la fois (dictée
 export async function startRecording(): Promise<Recorder> {
   if (capturing) throw new Error('Capture déjà en cours')
   capturing = true
-  let stream: MediaStream
+  // Tout le setup est gardé : si N'IMPORTE quelle étape échoue (permission, AudioContext, ScriptProcessor…),
+  // on réinitialise `capturing` et on libère le micro — sinon le flag resterait bloqué à true (« capture déjà en cours »).
+  let stream: MediaStream | null = null
+  let ac: AudioContext | null = null
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     })
+    ac = new AudioContext()
+    const source = ac.createMediaStreamSource(stream)
+    const processor = ac.createScriptProcessor(4096, 1, 1)
+    const mute = ac.createGain()
+    mute.gain.value = 0 // pas de re-diffusion du micro dans les HP
+    const chunks: Float32Array[] = []
+    processor.onaudioprocess = (e) => {
+      chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)))
+    }
+    source.connect(processor)
+    processor.connect(mute)
+    mute.connect(ac.destination)
+    const srcRate = ac.sampleRate
+    const theAc = ac
+    const theStream = stream
+
+    const cleanup = () => {
+      capturing = false
+      try {
+        processor.disconnect()
+        source.disconnect()
+        mute.disconnect()
+      } catch {
+        /* ignore */
+      }
+      theStream.getTracks().forEach((t) => t.stop())
+      void theAc.close()
+    }
+
+    return {
+      cancel: cleanup,
+      stop: async () => {
+        cleanup()
+        const total = chunks.reduce((n, c) => n + c.length, 0)
+        const merged = new Float32Array(total)
+        let off = 0
+        for (const c of chunks) {
+          merged.set(c, off)
+          off += c.length
+        }
+        return resampleTo16k(merged, srcRate)
+      },
+    }
   } catch (e) {
     capturing = false
-    throw e
-  }
-  const ac = new AudioContext()
-  const source = ac.createMediaStreamSource(stream)
-  const processor = ac.createScriptProcessor(4096, 1, 1)
-  const mute = ac.createGain()
-  mute.gain.value = 0 // pas de re-diffusion du micro dans les HP
-  const chunks: Float32Array[] = []
-  processor.onaudioprocess = (e) => {
-    chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)))
-  }
-  source.connect(processor)
-  processor.connect(mute)
-  mute.connect(ac.destination)
-  const srcRate = ac.sampleRate
-
-  const cleanup = () => {
-    capturing = false
     try {
-      processor.disconnect()
-      source.disconnect()
-      mute.disconnect()
+      stream?.getTracks().forEach((t) => t.stop())
     } catch {
       /* ignore */
     }
-    stream.getTracks().forEach((t) => t.stop())
-    void ac.close()
-  }
-
-  return {
-    cancel: cleanup,
-    stop: async () => {
-      cleanup()
-      const total = chunks.reduce((n, c) => n + c.length, 0)
-      const merged = new Float32Array(total)
-      let off = 0
-      for (const c of chunks) {
-        merged.set(c, off)
-        off += c.length
-      }
-      return resampleTo16k(merged, srcRate)
-    },
+    try {
+      await ac?.close()
+    } catch {
+      /* ignore */
+    }
+    throw e
   }
 }
 

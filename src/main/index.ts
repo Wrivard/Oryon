@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, globalShortcut } from 'electron'
+import { app, BrowserWindow, shell, globalShortcut, session } from 'electron'
 import { join } from 'path'
 import { initDb, closeDb } from './db'
 import { registerIpcHandlers } from './ipc'
@@ -66,6 +66,7 @@ app.whenReady().then(() => {
   }
   registerIpcHandlers()
   initMcpExport() // exporte l'état (terminaux/tasks/mailbox) pour le serveur MCP de debug
+  registerMediaPermissions() // autorise le micro (getUserMedia) pour la dictée Voice — sinon « micro indisponible »
   createWindow()
   registerVoiceHotkey()
   if (appSetting('voice.showWidget') !== '0') createVoiceWidget() // widget flottant (activé par défaut)
@@ -75,6 +76,16 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
+
+/**
+ * Autorise les permissions média (micro) pour getUserMedia dans le renderer sandboxé. Sans ça, Chromium
+ * rejette getUserMedia → « Micro indisponible ». On n'autorise QUE l'audio (jamais la caméra/géoloc/etc.).
+ */
+function registerMediaPermissions(): void {
+  const ALLOWED = new Set(['media', 'audioCapture'])
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(ALLOWED.has(permission)))
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => ALLOWED.has(permission))
+}
 
 /** Hotkeys globales de dictée (toggle) et de command mode → notifient le renderer. Défauts configurables. */
 function registerVoiceHotkey(): void {
