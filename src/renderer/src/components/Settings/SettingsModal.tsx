@@ -5,6 +5,7 @@ import { IconButton } from '../ui/IconButton'
 import { cn } from '../../lib/cn'
 import { transitionFast } from '../../lib/motion'
 import { VoiceSettings } from './Voice/VoiceSettings'
+import { ThemePicker } from '../Theme/ThemePicker'
 import type { McpConnector, McpScope, McpTransport, SkillInfo } from '@shared/types'
 
 const MODELS = [
@@ -157,6 +158,12 @@ export function SettingsModal({
                 <div className="min-h-0 flex-1 overflow-y-auto p-4">
                   {tab === 'app' ? (
                     <div className="space-y-6">
+                      <section>
+                        <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-fg-subtle">
+                          Thème
+                        </h3>
+                        <ThemePicker />
+                      </section>
                       <section>
                         <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-fg-subtle">
                           Modèle des agents

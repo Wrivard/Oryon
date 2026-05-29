@@ -9,9 +9,31 @@ interface ThemeContextValue {
 
 const ThemeContext = createContext<ThemeContextValue | null>(null)
 
+const STORAGE_KEY = 'oryon:theme'
+
+function initialThemeId(): string {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY)
+    if (saved && themes[saved]) return saved
+  } catch {
+    /* localStorage indispo */
+  }
+  return DEFAULT_THEME_ID
+}
+
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [themeId, setThemeId] = useState<string>(DEFAULT_THEME_ID)
+  const [themeId, setThemeIdState] = useState<string>(initialThemeId)
   const theme = themes[themeId] ?? themes[DEFAULT_THEME_ID]
+
+  const setThemeId = (id: string): void => {
+    if (!themes[id]) return
+    setThemeIdState(id)
+    try {
+      localStorage.setItem(STORAGE_KEY, id)
+    } catch {
+      /* ignore */
+    }
+  }
 
   // useLayoutEffect : applique avant le premier paint pour éviter tout flash.
   useLayoutEffect(() => {
