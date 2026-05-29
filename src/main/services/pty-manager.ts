@@ -1,5 +1,7 @@
 import * as pty from '@lydell/node-pty'
 import os from 'os'
+import { shellIntegrationArgs } from './shell-integration'
+import { appSetting } from '../ipc/settings.ipc'
 
 interface Term {
   id: string
@@ -64,7 +66,9 @@ export function createTerminal(opts: CreateTerminalOpts): string {
   // Double mount (StrictMode) / réouverture : on repart proprement.
   if (terms.has(opts.id)) killTerminal(opts.id)
 
-  const proc = pty.spawn(DEFAULT_SHELL, [], {
+  // Intégration shell (command-blocks, OSC 133) — activée par défaut, désactivable via réglage.
+  const shellArgs = appSetting('terminal.shellIntegration') === '0' ? [] : shellIntegrationArgs(DEFAULT_SHELL)
+  const proc = pty.spawn(DEFAULT_SHELL, shellArgs, {
     name: 'xterm-color',
     cwd: opts.cwd,
     cols: Math.max(2, opts.cols),

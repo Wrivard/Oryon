@@ -1,41 +1,70 @@
 import { useEffect, useRef } from 'react'
-import { Terminal as Xterm } from '@xterm/xterm'
+import { Terminal as Xterm, type ITheme, type IMarker, type IDecoration } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { useAppStore } from '../../store'
+import { useTheme } from '../Theme/ThemeProvider'
+import type { Theme } from '../Theme/themes'
 import type { Terminal as TermRow } from '@shared/types'
 
-// Thème terminal (Vercel dark). Phase 5 : dériver des tokens de thème.
-const XTERM_THEME = {
-  background: '#141414',
-  foreground: '#ededed',
-  cursor: '#00e599',
-  cursorAccent: '#141414',
-  selectionBackground: 'rgba(0,229,153,0.25)',
-  black: '#1b1b1b',
-  red: '#ff5f56',
-  green: '#00e599',
-  yellow: '#f5a623',
-  blue: '#3b82f6',
-  magenta: '#a855f7',
-  cyan: '#22d3ee',
-  white: '#ededed',
-  brightBlack: '#6e6e6e',
-  brightRed: '#ff8580',
-  brightGreen: '#2bf0ad',
-  brightYellow: '#ffc107',
-  brightBlue: '#60a5fa',
-  brightMagenta: '#c084fc',
-  brightCyan: '#67e8f9',
-  brightWhite: '#ffffff',
+/** Construit le thème xterm depuis le thème Oryon actif (fond/texte/curseur/sélection + couleurs sémantiques). */
+function buildXtermTheme(t: Theme): ITheme {
+  const v = t.vars
+  return {
+    background: v['bg-deep'],
+    foreground: v.fg,
+    cursor: v.accent,
+    cursorAccent: v['bg-deep'],
+    selectionBackground: v['accent-soft'],
+    black: v.bg,
+    red: v.danger,
+    green: v.success,
+    yellow: v.warning,
+    blue: '#3b82f6',
+    magenta: '#a855f7',
+    cyan: '#22d3ee',
+    white: v['fg-muted'],
+    brightBlack: v['fg-subtle'],
+    brightRed: v.danger,
+    brightGreen: v.success,
+    brightYellow: v.warning,
+    brightBlue: '#60a5fa',
+    brightMagenta: '#c084fc',
+    brightCyan: '#67e8f9',
+    brightWhite: v.fg,
+  }
+}
+
+// Command-block (Phase 5) : un marqueur par commande shell, décoré selon son exit-code (OSC 133).
+interface CmdBlock {
+  marker: IMarker
+  el?: HTMLElement
+  exit?: number
+  ts: number
+}
+
+function styleBlock(el: HTMLElement, block: CmdBlock, onClick: () => void): void {
+  const color = block.exit === undefined ? 'var(--fg-subtle)' : block.exit === 0 ? 'var(--success)' : 'var(--danger)'
+  el.style.width = '3px'
+  el.style.borderRadius = '2px'
+  el.style.background = color
+  el.style.cursor = 'pointer'
+  el.title =
+    (block.exit === undefined ? 'commande en cours…' : block.exit === 0 ? '✓ succès (exit 0)' : `✗ échec (exit ${block.exit})`) +
+    ' · ' +
+    new Date(block.ts).toLocaleTimeString()
+  el.onclick = onClick
 }
 
 export function Terminal({ term, focused }: { term: TermRow; focused: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<Xterm | null>(null)
   const setStatus = useAppStore((s) => s.setStatus)
+  const { theme } = useTheme()
+  const themeRef = useRef(theme)
+  themeRef.current = theme
 
   useEffect(() => {
     const el = containerRef.current
@@ -46,7 +75,7 @@ export function Terminal({ term, focused }: { term: TermRow; focused: boolean })
       fontSize: 12,
       lineHeight: 1.25,
       cursorBlink: true,
-      theme: XTERM_THEME,
+      theme: buildXtermTheme(themeRef.current),
       allowProposedApi: true,
       scrollback: 5000,
     })
@@ -58,8 +87,35 @@ export function Terminal({ term, focused }: { term: TermRow; focused: boolean })
     xterm.open(el)
     setStatus(term.id, 'spawning')
 
+    // Command-blocks (OSC 133) : A = ligne de commande, D;<exit> = fin de la commande précédente.
+    // Inoffensif si l'intégration shell est désactivée (aucun marqueur n'arrive). Pas actif pendant le TUI claude.
+    const blocks: CmdBlock[] = []
+    let current: CmdBlock | null = null
+    xterm.parser.registerOscHandler(133, (data) => {
+      const parts = data.split(';')
+      if (parts[0] === 'A') {
+        const marker = xterm.registerMarker(0)
+        if (!marker) return true
+        const block: CmdBlock = { marker, ts: Date.now() }
+        const deco: IDecoration | undefined = xterm.registerDecoration({ marker })
+        deco?.onRender((domEl) => {
+          block.el = domEl
+          styleBlock(domEl, block, () => xterm.scrollToLine(marker.line))
+        })
+        blocks.push(block)
+        current = block
+      } else if (parts[0] === 'D') {
+        const code = parts[1] !== undefined ? parseInt(parts[1], 10) : NaN
+        const b = current
+        if (b && b.exit === undefined) {
+          b.exit = Number.isNaN(code) ? undefined : code
+          if (b.el) styleBlock(b.el, b, () => xterm.scrollToLine(b.marker.line))
+        }
+      }
+      return true
+    })
+
     // Listeners AVANT le spawn (ne pas rater les premiers octets).
-    // State machine heuristique (cf. 03 §6) — best-effort.
     let buf = ''
     let sawShell = false
     let sawClaude = false
@@ -78,8 +134,7 @@ export function Terminal({ term, focused }: { term: TermRow; focused: boolean })
     window.bridge.terminals.onExit(term.id, () => setStatus(term.id, 'exited'))
     const inputSub = xterm.onData((data) => window.bridge.terminals.write(term.id, data))
 
-    // Defer fit()+spawn au frame suivant : le conteneur (cellule de grille) doit être
-    // dimensionné AVANT fit(), sinon le PTY démarre en 2×1 et claude s'affiche cassé.
+    // Defer fit()+spawn au frame suivant : le conteneur doit être dimensionné AVANT fit().
     let created = false
     const raf = requestAnimationFrame(() => {
       try {
@@ -120,6 +175,11 @@ export function Terminal({ term, focused }: { term: TermRow; focused: boolean })
     // term.id only : on ne recrée pas le PTY au re-render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [term.id])
+
+  // Applique le thème xterm quand le thème Oryon change (sans recréer le terminal).
+  useEffect(() => {
+    if (xtermRef.current) xtermRef.current.options.theme = buildXtermTheme(theme)
+  }, [theme])
 
   // Donne le focus clavier à xterm quand la cellule devient active.
   useEffect(() => {
