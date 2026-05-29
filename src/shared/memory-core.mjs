@@ -69,6 +69,31 @@ export function excerptOf(content) {
 
 const ensureDir = (dir) => fs.mkdir(dir, { recursive: true }).catch(() => {})
 
+// Sous Windows (MoveFileEx), fs.rename ÉCHOUE (EPERM/EBUSY) si un autre process a la destination ouverte en
+// lecture — fréquent quand 8 agents lisent/cherchent la même note pendant qu'un autre écrit. On retente.
+async function renameRetry(from, to) {
+  for (let i = 0; i < 6; i++) {
+    try {
+      await fs.rename(from, to)
+      return
+    } catch (e) {
+      const code = e && e.code
+      if ((code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') || i === 5) {
+        await fs.unlink(from).catch(() => {})
+        throw e
+      }
+      await new Promise((r) => setTimeout(r, 25 + i * 30))
+    }
+  }
+}
+let tmpSeq = 0
+/** Écriture atomique (temp + rename-retry) : un lecteur ne voit jamais un fichier à moitié écrit. */
+async function writeAtomic(path, content) {
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${++tmpSeq}`
+  await fs.writeFile(tmp, content, 'utf8')
+  await renameRetry(tmp, path)
+}
+
 /** Lit le brut en distinguant « absent » (ENOENT → existed:false) d'une vraie erreur (propagée). */
 async function readRaw(projectDir, name) {
   try {
@@ -160,9 +185,7 @@ export async function writeMemory(projectDir, name, content, opts = {}) {
       /* n'existe pas encore : pas de conflit */
     }
   }
-  const tmp = `${path}.tmp-${Date.now()}-${process.pid}`
-  await fs.writeFile(tmp, content, 'utf8')
-  await fs.rename(tmp, path)
+  await writeAtomic(path, content)
   let updated = 0
   try {
     updated = (await fs.stat(path)).mtimeMs
@@ -276,7 +299,7 @@ export async function suggestConnections(projectDir, name, limit = 10) {
 export async function renameMemory(projectDir, oldName, newName) {
   const dir = memDir(projectDir)
   const sNew = safeName(newName)
-  await fs.rename(filePath(projectDir, oldName), filePath(projectDir, sNew))
+  await renameRetry(filePath(projectDir, oldName), filePath(projectDir, sNew))
   const oldKey = linkKey(oldName)
   const files = (await fs.readdir(dir)).filter((f) => f.toLowerCase().endsWith('.md'))
   for (const f of files) {
@@ -294,7 +317,7 @@ export async function renameMemory(projectDir, oldName, newName) {
       if (linkKey(targetRaw.split('#')[0].trim()) !== oldKey) return full
       return `[[${sNew}${anchor}${parts.length > 1 ? '|' + parts.slice(1).join('|') : ''}]]`
     })
-    if (next !== c) await fs.writeFile(p, next, 'utf8')
+    if (next !== c) await writeAtomic(p, next)
   }
   return { name: sNew }
 }

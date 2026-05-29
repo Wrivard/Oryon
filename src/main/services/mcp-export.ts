@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { mkdirSync, writeFileSync } from 'fs'
+import { mkdirSync, writeFileSync, renameSync } from 'fs'
 import { join } from 'path'
 import { addDataObserver } from './pty-manager'
 import { getDb } from '../db'
@@ -11,6 +11,14 @@ import { stripAnsi } from './orchestrator/mailbox'
 //   mcp-state/term-<id>.log    → derniers ~20KB de sortie (ANSI nettoyé) par terminal
 
 const MAX_PER_TERM = 20000
+
+// Écriture atomique (temp + rename) : le serveur MCP (et les 8 agents) ne lisent jamais un JSON tronqué.
+let mcpTmpSeq = 0
+function writeFileAtomic(target: string, content: string): void {
+  const tmp = `${target}.tmp-${process.pid}-${++mcpTmpSeq}`
+  writeFileSync(tmp, content)
+  renameSync(tmp, target)
+}
 
 const buffers = new Map<string, string>() // terminalId -> sortie récente nettoyée
 const dirtyTerms = new Set<string>()
@@ -36,16 +44,13 @@ function writeMeta(): void {
   const mailbox = db
     .prepare('SELECT id, workspace_id, from_agent, body, created_at FROM mailbox ORDER BY created_at DESC LIMIT 200')
     .all()
-  writeFileSync(
-    join(dir, 'meta.json'),
-    JSON.stringify({ terminals, tasks, mailbox, updatedAt: Date.now() }, null, 2),
-  )
+  writeFileAtomic(join(dir, 'meta.json'), JSON.stringify({ terminals, tasks, mailbox, updatedAt: Date.now() }, null, 2))
 }
 
 function flushLogs(): void {
   flushTimer = null
   try {
-    for (const id of dirtyTerms) writeFileSync(join(dir, `term-${id}.log`), buffers.get(id) ?? '')
+    for (const id of dirtyTerms) writeFileAtomic(join(dir, `term-${id}.log`), buffers.get(id) ?? '')
     dirtyTerms.clear()
   } catch (e) {
     console.error('[mcp-export] écriture log échouée :', e)

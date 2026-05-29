@@ -1,6 +1,6 @@
 import * as pty from '@lydell/node-pty'
 import os from 'os'
-import { shellIntegrationArgs } from './shell-integration'
+import { shellIntegrationArgs, baseShellArgs } from './shell-integration'
 import { appSetting } from '../ipc/settings.ipc'
 
 interface Term {
@@ -68,7 +68,9 @@ export function createTerminal(opts: CreateTerminalOpts): string {
   if (terms.has(opts.id)) killTerminal(opts.id)
 
   // Intégration shell (command-blocks, OSC 133) — activée par défaut, désactivable via réglage.
-  const shellArgs = appSetting('terminal.shellIntegration') === '0' ? [] : shellIntegrationArgs(DEFAULT_SHELL)
+  // Dans les deux cas on garde -NoProfile pour PowerShell (garde-fou $0 : pas de ré-injection de clé API).
+  const shellArgs =
+    appSetting('terminal.shellIntegration') === '0' ? baseShellArgs(DEFAULT_SHELL) : shellIntegrationArgs(DEFAULT_SHELL)
   const proc = pty.spawn(DEFAULT_SHELL, shellArgs, {
     name: 'xterm-color',
     cwd: opts.cwd,
