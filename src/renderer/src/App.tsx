@@ -9,12 +9,19 @@ import OrchestratorBar from './components/Orchestrator/OrchestratorBar'
 import { IconButton } from './components/ui/IconButton'
 import { SettingsModal } from './components/Settings/SettingsModal'
 import { Toaster } from './components/ui/Toaster'
+import { UpdateToast } from './components/Update/UpdateToast'
 import { useAppStore } from './store'
+import { useUiStore } from './store/ui'
+import { useUpdateStore } from './store/update'
 import { fadeUp, staggerContainer, transition } from './lib/motion'
 
 export default function App() {
   const [railCollapsed, setRailCollapsed] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const settingsOpen = useUiStore((s) => s.settingsOpen)
+  const settingsTab = useUiStore((s) => s.settingsTab)
+  const openSettings = useUiStore((s) => s.openSettings)
+  const closeSettings = useUiStore((s) => s.closeSettings)
+  const updatePhase = useUpdateStore((s) => s.phase)
   const [rightWidth, setRightWidth] = useState(38)
   const dragging = useRef(false)
   const rightWidthRef = useRef(rightWidth)
@@ -37,6 +44,13 @@ export default function App() {
       else useAppStore.getState().addMailbox(e.message)
     })
     return () => window.bridge.orchestrator.offEvent()
+  }, [])
+
+  // Sync auto-update : état poussé par le main → store (toast + page Réglages).
+  useEffect(() => {
+    void window.bridge.update.getState().then((st) => useUpdateStore.getState().apply(st))
+    window.bridge.update.onEvent((ev) => useUpdateStore.getState().apply(ev.state))
+    return () => window.bridge.update.offEvent()
   }, [])
 
   // (Re)chargement des tasks/mailbox au changement de workspace.
@@ -99,10 +113,13 @@ export default function App() {
             <span className="text-[13px] text-fg-muted">{activeWorkspace.name}</span>
           </>
         )}
-        <div className="ml-auto">
-          <IconButton label="Réglages" size="sm" onClick={() => setSettingsOpen(true)}>
+        <div className="relative ml-auto">
+          <IconButton label="Réglages" size="sm" onClick={() => openSettings()}>
             <Settings size={14} />
           </IconButton>
+          {(updatePhase === 'available' || updatePhase === 'downloaded') && (
+            <span className="pointer-events-none absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-accent" />
+          )}
         </div>
       </motion.header>
 
@@ -159,11 +176,13 @@ export default function App() {
 
       <SettingsModal
         open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
+        onClose={closeSettings}
         projectPath={activeWorkspace?.project_path ?? null}
         projectName={activeWorkspace?.name ?? null}
+        initialTab={settingsTab}
       />
       <Toaster />
+      <UpdateToast />
     </div>
   )
 }

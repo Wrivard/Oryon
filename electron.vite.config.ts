@@ -11,12 +11,17 @@ const ORT_DIST = resolve('node_modules/onnxruntime-web/dist')
 const ORT_FILES = ['ort-wasm-simd-threaded.asyncify.mjs', 'ort-wasm-simd-threaded.asyncify.wasm']
 
 function copyOrtWasm() {
+  const copyTo = (destDir: string): void => {
+    mkdirSync(destDir, { recursive: true })
+    for (const f of ORT_FILES) copyFileSync(resolve(ORT_DIST, f), resolve(destDir, f))
+  }
   return {
     name: 'copy-ort-wasm',
     buildStart() {
-      const dest = resolve('src/renderer/public/ort')
-      mkdirSync(dest, { recursive: true })
-      for (const f of ORT_FILES) copyFileSync(resolve(ORT_DIST, f), resolve(dest, f))
+      copyTo(resolve('src/renderer/public/ort')) // dev : servi à /ort/ par le serveur Vite
+    },
+    closeBundle() {
+      copyTo(resolve('out/renderer/ort')) // build : émis à côté d'index.html (servi via app:// en prod)
     },
   }
 }
@@ -30,6 +35,7 @@ export default defineConfig({
   },
   renderer: {
     root: resolve('src/renderer'),
+    // Pas de base:'./' : les chemins absolus /assets/* se résolvent sous app:// via protocol.handle (racine = out/renderer).
     build: {
       rollupOptions: {
         input: { index: resolve('src/renderer/index.html') }

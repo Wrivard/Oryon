@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { X, Plug, Sparkles, SlidersHorizontal, Trash2, Plus, Boxes, Mic } from 'lucide-react'
+import { X, Plug, Sparkles, SlidersHorizontal, Trash2, Plus, Boxes, Mic, Download } from 'lucide-react'
 import { IconButton } from '../ui/IconButton'
 import { cn } from '../../lib/cn'
 import { transitionFast } from '../../lib/motion'
 import { VoiceSettings } from './Voice/VoiceSettings'
+import { UpdatesSettings } from './UpdatesSettings'
 import { ThemePicker } from '../Theme/ThemePicker'
 import type { McpConnector, McpScope, McpTransport, SkillInfo } from '@shared/types'
 
@@ -15,20 +16,26 @@ const MODELS = [
   { v: 'opus', label: 'Opus (max)' },
 ]
 
-type Tab = 'app' | 'project' | 'voice'
+type Tab = 'app' | 'project' | 'voice' | 'updates'
 
 export function SettingsModal({
   open,
   onClose,
   projectPath,
   projectName,
+  initialTab,
 }: {
   open: boolean
   onClose: () => void
   projectPath: string | null
   projectName: string | null
+  initialTab?: string
 }) {
   const [tab, setTab] = useState<Tab>('app')
+  // Ouverture ciblée (ex. toast d'update → onglet « Mises à jour »).
+  useEffect(() => {
+    if (open && initialTab) setTab(initialTab as Tab)
+  }, [open, initialTab])
   const [appSettings, setAppSettings] = useState<Record<string, string>>({})
   const [connectors, setConnectors] = useState<McpConnector[]>([])
   const [skills, setSkills] = useState<SkillInfo[]>([])
@@ -95,6 +102,7 @@ export function SettingsModal({
     { id: 'app', label: 'Application', icon: SlidersHorizontal },
     { id: 'project', label: 'Projet', icon: Boxes },
     { id: 'voice', label: 'Voice', icon: Mic },
+    { id: 'updates', label: 'Mises à jour', icon: Download },
   ]
 
   return (
@@ -156,7 +164,9 @@ export function SettingsModal({
                 <VoiceSettings />
               ) : (
                 <div className="min-h-0 flex-1 overflow-y-auto p-4">
-                  {tab === 'app' ? (
+                  {tab === 'updates' ? (
+                    <UpdatesSettings />
+                  ) : tab === 'app' ? (
                     <div className="space-y-6">
                       <section>
                         <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-fg-subtle">

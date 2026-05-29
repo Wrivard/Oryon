@@ -1,0 +1,118 @@
+{
+  "plan": [
+    {
+      "step": "1. Install static-copy dep",
+      "file": "package.json (devDependencies) + lockfile",
+      "change": "npm i -D vite-plugin-static-copy. This is the deterministic mechanism to emit out/renderer/ort/ (verified: out/renderer/ort does NOT exist today; copyOrtWasm only writes src/renderer/public/ort which Vite never propagates)."
+    },
+    {
+      "step": "2. Fix ORT emit + relative base for app://",
+      "file": "electron.vite.config.ts",
+      "change": "Delete copyOrtWasm(). Add renderer.base:'./' (so index.html references ./assets/... resolvable under app://). Add build.assetsInlineLimit:0. Add plugin viteStaticCopy({targets:[{src:'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.asyncify.{mjs,wasm}', dest:'ort'}]}). After build, out/renderer/ort/*.mjs + *.wasm MUST exist."
+    },
+    {
+      "step": "3. Register privileged app:// scheme",
+      "file": "src/main/index.ts (top, before app.whenReady)",
+      "change": "import {protocol, net} from 'electron'; import {pathToFileURL} from 'url'. Call protocol.registerSchemesAsPrivileged([{scheme:'app', privileges:{standard:true, secure:true, supportFetchAPI:true, stream:true, corsEnabled:true}}]) at module top level (must run before ready)."
+    },
+    {
+      "step": "4. Serve renderer over app:// and switch window loads",
+      "file": "src/main/index.ts (inside whenReady) + src/main/services/voice-widget.ts:47",
+      "change": "Inside whenReady: const RENDERER_ROOT = join(__dirname,'../renderer'); protocol.handle('app', req => { const {pathname}=new URL(req.url); const rel=decodeURIComponent(pathname).replace(/^\\/+/,'')||'index.html'; return net.fetch(pathToFileURL(join(RENDERER_ROOT, rel)).toString()) }). Change index.ts:54 win.loadFile(...) -> win.loadURL('app://oryon/index.html'). Change voice-widget.ts:47 widget.loadFile(...) -> widget.loadURL('app://oryon/index.html#voice-widget'). Keep the isDev ELECTRON_RENDERER_URL branch untouched. Fixes ORT fetch (file:// can't fetch) + Cache Storage secure-context."
+    },
+    {
+      "step": "5. Ship MCP server as extraResource (packaging-critical)",
+      "file": "electron-builder.yml",
+      "change": "Add top-level extraResources:\\n  - from: src/mcp\\n    to: mcp\\n  - from: src/shared\\n    to: shared\\nThis survives the '!src/*' files exclusion (verified: src/mcp/server.mjs is absent from app.asar today -> agents get ENOENT MCP config). Sibling layout preserves server.mjs's '../shared/memory-core.mjs' import."
+    },
+    {
+      "step": "6. Resolve MCP server path from resourcesPath in prod",
+      "file": "src/main/ipc/settings.ipc.ts:81",
+      "change": "Replace const serverPath = join(app.getAppPath(),'src','mcp','server.mjs') with: const serverPath = app.isPackaged ? join(process.resourcesPath,'mcp','server.mjs') : join(app.getAppPath(),'src','mcp','server.mjs'). app already imported (line 1)."
+    },
+    {
+      "step": "7. Enable per-channel update metadata",
+      "file": "electron-builder.yml (top level)",
+      "change": "Add generateUpdatesFilesForAllChannels: true. A 0.2.0-dev.N build then emits dev.yml (not just latest.yml); 0.2.0 emits latest.yml. Without it the dev channel cannot exist. publish block (provider github / owner Wrivard / repo Oryon) stays as-is."
+    },
+    {
+      "step": "8. Add a settings-key helper for channel reads in main",
+      "file": "src/main/ipc/settings.ipc.ts (export setAppSetting)",
+      "change": "export the existing setAppSetting (currently module-private) so the updater service can persist 'update.channel'. appSetting() is already exported (line 22) for reads. No DB migration: app_settings is a generic key/value table (verified persistence-safe in userData)."
+    },
+    {
+      "step": "9. Create the manual branded updater service",
+      "file": "src/main/services/updater.ts (NEW)",
+      "change": "Single AppUpdater (dynamic import('electron-updater')). loadUpdater() guard: if (!app.isPackaged && process.env.ORYON_FORCE_DEV_UPDATE!=='1') return null; set autoDownload=false, autoInstallOnAppQuit=true, forceDevUpdateConfig=(forceDev). applyChannel(ch): for 'dev' -> channel='dev', allowPrerelease=true, allowDowngrade=true; for 'stable' -> channel=null, allowPrerelease=false, allowDowngrade=false. Read initial channel via appSetting('update.channel'). Wire events checking-for-update/update-available/update-not-available/download-progress(throttle ~100ms)/update-downloaded/error -> broadcast a single discriminated 'update:event' to all BrowserWindows (mirror orchestrator:event pattern). Export check/download/install(quitAndInstall(false,true) via setImmediate)/getState/setChannel(persist then re-check)."
+    },
+    {
+      "step": "10. Replace initAutoUpdate with the service",
+      "file": "src/main/index.ts:73,123-132",
+      "change": "Delete initAutoUpdate() (lines 123-132) and the void initAutoUpdate() call (line 73, which uses the wrong autoDownload=true + checkForUpdatesAndNotify native OS toast). Import initUpdater from services/updater and call it in whenReady; optionally kick a silent check ~3s after ready."
+    },
+    {
+      "step": "11. Add updater IPC handlers",
+      "file": "src/main/ipc/updater.ipc.ts (NEW) + src/main/ipc/index.ts",
+      "change": "registerUpdaterIpc(): ipcMain.handle 'update:check','update:download','update:getState','update:setChannel'(ch) and ipcMain.on 'update:install' (fire-and-forget, app quits). Import + call registerUpdaterIpc() in src/main/ipc/index.ts registerIpcHandlers()."
+    },
+    {
+      "step": "12. Extend shared types",
+      "file": "src/shared/types.ts (before BridgeApi closing brace line 445)",
+      "change": "Add UpdateChannel='stable'|'dev'; UpdatePhase='idle'|'checking'|'available'|'up-to-date'|'downloading'|'downloaded'|'error'|'unsupported'; UpdateInfo{version,releaseNotes?,releaseDate?}; UpdateProgress{percent,bytesPerSecond,transferred,total}; UpdaterState{phase,channel,currentVersion,available?,progress?,error?}; UpdateEvent={type:'state';state:UpdaterState}. Add update namespace to BridgeApi: check/download/install/setChannel(ch)/getState/onEvent(cb)/offEvent. Run npm run typecheck (repo convention)."
+    },
+    {
+      "step": "13. Expose bridge.update in preload",
+      "file": "src/preload/index.ts (after voice block ~line 109)",
+      "change": "Add update:{ check:()=>invoke('update:check'), download:()=>invoke('update:download'), install:()=>ipcRenderer.send('update:install'), setChannel:(c)=>invoke('update:setChannel',c), getState:()=>invoke('update:getState'), onEvent:(cb)=>ipcRenderer.on('update:event',(_e,ev)=>cb(ev)), offEvent:()=>ipcRenderer.removeAllListeners('update:event') }. Mirrors voice/orchestrator on/off pattern."
+    },
+    {
+      "step": "14. Create the renderer update store (single source of truth)",
+      "file": "src/renderer/src/store/update.ts (NEW)",
+      "change": "Zustand store {phase,channel,available,progress,error,upToDate} + actions check/download/install/setChannel delegating to window.bridge.update. Both UpdateToast and SettingsModal subscribe here so they never desync."
+    },
+    {
+      "step": "15. Wire update events once at boot",
+      "file": "src/renderer/src/App.tsx (useEffect near line 33) + lift settingsOpen target",
+      "change": "useEffect: window.bridge.update.onEvent(ev => apply ev.state to useUpdateStore); also seed via getState(); return offEvent on cleanup. On phase 'available' fire branded toast. Add a tiny useUiStore (or lift state) exposing openSettings('updates') so the toast 'Détails' action and gear badge can open Settings on the Updates tab."
+    },
+    {
+      "step": "16. Shared branded ProgressBar",
+      "file": "src/renderer/src/components/Update/ProgressBar.tsx (NEW)",
+      "change": "motion.div fill bg-accent on bg-bg-inset track; shows percent + Mo/s + transferred/total (Mo, FR), tabular-nums. Reused by toast + Settings to avoid drift. ProgressInfo fields verified (percent/bytesPerSecond/transferred/total)."
+    },
+    {
+      "step": "17. Branded UpdateToast",
+      "file": "src/renderer/src/components/Update/UpdateToast.tsx (NEW) + App.tsx:166",
+      "change": "Subscribes useUpdateStore; renders only on phase available/downloading/downloaded/error; reuses ToastItem shell (motion enter/exit transitionFast, w-80 rounded-lg border border-border bg-bg-elevated). Actions: 'Installer'->download(), 'Détails'->openSettings('updates'); downloading->ProgressBar; downloaded->'Installer et redémarrer'->install(). Mount inside the Toaster fixed container (fixed bottom-4 right-4 z-[60]) so it stacks; render <UpdateToast/> just above/with <Toaster/>."
+    },
+    {
+      "step": "18. Settings 'Mises à jour' tab",
+      "file": "src/renderer/src/components/Settings/SettingsModal.tsx + src/renderer/src/components/Settings/UpdatesSettings.tsx (NEW)",
+      "change": "Tab type 'app'|'project'|'voice'|'updates' (line 18); add {id:'updates', label:'Mises à jour', icon:Download} to TABS (line 94-98, import Download from lucide-react); add tab==='updates' && <UpdatesSettings/> branch. UpdatesSettings: Version (currentVersion + 'À jour' badge), Canal segmented Stable/Dev bound to useUpdateStore.setChannel (persists via update:setChannel -> app_settings), Vérifier button, release notes as PLAIN whitespace-pre-wrap text (no dangerouslySetInnerHTML — avoid XSS), ProgressBar, Installer/Installer et redémarrer. Reuse Button primitive."
+    },
+    {
+      "step": "19. Gear update badge",
+      "file": "src/renderer/src/App.tsx ~line 102-106",
+      "change": "Wrap the Settings IconButton in a relative div; subscribe const phase=useUpdateStore(s=>s.phase); when phase==='available'||'downloaded' overlay <span className='absolute right-0 top-0 h-1.5 w-1.5 rounded-full bg-accent ring-2 ring-bg-panel'/>. Discoverability after toast auto-dismiss."
+    },
+    {
+      "step": "20. Add release/version scripts",
+      "file": "package.json scripts + scripts/bump-dev.mjs (NEW)",
+      "change": "Add publish:win (electron-vite build && electron-builder --win --publish always), release:stable (npm version patch && publish:win), release:dev (node scripts/bump-dev.mjs && publish:win). bump-dev.mjs deterministically bumps version to X.Y.Z-dev.N (regex on existing -dev.N) so the channel string is always exactly 'dev' -> dev.yml. Keep existing dist:win as --publish never for local-only builds."
+    },
+    {
+      "step": "21. Add dev-app-update.yml for local smoke-test",
+      "file": "dev-app-update.yml (NEW, repo root) — already in electron-builder.yml exclusion list",
+      "change": "provider: github / owner: Wrivard / repo: Oryon / updaterCacheDirName: oryon-updater. Combined with ORYON_FORCE_DEV_UPDATE=1 + forceDevUpdateConfig=true (step 9), lets you exercise toast/progress/Settings against a real prerelease without packaging."
+    },
+    {
+      "step": "22. Build-time verification",
+      "file": "(verification, no file)",
+      "change": "After npm run build: confirm out/renderer/ort/ort-wasm-simd-threaded.asyncify.{mjs,wasm} exist. After a real (non --dir) electron-builder run: confirm release/<v>/win-unpacked/resources/mcp/server.mjs + resources/shared/memory-core.mjs exist, and that latest.yml (stable) or dev.yml (dev) + *Setup.exe + *.blockmap are produced. Note one-time theme/localStorage reset at the file://->app:// origin cutover (acceptable, or move theme to app_settings)."
+    }
+  ],
+  "channelStrategy": "Two electron-updater channels off GitHub Releases, with the channel choice as a RUNTIME decision persisted in SQLite — NOT inferred from the build's own version (critical: the GitHub provider ignores the installed app's prerelease tag; electron-builder issue #8589 / detectUpdateChannel is a no-op on the GitHub provider).\n\nUI contract: 'stable' | 'dev' (shown as Stable / Dev), persisted in app_settings key 'update.channel' (userData/oryon.db, outside the install dir -> survives every update).\n\nMapping to electron-updater (verified against electron-updater@6.8.3 + GitHubProvider.js, which only serves a prerelease when allowPrerelease===true):\n- stable: autoUpdater.channel = null (provider default = latest non-prerelease release / latest.yml), allowPrerelease = false, allowDowngrade = false. A stable client sees ONLY clean 0.x.y releases.\n- dev: autoUpdater.channel = 'dev', allowPrerelease = true, allowDowngrade = true. A dev client is offered dev.yml prereleases AND stable; allowDowngrade=true is REQUIRED so a dev user can fall back to stable (0.2.0-dev.3 -> 0.2.0 is a semver downgrade).\n\nBuild side: stable build = version 0.2.0 (clean) -> electron-builder writes latest.yml + Setup.exe + .blockmap, GitHub release NOT prerelease. dev build = version 0.2.0-dev.N -> with generateUpdatesFilesForAllChannels:true writes dev.yml (channel = the 'dev' prerelease identifier) + installers + .blockmap, published as a GitHub PRE-RELEASE (electron-builder auto-marks prerelease semver as GH pre-release; or set EP_PRE_RELEASE=true). Blockmaps give delta downloads for free.\n\nSwitching in Settings: setChannel(ch) persists the key, reconfigures the singleton (applyChannel), then re-runs checkForUpdates(). Branded flow: autoDownload=false + autoInstallOnAppQuit=true; drive lifecycle via events (NEVER checkForUpdatesAndNotify, which fires the un-brandable native OS notification). User clicks Télécharger -> downloadUpdate(); Installer et redémarrer -> quitAndInstall(false,true).\n\nDistribution caveat (flag, not blocking solo use): Oryon is a PRIVATE repo, so end users without repo access get 401/404 fetching latest.yml/dev.yml/installers. Fine for the owner's solo daily-drive; if distributed wider, make the release repo public or inject a token client-side. Windows NSIS builds are unsigned -> SmartScreen 'unknown publisher' on first install (auto-update itself still works: electron-updater verifies sha512 from the yml + blockmap, not Authenticode). mac dmg unsigned/un-notarized is Gatekeeper-blocked — out of scope (owner is on Windows).",
+  "publishWorkflow": "electron-builder uploads release assets over the GitHub API and needs a token in the ENV — it does NOT read git's cached HTTPS creds and does NOT use gh CLI (gh isn't authed here). Token resolution order: GITHUB_RELEASE_TOKEN -> GH_TOKEN -> GITHUB_TOKEN. PAT needs 'repo' scope (private repo). Tag/version must match (e.g. tag v0.2.0-dev.1 <-> package.json 0.2.0-dev.1) so channel detection + the GH release line up.\n\n=== STABLE (channel 'latest') — daily-driver release ===\nPowerShell (local, since gh isn't authed):\n  $env:GH_TOKEN = '<classic PAT with repo scope>'\n  npm run release:stable\nrelease:stable = `npm version patch && electron-vite build && electron-builder --win --publish always`\n  -> clean version e.g. 0.2.0, emits latest.yml + Oryon-0.2.0-Setup.exe + .blockmap, GitHub release NOT prerelease. Stable clients pick it up.\n\n=== DEV (channel 'dev') — push prerelease while daily-driving stable ===\nPowerShell:\n  $env:GH_TOKEN = '<classic PAT with repo scope>'\n  $env:EP_PRE_RELEASE = 'true'    # mark the GitHub release as pre-release\n  npm run release:dev\nrelease:dev = `node scripts/bump-dev.mjs && electron-vite build && electron-builder --win --publish always`\n  bump-dev.mjs deterministically sets version to X.Y.Z-dev.N (so the channel string is exactly 'dev'); with generateUpdatesFilesForAllChannels:true this emits dev.yml + Oryon-0.2.0-dev.N-Setup.exe + .blockmap as a GH pre-release. Only clients on channel 'dev' (allowPrerelease=true) receive it.\n\n=== Local smoke-test without publishing ===\n  $env:ORYON_FORCE_DEV_UPDATE = '1'    # forceDevUpdateConfig=true -> reads dev-app-update.yml\n  npm run dev\n(needs a published GH (pre)release with a higher version than the dev app's 0.1.0 to see update-available.)\n\n=== Preferred long-term: GitHub Actions (no PAT to manage) ===\n.github/workflows/release.yml on push tags ['v*'], job with permissions: contents: write, steps: checkout / setup-node 20 / npm ci / npm run build / npx electron-builder --publish always with env GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} (auto-provided). The -dev.N suffix on the tag/version is what makes electron-builder write dev.yml and mark the release prerelease; a clean tag writes latest.yml.\n\nDO NOT commit the token. Note: scripts above use --win (owner is on Windows); add --mac/--linux only once signing/notarization is in place.",
+  "persistenceVerdict": "VERDICT: Settings persistence across updates is already structurally SAFE — no new DB work required, with two small hardening items.\n\nWhy it's safe: all durable settings live in %APPDATA%/Oryon/oryon.db (db/index.ts uses join(app.getPath('userData'),'oryon.db'); app.setName('Oryon') at index.ts:13 makes userData deterministic). app_settings, mcp_connectors, voice_* tables are all there. userData is OUTSIDE the install dir (NSIS perMachine:false installs to %LOCALAPPDATA%/Programs/Oryon), and nsis.deleteAppDataOnUninstall:false (electron-builder.yml:56) keeps it even on uninstall. NSIS upgrades replace only the install dir. The migration runner handles forward schema. app_settings is a generic key/value table, so the new 'update.channel' key needs NO migration. CONFIRMED: nothing settings-related is written into the install dir (oryon-mcp-*.json + legacy DB migration both use app.getPath('userData')).\n\nCritical design rule the plan enforces: the update channel MUST live in SQLite app_settings (key 'update.channel'), read by the main-process updater at init via appSetting() — NOT in renderer localStorage or memory. Otherwise a fresh main process after an update wouldn't know whether to follow dev or stable, and a dev user could be silently served stable (or vice versa).\n\nTwo hardening items (low severity):\n(1) ONE-TIME cosmetic reset at the file://->app:// origin cutover (critical packaging fix): localStorage is keyed by origin, so the theme + 'oryon:ortCachePurged' flag (the only non-DB stores) read an empty store on first launch under app://. Not an ongoing problem; app:// localStorage is stable across all future updates. Optional clean fix: move theme into app_settings so it's origin-independent (SettingsModal already round-trips getApp/setApp).\n(2) Persist 'update.channel' via settings.setApp (DB), never localStorage — already in the plan.",
+  "summary": "All 24 findings verified against live code. The plan is a single coherent integration in ~22 ordered steps across packaging, main/IPC, and renderer.\n\nTHREE packaging-critical bugs confirmed and fixed first (they gate a working downloadable build): (a) out/renderer/ort/ is never emitted — copyOrtWasm only writes src/renderer/public/ort which Vite doesn't propagate; fixed via vite-plugin-static-copy + base:'./' + an app:// privileged scheme (file:// can't fetch() the WASM glue). (b) src/mcp/server.mjs is excluded by '!src/*' so packaged agents get an ENOENT MCP config; fixed via extraResources + a resourcesPath-vs-app.getAppPath() switch in settings.ipc.ts:81. (c) only --dir was ever built, so no latest.yml/blockmap/Setup.exe exists; fixed by real publish scripts + generateUpdatesFilesForAllChannels.\n\nTHE one bug that breaks the whole channel feature: the GitHub provider ignores the installed app's own prerelease tag (electron-builder #8589 / detectUpdateChannel no-op), so the running app MUST set channel + allowPrerelease itself from the persisted setting — stable => channel=null/allowPrerelease=false/allowDowngrade=false; dev => channel='dev'/allowPrerelease=true/allowDowngrade=true (verified in GitHubProvider.js: a prerelease is only served when allowPrerelease===true).\n\nBranding: delete initAutoUpdate (autoDownload=true + checkForUpdatesAndNotify -> un-brandable native OS toast); replace with a manual service (autoDownload=false, autoInstallOnAppQuit=true) broadcasting one discriminated update:event stream that a single Zustand store feeds to both a branded UpdateToast and a new Settings 'Mises à jour' tab (mirrors the existing orchestrator:event pattern).\n\nChannel strategy and exact stable/dev publish commands are in their fields. Persistence verdict: already safe (app_settings in userData survives NSIS upgrades + uninstall); the only nuance is a one-time theme/localStorage reset at the file://->app:// origin cutover, and the hard rule that the channel choice must live in SQLite (not localStorage) so the main process knows the channel before any window paints.\n\nRelevant absolute paths: C:\\Users\\Kolyxe\\Desktop\\ide\\electron.vite.config.ts, ...\\electron-builder.yml, ...\\package.json, ...\\src\\main\\index.ts, ...\\src\\main\\services\\voice-widget.ts, ...\\src\\main\\ipc\\settings.ipc.ts, ...\\src\\main\\ipc\\index.ts, ...\\src\\renderer\\src\\lib\\voice.ts, ...\\src\\preload\\index.ts, ...\\src\\shared\\types.ts, ...\\src\\renderer\\src\\store\\toasts.ts, ...\\src\\renderer\\src\\App.tsx, ...\\src\\renderer\\src\\components\\Settings\\SettingsModal.tsx, ...\\src\\renderer\\src\\components\\ui\\Toaster.tsx. NEW files: ...\\src\\main\\services\\updater.ts, ...\\src\\main\\ipc\\updater.ipc.ts, ...\\src\\renderer\\src\\store\\update.ts, ...\\src\\renderer\\src\\components\\Update\\ProgressBar.tsx, ...\\src\\renderer\\src\\components\\Update\\UpdateToast.tsx, ...\\src\\renderer\\src\\components\\Settings\\UpdatesSettings.tsx, ...\\scripts\\bump-dev.mjs, ...\\dev-app-update.yml."
+}

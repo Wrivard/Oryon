@@ -107,6 +107,17 @@ const bridge: BridgeApi = {
     offState: () => ipcRenderer.removeAllListeners('voice:state'),
     setWidget: (visible) => ipcRenderer.invoke('voice:setWidget', visible),
   },
+  update: {
+    check: () => ipcRenderer.invoke('update:check'),
+    download: () => ipcRenderer.invoke('update:download'),
+    install: () => ipcRenderer.send('update:install'),
+    setChannel: (channel) => ipcRenderer.invoke('update:setChannel', channel),
+    getState: () => ipcRenderer.invoke('update:getState'),
+    onEvent: (cb) => {
+      ipcRenderer.on('update:event', (_e: IpcRendererEvent, ev) => cb(ev))
+    },
+    offEvent: () => ipcRenderer.removeAllListeners('update:event'),
+  },
   memory: {
     list: (projectPath) => ipcRenderer.invoke('memory:list', projectPath),
     read: (projectPath, name) => ipcRenderer.invoke('memory:read', projectPath, name),

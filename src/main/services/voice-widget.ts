@@ -44,7 +44,7 @@ export function createVoiceWidget(): void {
 
   const url = process.env['ELECTRON_RENDERER_URL']
   if (url) widget.loadURL(`${url}#voice-widget`)
-  else widget.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'voice-widget' })
+  else widget.loadURL('app://oryon/index.html#voice-widget') // prod : app:// (cf. index.ts)
 
   widget.once('ready-to-show', () => widget?.show())
   widget.on('closed', () => (widget = null))

@@ -13,7 +13,7 @@ function getAppSettings(): Record<string, string> {
   for (const r of rows) out[r.key] = r.value
   return out
 }
-function setAppSetting(key: string, value: string): void {
+export function setAppSetting(key: string, value: string): void {
   getDb()
     .prepare('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
     .run(key, value)
@@ -78,7 +78,10 @@ export function buildProjectMcpConfigForPath(projectPath: string): string | null
     .all(projectId ?? null) as Array<Record<string, unknown>>
   const mcpServers: Record<string, unknown> = {}
   // Serveur Oryon : outils mémoire partagée + état, adressés sur le projet travaillé (déterministe via env).
-  const serverPath = join(app.getAppPath(), 'src', 'mcp', 'server.mjs')
+  // En prod, server.mjs + son cœur partagé sont copiés en ressources (extraResources), hors asar.
+  const serverPath = app.isPackaged
+    ? join(process.resourcesPath, 'mcp', 'server.mjs')
+    : join(app.getAppPath(), 'src', 'mcp', 'server.mjs')
   mcpServers['oryon'] = { command: 'node', args: [serverPath], env: { ORYON_PROJECT_DIR: projectPath } }
   for (const r of rows) {
     const name = String(r.name)

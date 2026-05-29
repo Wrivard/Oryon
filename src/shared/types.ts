@@ -181,6 +181,41 @@ export interface MemorySearchHit {
   excerpt: string
   score: number
 }
+
+// ---- Auto-update (canaux stable/dev, UI brandée) ----
+export type UpdateChannel = 'stable' | 'dev'
+export type UpdatePhase =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'up-to-date'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+  | 'unsupported' // dev / non packagé
+export interface UpdateInfo {
+  version: string
+  releaseNotes?: string
+  releaseDate?: string
+}
+export interface UpdateProgress {
+  percent: number
+  bytesPerSecond: number
+  transferred: number
+  total: number
+}
+export interface UpdaterState {
+  phase: UpdatePhase
+  channel: UpdateChannel
+  currentVersion: string
+  available?: UpdateInfo
+  progress?: UpdateProgress
+  error?: string
+}
+export interface UpdateEvent {
+  type: 'state'
+  state: UpdaterState
+}
 /** Statistique « mot le plus corrigé » (agrégée sur voice_corrections_log). */
 export interface VoiceCorrectionStat {
   word: string
@@ -373,6 +408,16 @@ export interface BridgeApi {
     fileAtRef: (projectPath: string, file: string, ref: string) => Promise<{ content: string; language: string }>
     /** Restaure un fichier à une révision (revert). */
     revertFile: (projectPath: string, file: string, ref: string) => Promise<void>
+  }
+  /** Auto-update (canaux stable/dev). */
+  update: {
+    check: () => Promise<UpdaterState>
+    download: () => Promise<void>
+    install: () => void
+    setChannel: (channel: UpdateChannel) => Promise<UpdaterState>
+    getState: () => Promise<UpdaterState>
+    onEvent: (cb: (ev: UpdateEvent) => void) => void
+    offEvent: () => void
   }
   /** Oryon Memory (Phase 5) : notes markdown locales (.oryon/memory) + graphe de [[wikilinks]], partagées avec les agents (MCP). */
   memory: {

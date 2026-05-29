@@ -1,5 +1,6 @@
-import { app, BrowserWindow, shell, globalShortcut, session } from 'electron'
+import { app, BrowserWindow, shell, globalShortcut, session, protocol, net } from 'electron'
 import { join } from 'path'
+import { pathToFileURL } from 'url'
 import { initDb, closeDb } from './db'
 import { registerIpcHandlers } from './ipc'
 import { killAllTerminals } from './services/pty-manager'
@@ -8,12 +9,19 @@ import { closeEditorWatcher } from './ipc/editor.ipc'
 import { initMcpExport } from './services/mcp-export'
 import { appSetting } from './ipc/settings.ipc'
 import { createVoiceWidget, destroyVoiceWidget } from './services/voice-widget'
+import { initUpdater } from './services/updater'
 
 // Nom d'app déterministe → userData = %APPDATA%/Oryon (la DB y migre depuis BridgeForge, cf. db/index.ts).
 app.setName('Oryon')
 
 // Port debug CDP — DEV UNIQUEMENT (jamais dans un build de production). Permet l'inspection/vérif headless.
 if (process.env.NODE_ENV === 'development') app.commandLine.appendSwitch('remote-debugging-port', '9222')
+
+// Schéma privilégié app:// (doit être déclaré AVANT app.ready) : sert le renderer packagé avec fetch/ONNX/
+// CacheStorage fonctionnels (contrairement à file://). Voir le handler dans whenReady.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } },
+])
 
 const isDev = process.env.NODE_ENV === 'development'
 
@@ -51,7 +59,8 @@ function createWindow() {
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    win.loadFile(join(__dirname, '../renderer/index.html'))
+    // Prod : servi via le schéma privilégié app:// (et NON file://) pour que fetch()/ONNX/CacheStorage marchent.
+    win.loadURL('app://oryon/index.html')
   }
 }
 
@@ -67,10 +76,16 @@ app.whenReady().then(() => {
   registerIpcHandlers()
   initMcpExport() // exporte l'état (terminaux/tasks/mailbox) pour le serveur MCP de debug
   registerMediaPermissions() // autorise le micro (getUserMedia) pour la dictée Voice — sinon « micro indisponible »
+  // Sert le renderer packagé via app:// (out/renderer/*). En dev on utilise ELECTRON_RENDERER_URL (intact).
+  const rendererRoot = join(__dirname, '../renderer')
+  protocol.handle('app', (req) => {
+    const rel = decodeURIComponent(new URL(req.url).pathname).replace(/^\/+/, '') || 'index.html'
+    return net.fetch(pathToFileURL(join(rendererRoot, rel)).toString())
+  })
   createWindow()
   registerVoiceHotkey()
   if (appSetting('voice.showWidget') !== '0') createVoiceWidget() // widget flottant (activé par défaut)
-  void initAutoUpdate() // auto-update (electron-updater) — uniquement en build packagé
+  void initUpdater() // auto-update brandé (canaux stable/dev) — no-op hors build packagé
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -112,22 +127,6 @@ function registerVoiceHotkey(): void {
     if (commandAccel && commandAccel !== toggleAccel) globalShortcut.register(commandAccel, () => broadcast('voice:command-key'))
   } catch (e) {
     console.error('[voice] enregistrement hotkey command mode échoué :', (e as Error).message)
-  }
-}
-
-/**
- * Auto-update via electron-updater (GitHub Releases, cf. electron-builder.yml). Actif UNIQUEMENT en build
- * packagé : en dev, app.isPackaged est false → on ne fait rien (pas d'app-update.yml de toute façon).
- * Import dynamique pour ne pas charger le module hors prod.
- */
-async function initAutoUpdate(): Promise<void> {
-  if (!app.isPackaged) return
-  try {
-    const { autoUpdater } = await import('electron-updater')
-    autoUpdater.autoDownload = true
-    await autoUpdater.checkForUpdatesAndNotify()
-  } catch (e) {
-    console.error('[update] échec de la vérification des mises à jour :', (e as Error).message)
   }
 }
 
