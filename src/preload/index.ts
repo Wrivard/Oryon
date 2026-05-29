@@ -107,6 +107,13 @@ const bridge: BridgeApi = {
     offState: () => ipcRenderer.removeAllListeners('voice:state'),
     setWidget: (visible) => ipcRenderer.invoke('voice:setWidget', visible),
   },
+  memory: {
+    list: (projectPath) => ipcRenderer.invoke('memory:list', projectPath),
+    read: (projectPath, name) => ipcRenderer.invoke('memory:read', projectPath, name),
+    write: (projectPath, name, content) => ipcRenderer.invoke('memory:write', projectPath, name, content),
+    delete: (projectPath, name) => ipcRenderer.invoke('memory:delete', projectPath, name),
+    graph: (projectPath) => ipcRenderer.invoke('memory:graph', projectPath),
+  },
   source: {
     status: (projectPath) => ipcRenderer.invoke('source:status', projectPath),
     diff: (projectPath, file) => ipcRenderer.invoke('source:diff', projectPath, file),

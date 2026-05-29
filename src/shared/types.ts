@@ -157,6 +157,24 @@ export interface VoiceHistoryItem {
   created_at: number | null
 }
 export type VoiceState = 'idle' | 'listening' | 'processing'
+
+// ---- BridgeMemory (Phase 5) : knowledge graph local en markdown + [[wikilinks]] ----
+export interface MemoryNote {
+  name: string // nom de fichier sans .md (identifiant)
+  title: string // 1er titre `# …` ou le nom
+  excerpt: string
+  links: string[] // cibles de [[wikilinks]] sortants
+  updated: number // mtime ms
+}
+export interface MemoryGraphNode {
+  id: string
+  title: string
+  exists: boolean // false = lien non résolu (note fantôme à créer)
+}
+export interface MemoryGraph {
+  nodes: MemoryGraphNode[]
+  edges: { from: string; to: string }[]
+}
 /** Statistique « mot le plus corrigé » (agrégée sur voice_corrections_log). */
 export interface VoiceCorrectionStat {
   word: string
@@ -347,6 +365,14 @@ export interface BridgeApi {
     fileAtRef: (projectPath: string, file: string, ref: string) => Promise<{ content: string; language: string }>
     /** Restaure un fichier à une révision (revert). */
     revertFile: (projectPath: string, file: string, ref: string) => Promise<void>
+  }
+  /** BridgeMemory (Phase 5) : notes markdown locales (.oryon/memory) + graphe de [[wikilinks]]. */
+  memory: {
+    list: (projectPath: string) => Promise<MemoryNote[]>
+    read: (projectPath: string, name: string) => Promise<string>
+    write: (projectPath: string, name: string, content: string) => Promise<MemoryNote>
+    delete: (projectPath: string, name: string) => Promise<void>
+    graph: (projectPath: string) => Promise<MemoryGraph>
   }
   settings: {
     /** Réglages app-global (clé/valeur). */

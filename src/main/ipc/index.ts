@@ -7,6 +7,7 @@ import { registerOrchestratorIpc } from './orchestrator.ipc'
 import { registerSourceIpc } from './source.ipc'
 import { registerSettingsIpc } from './settings.ipc'
 import { registerVoiceIpc } from './voice.ipc'
+import { registerMemoryIpc } from './memory.ipc'
 
 export function registerIpcHandlers() {
   registerWorkspacesIpc()
@@ -18,4 +19,5 @@ export function registerIpcHandlers() {
   registerSourceIpc()
   registerSettingsIpc()
   registerVoiceIpc()
+  registerMemoryIpc()
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
-import { FileCode, Globe, ListTree, GitCompareArrows, KanbanSquare, type LucideIcon } from 'lucide-react'
+import { FileCode, Globe, ListTree, GitCompareArrows, KanbanSquare, Network, type LucideIcon } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { transition } from '../../lib/motion'
 import { useAppStore } from '../../store'
@@ -9,6 +9,7 @@ import { BrowserPanel } from './BrowserPanel'
 import { TasksPanel } from './TasksPanel'
 import { PlanPanel } from './PlanPanel'
 import { SourcePanel } from './SourcePanel'
+import { MemoryPanel } from './MemoryPanel'
 
 interface TabDef {
   id: string
@@ -21,6 +22,7 @@ const TABS: TabDef[] = [
   { id: 'browser', label: 'Browser', icon: Globe },
   { id: 'plan', label: 'Plan', icon: ListTree },
   { id: 'source', label: 'Source', icon: GitCompareArrows },
+  { id: 'memory', label: 'Memory', icon: Network },
   { id: 'tasks', label: 'Tasks', icon: KanbanSquare },
 ]
 
@@ -86,6 +88,12 @@ export default function RightPanel() {
             <div className={cn('absolute inset-0', active === 'source' ? 'block' : 'hidden')}>
               <SourcePanel key={workspace.id} projectPath={workspace.project_path} active={active === 'source'} />
             </div>
+
+            {active === 'memory' && (
+              <div className="absolute inset-0">
+                <MemoryPanel key={workspace.id} projectPath={workspace.project_path} />
+              </div>
+            )}
 
             {active === 'plan' && (
               <div className="absolute inset-0">
