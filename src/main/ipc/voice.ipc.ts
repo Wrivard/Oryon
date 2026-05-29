@@ -1,0 +1,174 @@
+import { ipcMain, BrowserWindow } from 'electron'
+import { v4 as uuid } from 'uuid'
+import { getDb } from '../db'
+import { createVoiceWidget, destroyVoiceWidget, sendVoiceState } from '../services/voice-widget'
+import { learnFromEdit } from '../services/orchestrator/learn'
+import { voiceCliOneShot } from '../services/orchestrator/cli'
+import { formatSystem, COMMAND_SYSTEM } from '../services/orchestrator/roles'
+import { appSetting } from './settings.ipc'
+import type {
+  VoiceReplacement,
+  VoiceHistoryItem,
+  VoiceState,
+  VoiceVocab,
+  VoiceSnippet,
+  VoiceStats,
+} from '../../shared/types'
+
+function listReplacements(): VoiceReplacement[] {
+  return getDb()
+    .prepare('SELECT * FROM voice_replacements ORDER BY created_at DESC')
+    .all() as VoiceReplacement[]
+}
+
+// Exporté : l'auto-add (learn.ts, INC4) ajoute des remplacements appris (source='auto') côté main.
+export function addReplacement(spoken: string, replacement: string, source = 'manual'): VoiceReplacement {
+  const row: VoiceReplacement = { id: uuid(), spoken, replacement, source, created_at: Date.now() }
+  const db = getDb()
+  // upsert sur la clé spoken (index unique NOCASE migration 007) : on remplace l'éventuelle règle existante.
+  db.prepare('DELETE FROM voice_replacements WHERE spoken = ? COLLATE NOCASE').run(spoken)
+  db.prepare(
+    'INSERT INTO voice_replacements (id, spoken, replacement, source, created_at) VALUES (@id, @spoken, @replacement, @source, @created_at)',
+  ).run(row)
+  return row
+}
+
+function listHistory(limit = 50): VoiceHistoryItem[] {
+  return getDb()
+    .prepare('SELECT * FROM voice_history ORDER BY created_at DESC LIMIT ?')
+    .all(limit) as VoiceHistoryItem[]
+}
+
+function listVocab(): VoiceVocab[] {
+  return (
+    getDb()
+      .prepare('SELECT * FROM voice_vocab ORDER BY starred DESC, created_at DESC')
+      .all() as Array<Record<string, unknown>>
+  ).map((r) => ({ ...r, starred: !!r.starred })) as VoiceVocab[]
+}
+
+// Exporté : l'auto-add (learn.ts, INC4) ajoute des termes appris (source='auto') côté main.
+export function addVocab(term: string, starred = false, source = 'manual'): VoiceVocab {
+  const row: VoiceVocab = { id: uuid(), term, starred, source, created_at: Date.now() }
+  getDb()
+    .prepare(
+      `INSERT INTO voice_vocab (id, term, starred, source, created_at) VALUES (@id, @term, @s, @source, @created_at)
+       ON CONFLICT(term) DO UPDATE SET starred = @s, source = @source`,
+    )
+    .run({ ...row, s: starred ? 1 : 0 })
+  return row
+}
+
+function listSnippets(): VoiceSnippet[] {
+  return getDb().prepare('SELECT * FROM voice_snippets ORDER BY created_at DESC').all() as VoiceSnippet[]
+}
+function addSnippet(trigger: string, expansion: string): VoiceSnippet {
+  const row: VoiceSnippet = { id: uuid(), trigger, expansion, created_at: Date.now() }
+  const db = getDb()
+  db.prepare('DELETE FROM voice_snippets WHERE trigger = ? COLLATE NOCASE').run(trigger)
+  db.prepare(
+    'INSERT INTO voice_snippets (id, trigger, expansion, created_at) VALUES (@id, @trigger, @expansion, @created_at)',
+  ).run(row)
+  return row
+}
+
+/** Agrège le tableau de bord d'usage Voice depuis voice_history + voice_vocab + voice_corrections_log. */
+function computeStats(): VoiceStats {
+  const db = getDb()
+  const h = db
+    .prepare('SELECT COUNT(*) AS c, COALESCE(SUM(word_count), 0) AS w FROM voice_history')
+    .get() as { c: number; w: number }
+  const vocabCount = db.prepare('SELECT COUNT(*) AS c FROM voice_vocab').pluck().get() as number
+  const autoLearnedCount = db
+    .prepare("SELECT COUNT(*) AS c FROM voice_vocab WHERE source = 'auto'")
+    .pluck()
+    .get() as number
+  // « Mots les plus corrigés » : injected = formes mal transcrites (mon schéma migration 007). Top 5.
+  let mostCorrected: { word: string; count: number }[] = []
+  try {
+    mostCorrected = db
+      .prepare(
+        `SELECT injected AS word, COUNT(*) AS count FROM voice_corrections_log
+         WHERE injected IS NOT NULL AND TRIM(injected) != '' GROUP BY injected ORDER BY count DESC LIMIT 5`,
+      )
+      .all() as { word: string; count: number }[]
+  } catch {
+    mostCorrected = []
+  }
+  const dictationCount = h.c
+  const totalWords = h.w
+  return {
+    dictationCount,
+    totalWords,
+    avgWords: dictationCount ? Math.round((totalWords / dictationCount) * 10) / 10 : 0,
+    timeSavedSec: Math.round((totalWords / 130) * 60),
+    autoLearnedCount,
+    vocabCount,
+    mostCorrected,
+  }
+}
+
+export function registerVoiceIpc(): void {
+  ipcMain.handle('voice:stats', (): VoiceStats => computeStats())
+  ipcMain.handle('voice:listReplacements', (): VoiceReplacement[] => listReplacements())
+  ipcMain.handle('voice:addReplacement', (_e, spoken: string, replacement: string): VoiceReplacement =>
+    addReplacement(spoken, replacement),
+  )
+  ipcMain.handle('voice:deleteReplacement', (_e, id: string): void => {
+    getDb().prepare('DELETE FROM voice_replacements WHERE id = ?').run(id)
+  })
+  ipcMain.handle(
+    'voice:addHistory',
+    (_e, item: { text: string; durationMs: number; wordCount: number; source: string }): void => {
+      getDb()
+        .prepare(
+          'INSERT INTO voice_history (id, text, duration_ms, word_count, source, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        )
+        .run(uuid(), item.text, item.durationMs, item.wordCount, item.source, Date.now())
+    },
+  )
+  ipcMain.handle('voice:listHistory', (_e, limit?: number): VoiceHistoryItem[] => listHistory(limit))
+  ipcMain.handle('voice:listVocab', (): VoiceVocab[] => listVocab())
+  ipcMain.handle('voice:addVocab', (_e, term: string, starred?: boolean, source?: string): VoiceVocab =>
+    addVocab(term, starred, source),
+  )
+  ipcMain.handle('voice:listSnippets', (): VoiceSnippet[] => listSnippets())
+  ipcMain.handle('voice:addSnippet', (_e, trigger: string, expansion: string): VoiceSnippet =>
+    addSnippet(trigger, expansion),
+  )
+  ipcMain.handle('voice:deleteSnippet', (_e, id: string): void => {
+    getDb().prepare('DELETE FROM voice_snippets WHERE id = ?').run(id)
+  })
+  // Auto-add ✨ (INC4) : apprend depuis une édition du texte dicté (diff + classifieur $0, coupé en privacy).
+  ipcMain.handle('voice:learnFromEdit', (_e, injected: string, edited: string, context: string) =>
+    learnFromEdit(injected, edited, context),
+  )
+  // Smart formatting Medium/High (INC6) : nettoyage via CLI $0. Coupé en mode privacy ('' → repli Light côté renderer).
+  ipcMain.handle('voice:format', async (_e, text: string, level: 'medium' | 'high'): Promise<string> => {
+    if (!text.trim() || (appSetting('voice.privacy') ?? '0') === '1') return ''
+    return voiceCliOneShot(formatSystem(level === 'high' ? 'high' : 'medium'), text)
+  })
+  // Command mode (INC9) : la voix transforme la sélection / insère inline, via CLI $0. Coupé en mode privacy.
+  ipcMain.handle('voice:command', async (_e, command: string, selection: string): Promise<string> => {
+    if (!command.trim() || (appSetting('voice.privacy') ?? '0') === '1') return ''
+    return voiceCliOneShot(COMMAND_SYSTEM, JSON.stringify({ command, selection: selection ?? '' }))
+  })
+  ipcMain.handle('voice:toggleVocabStar', (_e, id: string, starred: boolean): void => {
+    getDb().prepare('UPDATE voice_vocab SET starred = ? WHERE id = ?').run(starred ? 1 : 0, id)
+  })
+  ipcMain.handle('voice:deleteVocab', (_e, id: string): void => {
+    getDb().prepare('DELETE FROM voice_vocab WHERE id = ?').run(id)
+  })
+
+  // Widget → toggle : rediffuse à toutes les fenêtres (la principale, via useVoice, démarre/arrête).
+  ipcMain.on('voice:requestToggle', () => {
+    for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send('voice:toggle')
+  })
+  // Fenêtre principale → état courant → widget.
+  ipcMain.on('voice:stateChanged', (_e, state: VoiceState) => sendVoiceState(state))
+  // Settings : afficher/cacher le widget flottant.
+  ipcMain.handle('voice:setWidget', (_e, visible: boolean): void => {
+    if (visible) createVoiceWidget()
+    else destroyVoiceWidget()
+  })
+}

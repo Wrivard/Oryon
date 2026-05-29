@@ -1,0 +1,13 @@
+node_modules
+dist
+out
+.env
+*.db
+
+# Local / machine-specific
+.claude/
+.oryon/
+*.tsbuildinfo
+final_a11y_audit.txt
+.DS_Store
+Thumbs.db

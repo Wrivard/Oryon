@@ -1,0 +1,108 @@
+import { app, BrowserWindow, shell, globalShortcut } from 'electron'
+import { join } from 'path'
+import { initDb, closeDb } from './db'
+import { registerIpcHandlers } from './ipc'
+import { killAllTerminals } from './services/pty-manager'
+import { stopAllDevServers } from './services/dev-server'
+import { closeEditorWatcher } from './ipc/editor.ipc'
+import { initMcpExport } from './services/mcp-export'
+import { appSetting } from './ipc/settings.ipc'
+import { createVoiceWidget, destroyVoiceWidget } from './services/voice-widget'
+
+// Nom d'app déterministe → userData = %APPDATA%/Oryon (la DB y migre depuis BridgeForge, cf. db/index.ts).
+app.setName('Oryon')
+
+// Port debug CDP — DEV UNIQUEMENT (jamais dans un build de production). Permet l'inspection/vérif headless.
+if (process.env.NODE_ENV === 'development') app.commandLine.appendSwitch('remote-debugging-port', '9222')
+
+const isDev = process.env.NODE_ENV === 'development'
+
+function createWindow() {
+  const win = new BrowserWindow({
+    title: 'Oryon',
+    icon: join(app.getAppPath(), 'app-logo.png'),
+    width: 1400,
+    height: 900,
+    minWidth: 800,
+    minHeight: 600,
+    backgroundColor: '#0a0a0f',
+    show: false,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      // sandbox actif : le preload n'utilise que contextBridge/ipcRenderer (aucun module Node),
+      // et tout le travail natif (SQLite, node-pty…) vit dans le main process.
+      sandbox: true,
+      // <webview> pour la preview localhost du panneau Browser (Phase 2).
+      webviewTag: true
+    }
+  })
+
+  win.on('ready-to-show', () => win.show())
+  // La fenêtre principale fermée → fermer aussi le widget flottant (sinon l'app ne quitte pas).
+  win.on('closed', () => destroyVoiceWidget())
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  } else {
+    win.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+}
+
+app.whenReady().then(() => {
+  try {
+    initDb()
+  } catch (err) {
+    // La DB est une exigence Phase 0 ("DB créée") : échec = on quitte plutôt que tourner cassé.
+    console.error('[DB] Erreur fatale à l\'initialisation :', err)
+    app.quit()
+    return
+  }
+  registerIpcHandlers()
+  initMcpExport() // exporte l'état (terminaux/tasks/mailbox) pour le serveur MCP de debug
+  createWindow()
+  registerVoiceHotkey()
+  if (appSetting('voice.showWidget') !== '0') createVoiceWidget() // widget flottant (activé par défaut)
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
+})
+
+/** Hotkeys globales de dictée (toggle) et de command mode → notifient le renderer. Défauts configurables. */
+function registerVoiceHotkey(): void {
+  const broadcast = (channel: string): void => {
+    for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send(channel)
+  }
+  const toggleAccel = appSetting('voice.hotkey.toggle') || appSetting('voice.hotkey') || 'CommandOrControl+Shift+Space'
+  const commandAccel = appSetting('voice.hotkey.command') || 'CommandOrControl+Shift+.'
+  try {
+    globalShortcut.register(toggleAccel, () => broadcast('voice:toggle'))
+  } catch (e) {
+    console.error('[voice] enregistrement hotkey dictée échoué :', (e as Error).message)
+  }
+  try {
+    if (commandAccel && commandAccel !== toggleAccel) globalShortcut.register(commandAccel, () => broadcast('voice:command-key'))
+  } catch (e) {
+    console.error('[voice] enregistrement hotkey command mode échoué :', (e as Error).message)
+  }
+}
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit()
+})
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
+  destroyVoiceWidget()
+  killAllTerminals()
+  stopAllDevServers()
+  closeEditorWatcher()
+  closeDb()
+})

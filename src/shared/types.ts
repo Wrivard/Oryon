@@ -1,0 +1,401 @@
+// Source unique de vérité pour les types partagés main <-> preload <-> renderer.
+
+export interface Workspace {
+  id: string
+  name: string
+  project_path: string
+  color: string | null
+  layout: string
+  created_at: number | null
+  last_opened: number | null
+  /** Commande de dev pour le panneau Browser (défaut "npm run dev"). Migration 002. */
+  dev_command: string | null
+}
+
+/** Noeud d'arbre de fichiers (children chargés à la demande). */
+export interface TreeNode {
+  name: string
+  path: string
+  type: 'dir' | 'file'
+}
+
+export interface FileContent {
+  content: string
+  language: string
+}
+
+export interface FsEvent {
+  type: 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir'
+  path: string
+}
+
+export interface DevServerResult {
+  port: number | null
+  running: boolean
+}
+
+// ---- Orchestrateur (Phase 3) ----
+
+export type AgentRole = 'builder' | 'reviewer' | 'scout' | 'coordinator'
+export type TaskStatus = 'proposed' | 'todo' | 'in-progress' | 'in-review' | 'complete' | 'cancelled'
+
+/** Mode de soumission de l'orchestrateur : Direct (local), AI (LLM + routage), Plan (propose, à approuver). */
+export type SubmitMode = 'direct' | 'ai' | 'plan'
+
+/** Ligne de la table `tasks` (colonnes title/role/workspace_id/depends_on ajoutées en migration 003). */
+export interface Task {
+  id: string
+  project_id: string
+  workspace_id: string | null
+  title: string | null
+  role: string | null
+  instructions: string
+  knowledge: string | null
+  depends_on: string | null // JSON array d'ids de tasks
+  status: TaskStatus
+  assigned_terminal_id: string | null
+  created_at: number | null
+  updated_at: number | null
+}
+
+/** Tâche produite par le decomposer (avant persistance ; dependsOn = index dans le plan). */
+export interface PlanTask {
+  title: string
+  instructions: string
+  role: 'builder' | 'scout'
+  dependsOn: number[]
+}
+
+/** Résultat de l'étage de compréhension d'intention (router AVANT décomposition). */
+export interface IntentResult {
+  restatement: string
+  intent: 'code' | 'broadcast' | 'question'
+  broadcastPrompt: string
+}
+
+// ---- Source (diffs / git / versions) ----
+export type SourceFileStatus = 'M' | 'A' | 'D' | 'R' | '?'
+export interface SourceFileChange {
+  path: string // relatif à la racine du projet (séparateurs '/')
+  oldPath?: string // chemin source pour un renommage (status 'R')
+  status: SourceFileStatus
+  additions: number
+  deletions: number
+  staged: boolean
+}
+export interface SourceStatus {
+  isGit: boolean
+  files: SourceFileChange[]
+}
+export interface SourceDiff {
+  path: string
+  original: string // contenu à HEAD (vide si nouveau)
+  modified: string // contenu courant du working tree (vide si supprimé)
+  language: string
+  status: SourceFileStatus
+}
+export interface GitCommit {
+  hash: string
+  shortHash: string
+  author: string
+  date: string
+  subject: string
+}
+
+// ---- Settings (app-global + project) ----
+export type McpScope = 'app' | 'project'
+export type McpTransport = 'stdio' | 'http'
+export interface McpConnector {
+  id: string
+  name: string
+  scope: McpScope
+  project_id: string | null
+  transport: McpTransport
+  command: string | null
+  args: string | null // JSON array (stdio)
+  url: string | null // http
+  enabled: boolean
+  created_at: number | null
+}
+export interface McpConnectorInput {
+  name: string
+  scope: McpScope
+  projectPath?: string | null // résolu en project_id côté main (scope 'project')
+  transport: McpTransport
+  command?: string
+  args?: string[]
+  url?: string
+}
+/** Skill disponible (lecture seule, affichage dans Settings). */
+export interface SkillInfo {
+  name: string
+  description: string
+  source: string // 'user' | 'plugin:<name>'
+}
+
+// ---- Voice (dictée on-device) ----
+export interface VoiceReplacement {
+  id: string
+  spoken: string
+  replacement: string
+  source?: string // manual | auto | csv
+  created_at: number | null
+}
+/** Snippet vocal : trigger parlé → bloc inséré (distinct du dictionnaire). */
+export interface VoiceSnippet {
+  id: string
+  trigger: string
+  expansion: string
+  created_at: number | null
+}
+export interface VoiceHistoryItem {
+  id: string
+  text: string
+  duration_ms: number | null
+  word_count: number | null
+  source: string | null
+  created_at: number | null
+}
+export type VoiceState = 'idle' | 'listening' | 'processing'
+/** Statistique « mot le plus corrigé » (agrégée sur voice_corrections_log). */
+export interface VoiceCorrectionStat {
+  word: string
+  count: number
+}
+/** Tableau de bord d'usage Voice (sous-page Stats). */
+export interface VoiceStats {
+  dictationCount: number
+  totalWords: number
+  avgWords: number
+  timeSavedSec: number
+  autoLearnedCount: number
+  vocabCount: number
+  mostCorrected: VoiceCorrectionStat[]
+}
+/** Terme de vocabulaire (boost de transcription). source: manual|auto|project|csv. */
+export interface VoiceVocab {
+  id: string
+  term: string
+  starred: boolean
+  source: string
+  created_at: number | null
+}
+
+export interface MailboxMessage {
+  id: string
+  workspace_id: string
+  from_agent: string | null
+  to_agent: string | null
+  body: string
+  created_at: number | null
+}
+
+export type OrchestratorEvent =
+  | { type: 'tasks'; workspaceId: string; tasks: Task[] }
+  | { type: 'mailbox'; workspaceId: string; message: MailboxMessage }
+
+export interface CreateWorkspaceInput {
+  name: string
+  projectPath: string
+  layout?: string
+  color?: string
+}
+
+export interface UpdateWorkspaceInput {
+  name?: string
+  layout?: string
+  color?: string
+  devCommand?: string
+}
+
+/** Ligne de la table `terminals`. */
+export interface Terminal {
+  id: string
+  workspace_id: string
+  name: string
+  color: string | null
+  role: string | null
+  cwd: string
+  autostart_cmd: string | null
+  pane_index: number
+}
+
+/** State machine d'un terminal (renderer-side, heuristique). */
+export type TerminalStatus =
+  | 'spawning'
+  | 'shell_ready'
+  | 'claude_starting'
+  | 'claude_ready'
+  | 'busy'
+  | 'idle'
+  | 'exited'
+
+export interface WorkspaceWithTerminals {
+  workspace: Workspace
+  terminals: Terminal[]
+}
+
+/** Layouts disponibles -> nombre de panneaux (terminaux). */
+export const LAYOUT_PANES: Record<string, number> = {
+  single: 1,
+  split: 2,
+  quad: 4,
+  six: 6,
+  eight: 8,
+  ten: 10,
+  twelve: 12,
+  fourteen: 14,
+  sixteen: 16,
+}
+
+export const LAYOUTS = Object.keys(LAYOUT_PANES)
+
+/** Noms d'agents pour nommer les terminaux (façon BridgeSpace). */
+export const AGENT_NAMES = [
+  'Nell', 'Cole', 'Lia', 'Roan', 'Jude', 'Gus', 'Kai', 'Cruz',
+  'Wren', 'Bex', 'Tov', 'Ada', 'Fox', 'Ines', 'Otto', 'Vera',
+]
+
+/** Options de spawn d'un PTY (renderer -> main). */
+export interface CreateTerminalInput {
+  id: string
+  cwd: string
+  autostart?: string | null
+  cols: number
+  rows: number
+}
+
+/** API exposée au renderer via contextBridge (`window.bridge`). */
+export interface BridgeApi {
+  workspaces: {
+    list: () => Promise<Workspace[]>
+    create: (data: CreateWorkspaceInput) => Promise<WorkspaceWithTerminals>
+    delete: (id: string) => Promise<void>
+    update: (id: string, data: UpdateWorkspaceInput) => Promise<Workspace>
+    open: (id: string) => Promise<WorkspaceWithTerminals>
+    listTerminals: (workspaceId: string) => Promise<Terminal[]>
+    /** Map workspaceId -> nombre de terminaux (pour les badges du rail). */
+    terminalCounts: () => Promise<Record<string, number>>
+    /** Ajoute un terminal au workspace (split). */
+    addTerminal: (workspaceId: string) => Promise<Terminal>
+    /** Retire définitivement un terminal (close). */
+    removeTerminal: (id: string) => Promise<void>
+  }
+  terminals: {
+    create: (opts: CreateTerminalInput) => Promise<void>
+    write: (id: string, data: string) => void
+    resize: (id: string, cols: number, rows: number) => void
+    kill: (id: string) => void
+    // on*/off* par id : seules des données sérialisables traversent le contextBridge
+    // (on ne dépend pas du proxy d'une fonction de retour).
+    onData: (id: string, cb: (data: string) => void) => void
+    offData: (id: string) => void
+    onExit: (id: string, cb: (code: number) => void) => void
+    offExit: (id: string) => void
+  }
+  dialog: {
+    pickFolder: () => Promise<string | null>
+  }
+  editor: {
+    readDir: (path: string) => Promise<TreeNode[]>
+    readFile: (path: string) => Promise<FileContent>
+    writeFile: (path: string, content: string) => Promise<void>
+    /** Liste plate des fichiers (pour Quick Open), dossiers lourds ignorés. */
+    listFiles: (rootPath: string) => Promise<string[]>
+    watch: (rootPath: string) => void
+    unwatch: (rootPath: string) => void
+    onFsEvent: (cb: (e: FsEvent) => void) => void
+    offFsEvent: () => void
+  }
+  browser: {
+    /** Lance la commande dev du workspace, parse le port localhost. */
+    startDevServer: (workspaceId: string) => Promise<DevServerResult>
+    stopDevServer: (workspaceId: string) => Promise<void>
+    onDevLog: (cb: (line: string) => void) => void
+    offDevLog: () => void
+  }
+  orchestrator: {
+    /** Décompose un objectif. 'direct' → local instantané ; 'ai' → LLM + routage ; 'plan' → propose des étapes à approuver. */
+    submit: (workspaceId: string, goal: string, mode: SubmitMode) => Promise<Task[]>
+    /** Approuve toutes les étapes 'proposed' (mode Plan) → les dispatche. */
+    approvePlan: (workspaceId: string) => Promise<void>
+    listTasks: (workspaceId: string) => Promise<Task[]>
+    listMailbox: (workspaceId: string) => Promise<MailboxMessage[]>
+    /** Changement de statut manuel (drag-drop Kanban). */
+    updateTaskStatus: (taskId: string, status: TaskStatus) => Promise<void>
+    /** "Run with agent" depuis une carte. */
+    runTask: (taskId: string) => Promise<void>
+    /** Stoppe le swarm du workspace (remet les in-progress en todo). */
+    stop: (workspaceId: string) => Promise<void>
+    onEvent: (cb: (e: OrchestratorEvent) => void) => void
+    offEvent: () => void
+  }
+  source: {
+    /** État des changements du working tree (git si repo, sinon isGit=false). */
+    status: (projectPath: string) => Promise<SourceStatus>
+    /** Diff côté-à-côté d'un fichier (HEAD vs working tree). */
+    diff: (projectPath: string, file: string) => Promise<SourceDiff>
+    /** Accepter = stager (git add). */
+    accept: (projectPath: string, file: string) => Promise<void>
+    /** Rejeter = restaurer le fichier à HEAD (ou supprimer si nouveau). */
+    reject: (projectPath: string, file: string) => Promise<void>
+    acceptAll: (projectPath: string) => Promise<void>
+    rejectAll: (projectPath: string) => Promise<void>
+    /** Historique des commits (optionnellement filtré sur un fichier). */
+    log: (projectPath: string, file?: string) => Promise<GitCommit[]>
+    /** Contenu d'un fichier à une révision donnée (voir une version plus ancienne). */
+    fileAtRef: (projectPath: string, file: string, ref: string) => Promise<{ content: string; language: string }>
+    /** Restaure un fichier à une révision (revert). */
+    revertFile: (projectPath: string, file: string, ref: string) => Promise<void>
+  }
+  settings: {
+    /** Réglages app-global (clé/valeur). */
+    getApp: () => Promise<Record<string, string>>
+    setApp: (key: string, value: string) => Promise<void>
+    /** Connecteurs MCP visibles pour un projet (par chemin) : scope 'app' + scope 'project' de ce projet. */
+    listConnectors: (projectPath?: string | null) => Promise<McpConnector[]>
+    addConnector: (input: McpConnectorInput) => Promise<McpConnector>
+    toggleConnector: (id: string, enabled: boolean) => Promise<void>
+    deleteConnector: (id: string) => Promise<void>
+    /** Skills disponibles (lecture seule). */
+    listSkills: () => Promise<SkillInfo[]>
+  }
+  voice: {
+    listReplacements: () => Promise<VoiceReplacement[]>
+    addReplacement: (spoken: string, replacement: string) => Promise<VoiceReplacement>
+    deleteReplacement: (id: string) => Promise<void>
+    addHistory: (item: { text: string; durationMs: number; wordCount: number; source: string }) => Promise<void>
+    listHistory: (limit?: number) => Promise<VoiceHistoryItem[]>
+    /** Vocabulaire de boost (Voice++). */
+    listVocab: () => Promise<VoiceVocab[]>
+    addVocab: (term: string, starred?: boolean, source?: string) => Promise<VoiceVocab>
+    toggleVocabStar: (id: string, starred: boolean) => Promise<void>
+    deleteVocab: (id: string) => Promise<void>
+    /** Snippets vocaux (trigger → expansion). */
+    listSnippets: () => Promise<VoiceSnippet[]>
+    addSnippet: (trigger: string, expansion: string) => Promise<VoiceSnippet>
+    deleteSnippet: (id: string) => Promise<void>
+    /** Auto-add ✨ (INC4) : apprend les noms propres/termes rares depuis une édition du texte dicté. */
+    learnFromEdit: (injected: string, edited: string, context: string) => Promise<{ learned: string[] }>
+    /** Tableau de bord d'usage Voice (sous-page Stats). */
+    stats: () => Promise<VoiceStats>
+    /** Smart formatting Medium/High (INC6) via CLI $0 ; '' si privacy/échec (repli Light côté renderer). */
+    format: (text: string, level: 'medium' | 'high') => Promise<string>
+    /** Command mode (INC9) : transforme la sélection / génère inline via CLI $0 ; '' si privacy/échec. */
+    command: (command: string, selection: string) => Promise<string>
+    /** Hotkey dédiée du command mode (main → renderer). */
+    onCommandKey: (cb: () => void) => void
+    offCommandKey: () => void
+    /** Reçoit les démarrages/arrêts demandés par la hotkey globale ou le widget (main → renderer). */
+    onToggle: (cb: () => void) => void
+    offToggle: () => void
+    /** Widget → main : demande un toggle (rediffusé à la fenêtre principale). */
+    requestToggle: () => void
+    /** Fenêtre principale → main → widget : pousse l'état courant de la dictée. */
+    reportState: (state: VoiceState) => void
+    onState: (cb: (state: VoiceState) => void) => void
+    offState: () => void
+    /** Affiche/cache le widget flottant (Settings). */
+    setWidget: (visible: boolean) => Promise<void>
+  }
+}
