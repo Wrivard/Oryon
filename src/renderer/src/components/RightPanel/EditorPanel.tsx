@@ -6,6 +6,7 @@ import { QuickOpen } from './QuickOpen'
 import { cn } from '../../lib/cn'
 import { useAppStore } from '../../store'
 import { buildProjectContext } from '../../lib/project-vocab'
+import { toast } from '../../store/toasts'
 
 interface OpenFile {
   path: string
@@ -60,7 +61,7 @@ export function EditorPanel({ projectPath, active }: { projectPath: string; acti
       setActivePath(path)
     } catch (err) {
       console.error('[editor] readFile a échoué', path, err)
-      window.alert(`Impossible d'ouvrir ${baseName(path)} : ${(err as Error).message}`)
+      toast.error("Impossible d'ouvrir le fichier", { title: baseName(path) })
     }
   }, [])
 
@@ -88,7 +89,7 @@ export function EditorPanel({ projectPath, active }: { projectPath: string; acti
       setFiles((fs) => fs.map((x) => (x.path === f.path ? { ...x, dirty: false } : x)))
     } catch (err) {
       console.error('[editor] writeFile a échoué', f.path, err)
-      window.alert(`Échec de la sauvegarde : ${(err as Error).message}`)
+      toast.error('Échec de la sauvegarde', { title: f.name })
     }
   }, [])
 

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { startRecording, transcribe, type Recorder } from '../lib/voice'
+import { tryAcquire, release } from '../lib/voice-lock'
+import { toast } from '../store/toasts'
 
 export type CommandState = 'idle' | 'listening' | 'processing'
 
@@ -33,14 +35,20 @@ export function useVoiceCommand(target: CommandTarget) {
   const start = useCallback(async () => {
     if (recRef.current || startingRef.current) return
     startingRef.current = true
+    if (!tryAcquire('command')) {
+      // Micro tenu par la dictée : no-op gracieux.
+      startingRef.current = false
+      return
+    }
     selRef.current = targetRef.current.getSelection()
     try {
       recRef.current = await startRecording()
       setState('listening')
     } catch (e) {
+      release('command')
       recRef.current = null
       setState('idle')
-      window.alert('Micro indisponible : ' + (e as Error).message)
+      toast.error((e as Error).message, { title: 'Command mode' })
     } finally {
       startingRef.current = false
     }
@@ -49,6 +57,7 @@ export function useVoiceCommand(target: CommandTarget) {
   const cancel = useCallback(() => {
     recRef.current?.cancel()
     recRef.current = null
+    release('command')
     finish()
   }, [finish])
 
@@ -69,20 +78,22 @@ export function useVoiceCommand(target: CommandTarget) {
         const selText = sel.value.slice(sel.start, sel.end)
         const result = await window.bridge.voice.command(command, selText)
         if (result) targetRef.current.applyResult(result, sel)
-        else if ((settings['voice.privacy'] ?? '0') === '1') window.alert('Command mode désactivé en mode tout-local.')
+        else if ((settings['voice.privacy'] ?? '0') === '1') toast.info('Command mode désactivé en mode tout-local.')
       }
     } catch (e) {
-      window.alert('Commande vocale échouée : ' + (e as Error).message)
+      toast.error((e as Error).message, { title: 'Commande vocale échouée' })
     } finally {
       clearTimeout(slowTimer)
+      release('command')
       finish()
     }
   }, [finish])
 
   const toggle = useCallback(() => {
+    if (state === 'processing') return
     if (recRef.current) void stop()
     else void start()
-  }, [start, stop])
+  }, [start, stop, state])
 
   useEffect(() => {
     window.bridge.voice.onCommandKey(() => toggle())

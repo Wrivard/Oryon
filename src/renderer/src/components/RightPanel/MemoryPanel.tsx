@@ -3,6 +3,7 @@ import { Plus, Trash2, Network, FileText, Search, ArrowUpRight, CornerDownLeft, 
 import { IconButton } from '../ui/IconButton'
 import { cn } from '../../lib/cn'
 import { forceLayout } from '../../lib/force-layout'
+import { toast } from '../../store/toasts'
 import type { MemoryNote, MemoryGraph, MemorySearchHit } from '@shared/types'
 
 const WIKILINK = /\[\[([^\]]+)\]\]/g
@@ -150,7 +151,7 @@ export function MemoryPanel({ projectPath }: { projectPath: string }) {
       setView('editor')
     } catch (e) {
       readOkRef.current = false
-      window.alert(`Lecture de « ${name} » impossible : ${(e as Error).message}`)
+      toast.error((e as Error).message, { title: `Lecture de « ${name} » impossible` })
     }
   }
   const createNote = async (raw: string) => {

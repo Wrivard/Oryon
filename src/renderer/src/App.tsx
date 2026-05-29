@@ -8,6 +8,7 @@ import RightPanel from './components/RightPanel'
 import OrchestratorBar from './components/Orchestrator/OrchestratorBar'
 import { IconButton } from './components/ui/IconButton'
 import { SettingsModal } from './components/Settings/SettingsModal'
+import { Toaster } from './components/ui/Toaster'
 import { useAppStore } from './store'
 import { fadeUp, staggerContainer, transition } from './lib/motion'
 
@@ -162,6 +163,7 @@ export default function App() {
         projectPath={activeWorkspace?.project_path ?? null}
         projectName={activeWorkspace?.name ?? null}
       />
+      <Toaster />
     </div>
   )
 }

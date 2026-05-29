@@ -112,6 +112,16 @@ body,
   background-clip: content-box;
 }
 
+/* Barre de progression des toasts (décorative ; le dismiss est piloté par setTimeout, pas l'animation). */
+@keyframes toast-bar {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
 /* Respect des préférences d'accessibilité */
 @media (prefers-reduced-motion: reduce) {
   *,

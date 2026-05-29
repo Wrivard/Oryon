@@ -49,6 +49,16 @@ export interface Recorder {
  */
 let capturing = false // garde-fou : une seule capture micro à la fois (dictée OU command mode)
 
+/** Traduit une erreur getUserMedia (DOMException) en message FR actionnable (résiduel « micro indisponible »). */
+function micError(e: unknown): Error {
+  const name = (e as DOMException)?.name
+  if (name === 'NotAllowedError' || name === 'SecurityError')
+    return new Error('Accès micro refusé. Active le micro pour Oryon dans Réglages Windows › Confidentialité › Microphone (autorise les apps de bureau).')
+  if (name === 'NotFoundError' || name === 'OverconstrainedError') return new Error('Aucun micro détecté.')
+  if (name === 'NotReadableError') return new Error('Micro occupé par une autre application ou bloqué par le système.')
+  return e instanceof Error ? e : new Error(String(e))
+}
+
 export async function startRecording(): Promise<Recorder> {
   if (capturing) throw new Error('Capture déjà en cours')
   capturing = true
@@ -115,7 +125,7 @@ export async function startRecording(): Promise<Recorder> {
     } catch {
       /* ignore */
     }
-    throw e
+    throw micError(e)
   }
 }
 

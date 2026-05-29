@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { startRecording, transcribe, applySnippets, applyDictionary, fuzzyBoost, type Recorder } from '../lib/voice'
 import { applyFileTags } from '../lib/project-vocab'
 import { formatCodeSafe, formatLight } from '../lib/formatting'
+import { tryAcquire, release } from '../lib/voice-lock'
+import { toast } from '../store/toasts'
 import { useAppStore } from '../store'
 import type { VoiceState } from '@shared/types'
 
@@ -21,13 +23,19 @@ export function useVoice(onText: (text: string) => void, source: string) {
   const start = useCallback(async () => {
     if (recRef.current || startingRef.current) return
     startingRef.current = true
+    if (!tryAcquire('dictation')) {
+      // Micro tenu par le command mode : no-op gracieux (pas d'alerte).
+      startingRef.current = false
+      return
+    }
     try {
       recRef.current = await startRecording()
       startedAt.current = Date.now()
       setState('listening')
     } catch (e) {
+      release('dictation')
       setState('idle')
-      window.alert('Micro indisponible : ' + (e as Error).message)
+      toast.error((e as Error).message, { title: 'Dictée' })
     } finally {
       startingRef.current = false
     }
@@ -89,16 +97,18 @@ export function useVoice(onText: (text: string) => void, source: string) {
         })
       }
     } catch (e) {
-      window.alert('Transcription échouée : ' + (e as Error).message)
+      toast.error((e as Error).message, { title: 'Transcription échouée' })
     } finally {
+      release('dictation')
       setState('idle')
     }
   }, [source])
 
   const toggle = useCallback(() => {
+    if (state === 'processing') return // ignore les toggles pendant la transcription
     if (recRef.current) void stop()
     else void start()
-  }, [start, stop])
+  }, [start, stop, state])
 
   // Hotkey globale / widget flottant → toggle.
   useEffect(() => {

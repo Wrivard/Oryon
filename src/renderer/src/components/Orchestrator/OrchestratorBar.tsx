@@ -4,6 +4,7 @@ import { Mic, ArrowUp, Sparkles, Square, ChevronDown, ChevronUp, History, Zap, L
 import { IconButton } from '../ui/IconButton'
 import { useVoice } from '../../hooks/useVoice'
 import { useVoiceCommand } from '../../hooks/useVoiceCommand'
+import { toast } from '../../store/toasts'
 import { useAppStore } from '../../store'
 import { cn } from '../../lib/cn'
 import { transitionFast } from '../../lib/motion'
@@ -142,7 +143,7 @@ export default function OrchestratorBar() {
       pushHistory(goal)
       setOpen(true)
     } catch (e) {
-      window.alert(`Décomposition échouée : ${(e as Error).message}`)
+      toast.error((e as Error).message, { title: 'Décomposition échouée' })
     } finally {
       setBusy(false)
     }
@@ -355,9 +356,10 @@ export default function OrchestratorBar() {
             </IconButton>
           )}
           <IconButton
-            label={voice.state === 'listening' ? 'Arrêter la dictée' : 'Dictée vocale'}
+            label={cmd.state !== 'idle' ? 'Micro occupé par le command mode' : voice.state === 'listening' ? 'Arrêter la dictée' : 'Dictée vocale'}
             size="sm"
             active={voice.state !== 'idle'}
+            disabled={cmd.state !== 'idle'}
             onClick={voice.toggle}
           >
             <Mic
@@ -369,9 +371,10 @@ export default function OrchestratorBar() {
             />
           </IconButton>
           <IconButton
-            label={cmd.state === 'listening' ? 'Arrêter la commande' : 'Commande vocale (transforme la sélection)'}
+            label={voice.state !== 'idle' ? 'Micro occupé par la dictée' : cmd.state === 'listening' ? 'Arrêter la commande' : 'Commande vocale (transforme la sélection)'}
             size="sm"
             active={cmd.state !== 'idle'}
+            disabled={voice.state !== 'idle'}
             onClick={cmd.toggle}
           >
             <Wand2

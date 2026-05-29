@@ -94,8 +94,17 @@ function registerVoiceHotkey(): void {
   }
   const toggleAccel = appSetting('voice.hotkey.toggle') || appSetting('voice.hotkey') || 'CommandOrControl+Shift+Space'
   const commandAccel = appSetting('voice.hotkey.command') || 'CommandOrControl+Shift+.'
+  // Coalescence leading-edge : deux voice:toggle rapprochés (hotkey + widget, ou rebond) ne doivent pas
+  // démarrer-puis-arrêter aussitôt une capture.
+  let lastToggle = 0
+  const sendToggle = (): void => {
+    const now = Date.now()
+    if (now - lastToggle < 250) return
+    lastToggle = now
+    broadcast('voice:toggle')
+  }
   try {
-    globalShortcut.register(toggleAccel, () => broadcast('voice:toggle'))
+    globalShortcut.register(toggleAccel, sendToggle)
   } catch (e) {
     console.error('[voice] enregistrement hotkey dictée échoué :', (e as Error).message)
   }
