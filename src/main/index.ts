@@ -1,6 +1,6 @@
-import { app, BrowserWindow, shell, globalShortcut, session, protocol, net } from 'electron'
-import { join } from 'path'
-import { pathToFileURL } from 'url'
+import { app, BrowserWindow, shell, globalShortcut, session, protocol } from 'electron'
+import { join, extname } from 'path'
+import { readFile } from 'fs/promises'
 import { initDb, closeDb } from './db'
 import { registerIpcHandlers } from './ipc'
 import { killAllTerminals } from './services/pty-manager'
@@ -47,9 +47,28 @@ function createWindow() {
     }
   })
 
-  win.on('ready-to-show', () => win.show())
+  // Filet de sécurité : si le renderer tarde/échoue à peindre, on montre quand même la fenêtre après 6 s
+  // (sinon un échec de chargement laisse une fenêtre invisible → « l'app ne fait rien », non diagnosticable).
+  const showTimer = setTimeout(() => {
+    if (!win.isDestroyed() && !win.isVisible()) win.show()
+  }, 6000)
+  win.on('ready-to-show', () => {
+    clearTimeout(showTimer)
+    win.show()
+  })
   // La fenêtre principale fermée → fermer aussi le widget flottant (sinon l'app ne quitte pas).
-  win.on('closed', () => destroyVoiceWidget())
+  win.on('closed', () => {
+    clearTimeout(showTimer)
+    destroyVoiceWidget()
+  })
+
+  // Visibilité des échecs packagés (app://) : un écran noir ou un renderer mort deviennent des logs clairs.
+  win.webContents.on('did-fail-load', (_e, code, desc, url) =>
+    console.error(`[window] did-fail-load code=${code} desc=${desc} url=${url}`),
+  )
+  win.webContents.on('render-process-gone', (_e, details) =>
+    console.error(`[window] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`),
+  )
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
@@ -77,10 +96,25 @@ app.whenReady().then(() => {
   initMcpExport() // exporte l'état (terminaux/tasks/mailbox) pour le serveur MCP de debug
   registerMediaPermissions() // autorise le micro (getUserMedia) pour la dictée Voice — sinon « micro indisponible »
   // Sert le renderer packagé via app:// (out/renderer/*). En dev on utilise ELECTRON_RENDERER_URL (intact).
+  // On LIT le fichier avec fs (compatible asar) et on renvoie une Response — surtout PAS net.fetch() sur une
+  // URL file:// PROFONDE dans l'asar : asar est un patch fs Node, invisible au loader file:// de Chromium,
+  // donc net.fetch plantait le network service → renderer crash → fenêtre (show:false) jamais affichée.
   const rendererRoot = join(__dirname, '../renderer')
-  protocol.handle('app', (req) => {
+  const MIME: Record<string, string> = {
+    '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css',
+    '.json': 'application/json', '.wasm': 'application/wasm', '.map': 'application/json',
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+    '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf',
+  }
+  protocol.handle('app', async (req) => {
     const rel = decodeURIComponent(new URL(req.url).pathname).replace(/^\/+/, '') || 'index.html'
-    return net.fetch(pathToFileURL(join(rendererRoot, rel)).toString())
+    try {
+      const data = await readFile(join(rendererRoot, rel))
+      const type = MIME[extname(rel).toLowerCase()] ?? 'application/octet-stream'
+      return new Response(new Uint8Array(data), { headers: { 'content-type': type } })
+    } catch {
+      return new Response('Not found', { status: 404, headers: { 'content-type': 'text/plain' } })
+    }
   })
   createWindow()
   registerVoiceHotkey()
