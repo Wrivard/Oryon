@@ -1,0 +1,71 @@
+appId: quebec.kua.oryon
+productName: Oryon
+copyright: Copyright © 2026 Wrivard
+
+directories:
+  output: release/${version}
+  buildResources: build
+
+# On part de « tout inclus » et on EXCLUT les sources / configs / docs (out/ et node_modules de prod restent).
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!docs/*'
+  - '!*.md'
+  - '!{audit_buttons,check_contrast,check_interactive}.js'
+  - '!final_a11y_audit.txt'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!electron-builder.yml'
+  - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json,tailwind.config.js,postcss.config.js}'
+  - '!{.gitignore,.mcp.json}'
+  - '!**/*.{tsbuildinfo}'
+
+# Modules natifs : extraits de l'asar pour être chargeables (.node).
+asarUnpack:
+  - '**/node_modules/better-sqlite3/**'
+  - '**/node_modules/@lydell/node-pty/**'
+  - '**/*.node'
+
+# Reconstruit les modules natifs pour la cible Electron.
+npmRebuild: true
+
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  category: public.app-category.developer-tools
+  icon: build/icon.png
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.png
+  artifactName: ${productName}-${version}-Setup.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Development
+  icon: build/icon.png
+  maintainer: Wrivard <wrivard@kua.quebec>
+  artifactName: ${productName}-${version}.${ext}
+
+# Auto-update via GitHub Releases (electron-updater lit app-update.yml généré ici).
+publish:
+  provider: github
+  owner: Wrivard
+  repo: Oryon

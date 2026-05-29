@@ -69,6 +69,7 @@ app.whenReady().then(() => {
   createWindow()
   registerVoiceHotkey()
   if (appSetting('voice.showWidget') !== '0') createVoiceWidget() // widget flottant (activé par défaut)
+  void initAutoUpdate() // auto-update (electron-updater) — uniquement en build packagé
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -91,6 +92,22 @@ function registerVoiceHotkey(): void {
     if (commandAccel && commandAccel !== toggleAccel) globalShortcut.register(commandAccel, () => broadcast('voice:command-key'))
   } catch (e) {
     console.error('[voice] enregistrement hotkey command mode échoué :', (e as Error).message)
+  }
+}
+
+/**
+ * Auto-update via electron-updater (GitHub Releases, cf. electron-builder.yml). Actif UNIQUEMENT en build
+ * packagé : en dev, app.isPackaged est false → on ne fait rien (pas d'app-update.yml de toute façon).
+ * Import dynamique pour ne pas charger le module hors prod.
+ */
+async function initAutoUpdate(): Promise<void> {
+  if (!app.isPackaged) return
+  try {
+    const { autoUpdater } = await import('electron-updater')
+    autoUpdater.autoDownload = true
+    await autoUpdater.checkForUpdatesAndNotify()
+  } catch (e) {
+    console.error('[update] échec de la vérification des mises à jour :', (e as Error).message)
   }
 }
 
