@@ -158,7 +158,7 @@ export interface VoiceHistoryItem {
 }
 export type VoiceState = 'idle' | 'listening' | 'processing'
 
-// ---- BridgeMemory (Phase 5) : knowledge graph local en markdown + [[wikilinks]] ----
+// ---- Oryon Memory (Phase 5) : knowledge graph local en markdown + [[wikilinks]] ----
 export interface MemoryNote {
   name: string // nom de fichier sans .md (identifiant)
   title: string // 1er titre `# …` ou le nom
@@ -268,7 +268,7 @@ export const LAYOUT_PANES: Record<string, number> = {
 
 export const LAYOUTS = Object.keys(LAYOUT_PANES)
 
-/** Noms d'agents pour nommer les terminaux (façon BridgeSpace). */
+/** Noms d'agents pour nommer les terminaux (alias lisibles, un par terminal). */
 export const AGENT_NAMES = [
   'Nell', 'Cole', 'Lia', 'Roan', 'Jude', 'Gus', 'Kai', 'Cruz',
   'Wren', 'Bex', 'Tov', 'Ada', 'Fox', 'Ines', 'Otto', 'Vera',
@@ -366,7 +366,7 @@ export interface BridgeApi {
     /** Restaure un fichier à une révision (revert). */
     revertFile: (projectPath: string, file: string, ref: string) => Promise<void>
   }
-  /** BridgeMemory (Phase 5) : notes markdown locales (.oryon/memory) + graphe de [[wikilinks]]. */
+  /** Oryon Memory (Phase 5) : notes markdown locales (.oryon/memory) + graphe de [[wikilinks]]. */
   memory: {
     list: (projectPath: string) => Promise<MemoryNote[]>
     read: (projectPath: string, name: string) => Promise<string>

@@ -3,7 +3,7 @@ import { promises as fs } from 'fs'
 import { join } from 'path'
 import type { MemoryNote, MemoryGraph, MemoryGraphNode } from '../../shared/types'
 
-// BridgeMemory (Phase 5) : knowledge graph local-first. Une note = un fichier markdown dans
+// Oryon Memory (Phase 5) : knowledge graph local-first. Une note = un fichier markdown dans
 // <projet>/.oryon/memory/. Les liens [[wikilink]] tissent le graphe. (.oryon est déjà ignoré par
 // l'arbre de l'éditeur — les notes ne polluent pas le file-tree.)
 

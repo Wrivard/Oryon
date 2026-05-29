@@ -1,4 +1,4 @@
-// Layout force-directed (Fruchterman-Reingold simplifié) pour la vue graphe de BridgeMemory.
+// Layout force-directed (Fruchterman-Reingold simplifié) pour la vue graphe d'Oryon Memory.
 // Déterministe (positions initiales sur un cercle par index) → pas de Math.random, rendu stable.
 
 export interface Pt {
