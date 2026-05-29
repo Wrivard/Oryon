@@ -4,8 +4,13 @@ import { pipeline, env, type AutomaticSpeechRecognitionPipeline } from '@hugging
 
 env.allowLocalModels = false // poids du modèle depuis le hub HF (cachés en IndexedDB au 1er usage)
 
+// CAUSE RACINE de « no available backend / Unexpected token '<' » : avec wasmPaths en OBJET + useWasmCache,
+// ORT lit la glue depuis le CacheStorage SANS re-fetch ; une ancienne entrée empoisonnée (page HTML 404 d'une
+// tentative ratée) est servie comme JS → '<'. On coupe le cache de la glue wasm (les POIDS du modèle restent
+// cachés en IndexedDB, intacts) et on purge UNE fois les entrées ORT empoisonnées.
+;(env as unknown as { useWasmCache?: boolean }).useWasmCache = false
+
 // Runtime ONNX servi en LOCAL (même origine), jamais le CDN dev-version 404 (cf. electron.vite.config copyOrtWasm).
-// new URL('ort/', location.href) → http://localhost:5173/ort/ en dev, ./ort/ (file://) en prod.
 const ortBase = new URL('ort/', window.location.href).href
 const ortWasm = env.backends?.onnx?.wasm
 if (ortWasm) {
@@ -17,21 +22,38 @@ if (ortWasm) {
   ortWasm.proxy = false
 }
 
+// Purge SCOPÉE one-time des entrées ORT empoisonnées du cache transformers (laisse les poids du modèle).
+const ortCacheReady: Promise<void> = (async () => {
+  try {
+    if (typeof caches === 'undefined' || localStorage.getItem('oryon:ortCachePurged') === '2') return
+    const c = await caches.open('transformers-cache')
+    for (const req of await c.keys()) {
+      if (/ort-wasm|onnxruntime-web|asyncify\.(mjs|wasm)|jsdelivr/i.test(req.url)) await c.delete(req)
+    }
+    localStorage.setItem('oryon:ortCachePurged', '2')
+  } catch {
+    /* cache indispo : on continue */
+  }
+})()
+
 let asrPromise: Promise<AutomaticSpeechRecognitionPipeline> | null = null
 let loadedModel = ''
 
-/** Charge (lazy, et recharge si le modèle change) le pipeline ASR (WASM, q8). */
+/** Charge (lazy, et recharge si le modèle change) le pipeline ASR (WASM, q8) — après la purge du cache ORT. */
 export function loadAsr(
   model: string,
   onProgress?: (p: { status: string; progress?: number; file?: string }) => void,
 ): Promise<AutomaticSpeechRecognitionPipeline> {
   if (asrPromise && model === loadedModel) return asrPromise
   loadedModel = model
-  asrPromise = pipeline('automatic-speech-recognition', model, {
-    device: 'wasm',
-    dtype: 'q8',
-    progress_callback: onProgress as never,
-  } as never) as Promise<AutomaticSpeechRecognitionPipeline>
+  asrPromise = ortCacheReady.then(
+    () =>
+      pipeline('automatic-speech-recognition', model, {
+        device: 'wasm',
+        dtype: 'q8',
+        progress_callback: onProgress as never,
+      } as never) as Promise<AutomaticSpeechRecognitionPipeline>,
+  )
   return asrPromise
 }
 
@@ -69,6 +91,16 @@ export async function transcribe(
 export interface Recorder {
   stop: () => Promise<Float32Array> // renvoie le PCM mono 16 kHz à l'arrêt
   cancel: () => void
+  hadSpeech: () => boolean // vrai si de la parole a été détectée (garde anti-transcription du silence)
+}
+
+/** Détection de fin de parole (VAD énergie RMS) → auto-stop + auto-paste. */
+export interface VadOptions {
+  onSilence?: () => void // appelé UNE fois quand le silence dépasse silenceMs après de la vraie parole
+  silenceMs?: number // durée de silence avant auto-stop (défaut 1400)
+  minSpeechMs?: number // parole minimale avant d'armer l'auto-stop (anti silence initial)
+  rmsThreshold?: number // plancher de bruit
+  maxDurationMs?: number // coupe de sécurité
 }
 
 /**
@@ -88,9 +120,10 @@ function micError(e: unknown): Error {
   return e instanceof Error ? e : new Error(String(e))
 }
 
-export async function startRecording(): Promise<Recorder> {
+export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
   if (capturing) throw new Error('Capture déjà en cours')
   capturing = true
+  const { onSilence, silenceMs = 1400, minSpeechMs = 350, rmsThreshold = 0.012, maxDurationMs = 30000 } = vad
   // Tout le setup est gardé : si N'IMPORTE quelle étape échoue (permission, AudioContext, ScriptProcessor…),
   // on réinitialise `capturing` et on libère le micro — sinon le flag resterait bloqué à true (« capture déjà en cours »).
   let stream: MediaStream | null = null
@@ -105,13 +138,38 @@ export async function startRecording(): Promise<Recorder> {
     const mute = ac.createGain()
     mute.gain.value = 0 // pas de re-diffusion du micro dans les HP
     const chunks: Float32Array[] = []
+    const srcRate = ac.sampleRate
+    // VAD énergie : accumule la parole/le silence et déclenche onSilence une seule fois.
+    let sawSpeech = false
+    let speechMs = 0
+    let silenceRun = 0
+    let totalMs = 0
+    let fired = false
     processor.onaudioprocess = (e) => {
-      chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)))
+      const data = e.inputBuffer.getChannelData(0)
+      chunks.push(new Float32Array(data))
+      // Suivi énergie TOUJOURS actif (alimente hadSpeech() pour la garde anti-silence, même sans auto-stop).
+      let sum = 0
+      for (let i = 0; i < data.length; i++) sum += data[i] * data[i]
+      const rms = Math.sqrt(sum / data.length)
+      const frameMs = (data.length / srcRate) * 1000
+      totalMs += frameMs
+      if (rms >= rmsThreshold) {
+        speechMs += frameMs
+        silenceRun = 0
+        if (speechMs >= minSpeechMs) sawSpeech = true
+      } else {
+        silenceRun += frameMs
+      }
+      // Auto-stop UNIQUEMENT si onSilence est fourni (VAD activé).
+      if (onSilence && !fired && ((sawSpeech && silenceRun >= silenceMs) || totalMs >= maxDurationMs)) {
+        fired = true
+        onSilence()
+      }
     }
     source.connect(processor)
     processor.connect(mute)
     mute.connect(ac.destination)
-    const srcRate = ac.sampleRate
     const theAc = ac
     const theStream = stream
 
@@ -141,6 +199,7 @@ export async function startRecording(): Promise<Recorder> {
         }
         return resampleTo16k(merged, srcRate)
       },
+      hadSpeech: () => sawSpeech,
     }
   } catch (e) {
     capturing = false

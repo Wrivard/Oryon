@@ -19,6 +19,7 @@ export function useVoice(onText: (text: string) => void, source: string) {
   const startedAt = useRef(0)
   const onTextRef = useRef(onText)
   onTextRef.current = onText
+  const stopRef = useRef<(() => void) | null>(null) // évite le cycle start↔stop pour l'auto-stop VAD
 
   const start = useCallback(async () => {
     if (recRef.current || startingRef.current) return
@@ -29,7 +30,11 @@ export function useVoice(onText: (text: string) => void, source: string) {
       return
     }
     try {
-      recRef.current = await startRecording()
+      // Auto-paste : auto-stop quand l'utilisateur arrête de parler (VAD), activable/réglable.
+      const settings = await window.bridge.settings.getApp()
+      const autoStop = (settings['voice.autoStopOnSilence'] ?? '1') !== '0'
+      const silenceMs = settings['voice.silenceMs'] ? parseInt(settings['voice.silenceMs'], 10) : undefined
+      recRef.current = await startRecording(autoStop ? { onSilence: () => stopRef.current?.(), silenceMs } : {})
       startedAt.current = Date.now()
       setState('listening')
     } catch (e) {
@@ -48,6 +53,8 @@ export function useVoice(onText: (text: string) => void, source: string) {
     setState('processing')
     try {
       const pcm = await rec.stop()
+      // Garde : ne transcris pas du pur silence (auto-stop déclenché sans parole, ou capture vide).
+      if (!rec.hadSpeech() || pcm.length === 0) return
       const durationMs = Date.now() - startedAt.current
       // Config Voice (défaut Québécois : whisper-small + français). Modifiable dans Settings › Application.
       const settings = await window.bridge.settings.getApp()
@@ -103,6 +110,7 @@ export function useVoice(onText: (text: string) => void, source: string) {
       setState('idle')
     }
   }, [source])
+  stopRef.current = stop // pour l'auto-stop VAD (onSilence → stop)
 
   const toggle = useCallback(() => {
     if (state === 'processing') return // ignore les toggles pendant la transcription
