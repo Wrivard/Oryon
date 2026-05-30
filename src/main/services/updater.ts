@@ -44,8 +44,16 @@ export async function initUpdater(): Promise<void> {
     return
   }
   try {
+    // electron-updater est CJS : selon l'interop du bundle, `autoUpdater` peut être sous mod.autoUpdater OU
+    // sous mod.default.autoUpdater. En packagé c'était mod.default → mod.autoUpdater undefined → l'ancien
+    // `updater.autoDownload = false` levait « Cannot set properties of undefined (setting 'autoDownload') »
+    // et tuait tout l'updater. On résout les deux formes, et on échoue proprement si introuvable.
     const mod: any = await import('electron-updater')
-    updater = mod.autoUpdater
+    updater = mod.autoUpdater ?? mod.default?.autoUpdater
+    if (!updater) {
+      state = { ...state, phase: 'error', error: 'electron-updater indisponible (autoUpdater introuvable)' }
+      return
+    }
     updater.autoDownload = false
     updater.autoInstallOnAppQuit = true
     if (forceDev) updater.forceDevUpdateConfig = true

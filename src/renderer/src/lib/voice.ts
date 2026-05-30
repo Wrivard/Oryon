@@ -37,28 +37,32 @@ const ortCacheReady: Promise<void> = (async () => {
 })()
 
 let asrPromise: Promise<AutomaticSpeechRecognitionPipeline> | null = null
-let loadedModel = ''
+let loadedKey = ''
 
-/** Charge (lazy, et recharge si le modèle change) le pipeline ASR (WASM, q8) — après la purge du cache ORT. */
+/** Charge (lazy, et recharge si modèle/dtype change) le pipeline ASR (WASM) — après la purge du cache ORT.
+ *  dtype 'q8' par défaut (léger/rapide) ; 'fp32' en dernier repli — NON quantifié, donc immunisé à l'erreur
+ *  ORT « MatMulNBits / required scale » que certains modèles whisper quantifiés déclenchent (cf. transcribe). */
 export function loadAsr(
   model: string,
   onProgress?: (p: { status: string; progress?: number; file?: string }) => void,
+  dtype: 'q8' | 'fp32' = 'q8',
 ): Promise<AutomaticSpeechRecognitionPipeline> {
-  if (asrPromise && model === loadedModel) return asrPromise
-  loadedModel = model
+  const key = `${model}@${dtype}`
+  if (asrPromise && key === loadedKey) return asrPromise
+  loadedKey = key
   asrPromise = ortCacheReady.then(
     () =>
       pipeline('automatic-speech-recognition', model, {
         device: 'wasm',
-        dtype: 'q8',
+        dtype,
         progress_callback: onProgress as never,
       } as never) as Promise<AutomaticSpeechRecognitionPipeline>,
   )
   return asrPromise
 }
 
-async function runAsr(model: string, pcm16k: Float32Array, language?: string): Promise<string> {
-  const asr = await loadAsr(model)
+async function runAsr(model: string, pcm16k: Float32Array, language?: string, dtype: 'q8' | 'fp32' = 'q8'): Promise<string> {
+  const asr = await loadAsr(model, undefined, dtype)
   const out = await asr(pcm16k, {
     chunk_length_s: 30,
     stride_length_s: 5,
@@ -78,12 +82,17 @@ export async function transcribe(
     return await runAsr(opts.model, pcm16k, opts.language)
   } catch (e) {
     const msg = (e as Error)?.message ?? ''
-    // Repli défensif : si la session ONNX échoue, retente une fois sur un modèle plus léger.
-    if (/create a session|ORT_FAIL|failed to load/i.test(msg) && !/whisper-base/.test(opts.model)) {
-      asrPromise = null
-      return runAsr('Xenova/whisper-base', pcm16k, opts.language)
+    // Échec de création de session ORT (y.c. « MatMulNBits / required scale » des modèles quantifiés) → replis.
+    if (!/create a session|ORT_FAIL|failed to load|MatMulNBits|required scale/i.test(msg)) throw e
+    asrPromise = null
+    // Repli 1 : whisper-base en q8 (plus léger). Repli 2 : whisper-base en fp32 (NON quantifié → le plus sûr).
+    try {
+      if (!/whisper-base/.test(opts.model)) return await runAsr('Xenova/whisper-base', pcm16k, opts.language)
+    } catch {
+      /* le repli q8 échoue aussi → fp32 ci-dessous */
     }
-    throw e
+    asrPromise = null
+    return runAsr('Xenova/whisper-base', pcm16k, opts.language, 'fp32')
   }
 }
 

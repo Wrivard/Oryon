@@ -34,10 +34,16 @@ function ToastItem({
     next ? pause(t.id) : resume(t.id) // déplié = on fige le timer pour laisser lire
   }
   const copy = () => {
-    void navigator.clipboard?.writeText((t.title ? t.title + '\n' : '') + t.message).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    })
+    const text = (t.title ? t.title + '\n' : '') + t.message
+    void window.bridge.app
+      .copyText(text)
+      .then(() => {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1500)
+      })
+      .catch(() => {
+        /* clipboard indispo : on n'affiche pas le « Copié » */
+      })
   }
 
   return (

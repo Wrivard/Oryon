@@ -103,7 +103,9 @@ export default function OrchestratorBar() {
         try {
           await loadAsr('Xenova/whisper-' + (s['voice.model'] || 'small'))
         } catch (e) {
-          if (!cancelled) toast.error((e as Error).message, { title: 'Modèle vocal' })
+          // Préchauffe OPTIONNELLE : un échec ici ne doit pas alarmer au démarrage. Le modèle sera (re)chargé,
+          // avec repli q8→fp32 (cf. lib/voice transcribe), à la 1re dictée réelle. On loggue seulement.
+          if (!cancelled) console.warn('[voice] préchauffe modèle échouée (réessai avec repli à la 1re dictée) :', (e as Error)?.message)
         }
       })()
     }, 1500)

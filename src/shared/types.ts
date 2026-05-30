@@ -357,9 +357,10 @@ export interface CreateTerminalInput {
 
 /** API exposée au renderer via contextBridge (`window.bridge`). */
 export interface BridgeApi {
-  /** Infos de l'app : version (affichée en bas du rail) + marqueur dev. */
+  /** Infos de l'app : version (affichée en bas du rail) + marqueur dev. + copie fiable via le clipboard Electron. */
   app: {
     info: () => Promise<{ version: string; isDev: boolean }>
+    copyText: (text: string) => Promise<void>
   }
   workspaces: {
     list: () => Promise<Workspace[]>

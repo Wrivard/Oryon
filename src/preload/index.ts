@@ -4,6 +4,7 @@ import type { BridgeApi } from '../shared/types'
 const bridge: BridgeApi = {
   app: {
     info: () => ipcRenderer.invoke('app:info'),
+    copyText: (text) => ipcRenderer.invoke('app:copyText', text),
   },
   workspaces: {
     list: () => ipcRenderer.invoke('workspaces:list'),
