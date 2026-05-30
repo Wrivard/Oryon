@@ -2,6 +2,9 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type { BridgeApi } from '../shared/types'
 
 const bridge: BridgeApi = {
+  app: {
+    info: () => ipcRenderer.invoke('app:info'),
+  },
   workspaces: {
     list: () => ipcRenderer.invoke('workspaces:list'),
     create: (data) => ipcRenderer.invoke('workspaces:create', data),

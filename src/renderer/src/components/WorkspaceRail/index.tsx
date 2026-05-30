@@ -18,6 +18,17 @@ export default function WorkspaceRail({ onCollapse }: Props) {
     useAppStore()
   const { theme } = useTheme()
   const [modalOpen, setModalOpen] = useState(false)
+  const [appInfo, setAppInfo] = useState<{ version: string; isDev: boolean } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    window.bridge.app.info().then((info) => {
+      if (!cancelled) setAppInfo(info)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -101,6 +112,12 @@ export default function WorkspaceRail({ onCollapse }: Props) {
           <Settings size={13} />
           Réglages
         </button>
+        {appInfo && (
+          <div className="px-2.5 pt-1 text-[10px] tabular-nums text-fg-subtle" title={appInfo.isDev ? 'Build de développement' : 'Build de production'}>
+            v{appInfo.version}
+            {appInfo.isDev && <span className="text-warning"> (dev)</span>}
+          </div>
+        )}
       </div>
 
       <CreateWorkspaceModal open={modalOpen} onClose={() => setModalOpen(false)} />

@@ -9,8 +9,10 @@ import { registerSettingsIpc } from './settings.ipc'
 import { registerVoiceIpc } from './voice.ipc'
 import { registerMemoryIpc } from './memory.ipc'
 import { registerUpdaterIpc } from './updater.ipc'
+import { registerAppIpc } from './app.ipc'
 
 export function registerIpcHandlers() {
+  registerAppIpc()
   registerWorkspacesIpc()
   registerTerminalsIpc()
   registerDialogIpc()
