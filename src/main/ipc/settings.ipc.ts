@@ -78,11 +78,20 @@ export function buildProjectMcpConfigForPath(projectPath: string): string | null
     .all(projectId ?? null) as Array<Record<string, unknown>>
   const mcpServers: Record<string, unknown> = {}
   // Serveur Oryon : outils mémoire partagée + état, adressés sur le projet travaillé (déterministe via env).
-  // En prod, server.mjs + son cœur partagé sont copiés en ressources (extraResources), hors asar.
+  // En PROD c'est un BUNDLE autonome (scripts/before-pack.cjs : esbuild inline @modelcontextprotocol/sdk + zod
+  // + memory-core) → aucune résolution de node_modules. En DEV, la source résout ses deps depuis node_modules.
   const serverPath = app.isPackaged
     ? join(process.resourcesPath, 'mcp', 'server.mjs')
     : join(app.getAppPath(), 'src', 'mcp', 'server.mjs')
-  mcpServers['oryon'] = { command: 'node', args: [serverPath], env: { ORYON_PROJECT_DIR: projectPath } }
+  // Lancé via le binaire de l'app en mode node (ELECTRON_RUN_AS_NODE), PAS `node` du PATH : (1) aucune
+  // dépendance à un Node système, (2) toujours disponible (c'est notre propre exe). L'ancien `node server.mjs`
+  // échouait en prod (« oryon · failed ») car @modelcontextprotocol/sdk vit dans l'asar, invisible à un node
+  // standalone hors du repo. process.execPath est figé ici (process principal) → chemin absolu dans le config.
+  mcpServers['oryon'] = {
+    command: process.execPath,
+    args: [serverPath],
+    env: { ORYON_PROJECT_DIR: projectPath, ELECTRON_RUN_AS_NODE: '1' },
+  }
   for (const r of rows) {
     const name = String(r.name)
     if (name === 'oryon') continue // ne pas écraser notre serveur

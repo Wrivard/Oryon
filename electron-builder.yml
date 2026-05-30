@@ -9,13 +9,16 @@ directories:
   output: release/${version}
   buildResources: build
 
-# Le serveur MCP (lu par les agents) + son cœur partagé ne sont PAS dans l'asar (exclus par '!src/*').
-# On les copie en ressources pour qu'ils existent en prod (cf. settings.ipc resolveMcpServerPath).
+# Bundle le serveur MCP en un fichier AUTONOME (esbuild inline le SDK + zod + memory-core) AVANT le packaging.
+# Sinon un node standalone hors du repo ne résout pas @modelcontextprotocol/sdk (asar) → « oryon · failed ».
+beforePack: scripts/before-pack.cjs
+
+# Le serveur MCP tourne hors de l'asar (process node séparé) → on copie le BUNDLE produit par beforePack,
+# PAS la source src/mcp (dont les deps ne seraient pas résolvables). Le bundle inline memory-core (plus besoin
+# de copier src/shared).
 extraResources:
-  - from: src/mcp
+  - from: out/mcp
     to: mcp
-  - from: src/shared
-    to: shared
 
 # On part de « tout inclus » et on EXCLUT les sources / configs / docs (out/ et node_modules de prod restent).
 files:
