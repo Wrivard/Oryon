@@ -15,3 +15,6 @@ src/renderer/public/ort/
 final_a11y_audit.txt
 .DS_Store
 Thumbs.db
+
+# Logs de build (redirections manuelles de `pnpm dist:*`)
+dist-*.log

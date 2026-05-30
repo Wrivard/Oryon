@@ -90,7 +90,10 @@ linux:
   artifactName: ${productName}-${version}.${ext}
 
 # Auto-update via GitHub Releases (electron-updater lit app-update.yml généré ici).
+# releaseType: release → la release est PUBLIÉE directement (pas en draft) : `release:stable` met l'update à
+# disposition des apps installées sans étape manuelle « Publish » sur GitHub.
 publish:
   provider: github
   owner: Wrivard
   repo: Oryon
+  releaseType: release
