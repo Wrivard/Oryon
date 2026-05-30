@@ -12,6 +12,7 @@ import { mkdirSync, appendFileSync } from 'fs'
 import { join, dirname } from 'path'
 import type { MergeResult } from '../../../shared/types'
 import { worktreeDir, branchFor } from '../worktrees'
+import { verifyMain } from './green-gate'
 
 const exec = promisify(execFile)
 
@@ -85,17 +86,45 @@ async function integrate(job: MergeBackJob): Promise<void> {
         /* best-effort : ne jamais bloquer le merge sur le log */
       }
     }
-    // 5) Merge --no-ff. En cas de conflit : abort + branche CONSERVÉE + ligne de récupération exacte.
+    // 5) Merge --no-ff. En cas de conflit TEXTUEL : abort + branche CONSERVÉE + ligne de récupération exacte.
+    //    On capture le tip AVANT le merge : avec --no-ff il devient le parent exact du commit de merge, donc
+    //    un revert déterministe (reset --hard) si la green-gate échoue à l'étape 6.
+    const preMergeTip = ((await tryGit(mainPath, ['rev-parse', 'HEAD'])) ?? '').trim()
     try {
       await git(mainPath, ['merge', '--no-ff', '-m', `merge ${branch} (#${task})`, branch])
-      job.onDone(`#${task} : \`${branch}\` intégrée dans le projet principal (merge --no-ff).`)
     } catch {
       await tryGit(mainPath, ['merge', '--abort'])
       const recover = snap ? ` Récupération : \`git stash apply ${snap}\`.` : ''
       job.onConflict(
         `#${task} : conflit sur \`${branch}\` — merge annulé, branche CONSERVÉE pour merge manuel.${recover}`,
       )
+      return
     }
+    // 6) GREEN-GATE : le MAIN combiné doit encore typecheck (un merge propre peut quand même casser la
+    //    compilation). Vérif DANS la chaîne sérialisée → un seul tsc-puis-éventuel-revert à la fois.
+    const gate = await verifyMain(mainPath)
+    if (gate.green) {
+      job.onDone(`#${task} : \`${branch}\` intégrée dans le projet principal (merge --no-ff${gate.skipped ? '' : ', green-gate ✓'}).`)
+      return
+    }
+    // Si le merge touche package.json/pnpm-lock, un rouge peut juste signifier « install requis » → NE PAS
+    // revert (sinon on annulerait en boucle un merge légitime qui ajoute une dépendance). Idem sur timeout.
+    const touchedDeps = ((await tryGit(mainPath, ['diff', '--name-only', `${preMergeTip}..HEAD`])) ?? '')
+      .split('\n')
+      .some((f) => /(^|\/)(package\.json|pnpm-lock\.yaml)$/.test(f.trim()))
+    if (gate.timedOut || touchedDeps) {
+      const why = gate.timedOut ? 'typecheck trop long (timeout)' : 'le merge modifie package.json/pnpm-lock (install manuel requis)'
+      job.onConflict(
+        `#${task} : \`${branch}\` mergée mais green-gate non concluante — ${why}. MAIN laissé en l'état, branche conservée. Vérifie à la main (\`pnpm install\` puis \`pnpm typecheck\`).`,
+      )
+      return
+    }
+    // Rouge franc : MAIN ne compile plus → revert au dernier état vert (le --no-ff garantit le parent exact),
+    // branche CONSERVÉE pour correction. Les fichiers non suivis survivent à reset --hard (isClean §3 vérifié).
+    if (preMergeTip) await tryGit(mainPath, ['reset', '--hard', preMergeTip])
+    job.onConflict(
+      `#${task} : \`${branch}\` cassait le typecheck du projet principal — merge ANNULÉ (MAIN revenu au dernier état vert), branche CONSERVÉE. Détail tsc :\n${gate.log}`,
+    )
   } catch (e) {
     job.onConflict(`#${task} : intégration échouée (${(e as Error).message}) — branche \`${branch}\` conservée.`)
   }
