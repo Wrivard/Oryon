@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell, globalShortcut, session, protocol } from 'electron'
 import { join, extname } from 'path'
 import { readFile } from 'fs/promises'
+import { existsSync, writeFileSync, rmSync } from 'fs'
 import { initDb, closeDb } from './db'
 import { registerIpcHandlers } from './ipc'
 import { killAllTerminals } from './services/pty-manager'
@@ -14,6 +15,50 @@ import { initUpdater } from './services/updater'
 // Nom d'app déterministe → userData = %APPDATA%/Oryon (la DB y migre depuis BridgeForge, cf. db/index.ts).
 app.setName('Oryon')
 
+// ── Sandbox-fallback (Windows) ────────────────────────────────────────────────────────────────────────
+// Des overlays / antivirus tiers (Overwolf, OBS graphics-hook, Avast/Kaspersky…) injectent des DLL NON
+// signées Microsoft dans TOUS les process graphiques. Le sandbox Chromium applique la mitigation
+// BlockNonMicrosoftBinaries → Windows bloque ces DLL au chargement → le GPU + le renderer meurent en
+// 0xC0000135 (STATUS_DLL_NOT_FOUND) AVANT que la fenêtre peigne → « l'app ne fait rien » (constaté : ça
+// arrive aussi à Discord ici). Signer Oryon NE corrige PAS ça (les DLL bloquées sont celles de l'injecteur,
+// jugées contre la signature Microsoft). Best practice : GARDER le sandbox par défaut (sécurité) et ne le
+// désactiver QUE sur les machines où on observe ce crash. Détection à deux niveaux :
+//   1. persistant — disable-sandbox.flag : on démarre directement sans sandbox (aucune relance visible).
+//   2. miette de démarrage — startup-incomplete.flag écrit avant de créer la fenêtre et effacé quand elle
+//      s'affiche : s'il SUBSISTE au lancement suivant, le lancement précédent a crashé avant toute fenêtre
+//      → on bascule. Backstop fiable même si le fast-path (child-process-gone, plus bas) perd la course
+//      contre l'auto-quit « GPU process isn't usable ».
+const isWin = process.platform === 'win32'
+const SANDBOX_OFF_FLAG = join(app.getPath('userData'), 'disable-sandbox.flag')
+const STARTUP_CRUMB = join(app.getPath('userData'), 'startup-incomplete.flag')
+
+if (isWin) {
+  if (existsSync(STARTUP_CRUMB) && !existsSync(SANDBOX_OFF_FLAG)) {
+    try { writeFileSync(SANDBOX_OFF_FLAG, 'auto: lancement précédent crashé avant la fenêtre\n') } catch { /* ignore */ }
+  }
+  if (existsSync(SANDBOX_OFF_FLAG)) app.commandLine.appendSwitch('no-sandbox')
+}
+
+const clearStartupCrumb = (): void => {
+  try { rmSync(STARTUP_CRUMB, { force: true }) } catch { /* ignore */ }
+}
+// 0xC0000135 = STATUS_DLL_NOT_FOUND (hex non signé = 3221225781 ; int32 signé = -1073741515).
+const isDllNotFound = (code: number): boolean => code === 0xc0000135 || code === -1073741515
+let sandboxFallbackArmed = false
+function fallbackToNoSandbox(reason: string): void {
+  if (!isWin || sandboxFallbackArmed || existsSync(SANDBOX_OFF_FLAG)) return
+  sandboxFallbackArmed = true
+  try { writeFileSync(SANDBOX_OFF_FLAG, `auto: ${reason}\n`) } catch { /* ignore */ }
+  console.error(`[sandbox] crash process enfant (${reason}) → relance Oryon sans sandbox`)
+  app.relaunch()
+  app.exit(0)
+}
+// Fast-path : GPU/utility tué par DLL bloquée → bascule immédiate (le renderer est couvert par
+// render-process-gone dans createWindow). Sur machine saine, cet event ne se produit pas.
+app.on('child-process-gone', (_e, details) => {
+  if (isDllNotFound(details.exitCode)) fallbackToNoSandbox(`${details.type}:${details.reason}:${details.exitCode}`)
+})
+
 // Port debug CDP — DEV UNIQUEMENT (jamais dans un build de production). Permet l'inspection/vérif headless.
 if (process.env.NODE_ENV === 'development') app.commandLine.appendSwitch('remote-debugging-port', '9222')
 
@@ -26,6 +71,11 @@ protocol.registerSchemesAsPrivileged([
 const isDev = process.env.NODE_ENV === 'development'
 
 function createWindow() {
+  // Miette de démarrage : posée AVANT de créer la fenêtre (donc avant que le GPU/renderer ne se lance).
+  // Effacée dès qu'une fenêtre s'affiche. Si elle subsiste au prochain lancement → crash pré-fenêtre détecté.
+  if (isWin) {
+    try { writeFileSync(STARTUP_CRUMB, 'launching\n') } catch { /* ignore */ }
+  }
   const win = new BrowserWindow({
     title: 'Oryon',
     icon: join(app.getAppPath(), 'app-logo.png'),
@@ -53,11 +103,13 @@ function createWindow() {
     if (!win.isDestroyed() && !win.isVisible()) {
       console.error('[window] show forcé après 6 s — ready-to-show jamais atteint (renderer bloqué ?)')
       win.show()
+      clearStartupCrumb() // une fenêtre s'affiche → le démarrage a abouti (pas un crash pré-fenêtre)
     }
   }, 6000)
   win.on('ready-to-show', () => {
     clearTimeout(showTimer)
     win.show()
+    clearStartupCrumb()
   })
   // La fenêtre principale fermée → fermer aussi le widget flottant (sinon l'app ne quitte pas).
   win.on('closed', () => {
@@ -69,12 +121,17 @@ function createWindow() {
   win.webContents.on('did-fail-load', (_e, code, desc, url) =>
     console.error(`[window] did-fail-load code=${code} desc=${desc} url=${url}`),
   )
-  win.webContents.on('render-process-gone', (_e, details) =>
-    console.error(`[window] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`),
-  )
+  win.webContents.on('render-process-gone', (_e, details) => {
+    console.error(`[window] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`)
+    // Renderer tué par une DLL injectée bloquée par le sandbox → bascule no-sandbox (cf. en-tête du fichier).
+    if (isDllNotFound(details.exitCode)) fallbackToNoSandbox(`renderer:${details.reason}:${details.exitCode}`)
+  })
   // Preuve POSITIVE que le renderer + ses sous-ressources (bundle module, CSS, wasm ORT) ont chargé
   // (did-fail-load ne couvre QUE la navigation du document principal, pas les sous-ressources).
-  win.webContents.on('did-finish-load', () => console.log('[window] did-finish-load — renderer chargé'))
+  win.webContents.on('did-finish-load', () => {
+    console.log('[window] did-finish-load — renderer chargé')
+    clearStartupCrumb() // renderer chargé avec succès → démarrage abouti
+  })
   // Miroir des erreurs renderer dans le main : MIME module refusé, 404 de chunk hashé, exception non capturée.
   win.webContents.on('console-message', (_e, level, message, line, sourceId) =>
     console.error(`[renderer] level=${level} ${message} (${sourceId}:${line})`),
