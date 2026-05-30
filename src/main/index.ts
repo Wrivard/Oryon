@@ -12,8 +12,27 @@ import { appSetting } from './ipc/settings.ipc'
 import { createVoiceWidget, destroyVoiceWidget } from './services/voice-widget'
 import { initUpdater } from './services/updater'
 
-// Nom d'app déterministe → userData = %APPDATA%/Oryon (la DB y migre depuis BridgeForge, cf. db/index.ts).
-app.setName('Oryon')
+// Nom d'app PAR CANAL → userData distinct dev vs prod. PROD = %APPDATA%/Oryon (la DB y migre depuis
+// BridgeForge, cf. db/index.ts) ; DEV = %APPDATA%/Oryon Dev → oryon.db / mcp-state / flags séparés, pour que
+// le build dev (electron-vite) et le build prod INSTALLÉ tournent EN MÊME TEMPS sans se battre sur la même
+// SQLite. Tout le reste (db, mcp-export, settings…) dérive de getPath('userData') → un seul point à toucher.
+app.setName(app.isPackaged ? 'Oryon' : 'Oryon Dev')
+
+// Verrou d'instance unique, par identité d'app : comme le nom diffère entre dev et prod, leurs verrous sont
+// distincts → dev + prod COEXISTENT. Mais deux instances du MÊME build se battraient sur la même DB userData
+// → la 2e se ferme et redonne le focus à la 1re. (Aucun verrou n'existait avant : risque de corruption SQLite.)
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+    if (win) {
+      if (win.isMinimized()) win.restore()
+      win.focus()
+    }
+  })
+}
 
 // ── Sandbox-fallback (Windows) ────────────────────────────────────────────────────────────────────────
 // Des overlays / antivirus tiers (Overwolf, OBS graphics-hook, Avast/Kaspersky…) injectent des DLL NON
@@ -77,7 +96,8 @@ function createWindow() {
     try { writeFileSync(STARTUP_CRUMB, 'launching\n') } catch { /* ignore */ }
   }
   const win = new BrowserWindow({
-    title: 'Oryon',
+    title: app.isPackaged ? 'Oryon' : 'Oryon Dev', // distingue visuellement les fenêtres dev et prod simultanées
+
     icon: join(app.getAppPath(), 'app-logo.png'),
     width: 1400,
     height: 900,
@@ -151,6 +171,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  if (!gotSingleInstanceLock) return // 2e instance du même build : on a déjà demandé le quit, ne rien initialiser.
   try {
     initDb()
   } catch (err) {
