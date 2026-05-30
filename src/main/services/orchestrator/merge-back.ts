@@ -121,14 +121,19 @@ async function integrate(job: MergeBackJob): Promise<void> {
     }
     // 6) GREEN-GATE : le MAIN combiné doit encore typecheck (un merge propre peut quand même casser la
     //    compilation). Vérif DANS la chaîne sérialisée → un seul tsc-puis-éventuel-revert à la fois.
+    //    On fige le SHA de NOTRE commit de merge : le tsc dure jusqu'à 300 s et NE verrouille PAS le git
+    //    externe — un humain peut commiter sur MAIN entre-temps (scénario self-hosting). Toutes les décisions
+    //    de revert/scoping s'ancrent donc sur ce SHA, jamais sur « HEAD » qui peut avoir bougé.
+    const mergeCommit = ((await tryGit(mainPath, ['rev-parse', 'HEAD'])) ?? '').trim()
     const gate = await verifyMain(mainPath)
     if (gate.green) {
       job.onDone(`#${task} : \`${branch}\` intégrée dans le projet principal (merge --no-ff${gate.skipped ? '' : ', green-gate ✓'}).`)
       return
     }
-    // Si le merge touche package.json/pnpm-lock, un rouge peut juste signifier « install requis » → NE PAS
+    // Si NOTRE merge touche package.json/pnpm-lock, un rouge peut juste signifier « install requis » → NE PAS
     // revert (sinon on annulerait en boucle un merge légitime qui ajoute une dépendance). Idem sur timeout.
-    const touchedDeps = ((await tryGit(mainPath, ['diff', '--name-only', `${preMergeTip}..HEAD`])) ?? '')
+    // Plage scopée à preMergeTip..mergeCommit (pas ..HEAD) → insensible à un commit humain intercalé.
+    const touchedDeps = ((await tryGit(mainPath, ['diff', '--name-only', `${preMergeTip}..${mergeCommit}`])) ?? '')
       .split('\n')
       .some((f) => /(^|\/)(package\.json|pnpm-lock\.yaml)$/.test(f.trim()))
     if (gate.timedOut || touchedDeps) {
@@ -138,12 +143,23 @@ async function integrate(job: MergeBackJob): Promise<void> {
       )
       return
     }
-    // Rouge franc : MAIN ne compile plus → revert au dernier état vert (le --no-ff garantit le parent exact),
-    // branche CONSERVÉE pour correction. Les fichiers non suivis survivent à reset --hard (isClean §3 vérifié).
-    if (preMergeTip) await tryGit(mainPath, ['reset', '--hard', preMergeTip])
-    job.onConflict(
-      `#${task} : \`${branch}\` cassait le typecheck du projet principal — merge ANNULÉ (MAIN revenu au dernier état vert), branche CONSERVÉE. Détail tsc :\n${gate.log}`,
-    )
+    // Rouge franc : MAIN ne compile plus → revert au dernier état vert. GARDE ANTI-PERTE : on ne reset --hard
+    // QUE si MAIN-HEAD est TOUJOURS exactement notre commit de merge. Si un commit humain s'est intercalé
+    // pendant le tsc, reset --hard le perdrait → on DIFFÈRE sans toucher MAIN (cohérent avec defer + branche
+    // conservée). Le --no-ff garantit que preMergeTip est le 1er parent → reset déterministe quand on l'applique.
+    const headNow = ((await tryGit(mainPath, ['rev-parse', 'HEAD'])) ?? '').trim()
+    if (preMergeTip && mergeCommit && headNow === mergeCommit) {
+      const reset = await tryGit(mainPath, ['reset', '--hard', preMergeTip])
+      job.onConflict(
+        reset === null
+          ? `#${task} : \`${branch}\` rouge au typecheck mais le revert (reset --hard) a échoué — MAIN possiblement incohérent, branche conservée, vérifie à la main. Détail tsc :\n${gate.log}`
+          : `#${task} : \`${branch}\` cassait le typecheck du projet principal — merge ANNULÉ (MAIN revenu au dernier état vert), branche CONSERVÉE. Détail tsc :\n${gate.log}`,
+      )
+    } else {
+      job.onConflict(
+        `#${task} : \`${branch}\` rouge au typecheck MAIS MAIN a bougé pendant la vérif (commit humain intercalé) — revert NON appliqué pour ne pas perdre ce commit. MAIN laissé en l'état, branche conservée, vérifie/revert à la main. Détail tsc :\n${gate.log}`,
+      )
+    }
   } catch (e) {
     job.onConflict(`#${task} : intégration échouée (${(e as Error).message}) — branche \`${branch}\` conservée.`)
   }

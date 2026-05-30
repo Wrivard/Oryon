@@ -22,9 +22,14 @@ export default function WorkspaceRail({ onCollapse }: Props) {
 
   useEffect(() => {
     let cancelled = false
-    window.bridge.app.info().then((info) => {
-      if (!cancelled) setAppInfo(info)
-    })
+    window.bridge.app
+      .info()
+      .then((info) => {
+        if (!cancelled) setAppInfo(info)
+      })
+      .catch(() => {
+        /* info app indisponible → on n'affiche simplement pas la version */
+      })
     return () => {
       cancelled = true
     }

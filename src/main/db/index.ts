@@ -12,6 +12,10 @@ let db: Database.Database | null = null
  * Best-effort : un échec ne bloque pas le démarrage (on repart simplement sur une DB neuve).
  */
 function migrateLegacyDbIfNeeded(newDbPath: string): void {
+  // PROD uniquement : le build dev (userData « Oryon Dev ») démarre VIERGE et ne touche pas l'ancienne DB
+  // BridgeForge. Sinon dev + prod, à leur 1er lancement, checkpointeraient/copieraient en concurrence le
+  // MÊME fichier legacy %APPDATA%/BridgeForge/bridgeforge.db (course d'écriture). Dev = environnement neuf.
+  if (!app.isPackaged) return
   if (existsSync(newDbPath)) return
   const userData = dirname(newDbPath)
   const legacy = join(dirname(userData), 'BridgeForge', 'bridgeforge.db')

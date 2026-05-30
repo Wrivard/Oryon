@@ -1,7 +1,7 @@
 import { app, BrowserWindow, shell, globalShortcut, session, protocol } from 'electron'
 import { join, extname } from 'path'
 import { readFile } from 'fs/promises'
-import { existsSync, writeFileSync, rmSync } from 'fs'
+import { existsSync, writeFileSync, rmSync, readFileSync } from 'fs'
 import { initDb, closeDb } from './db'
 import { registerIpcHandlers } from './ipc'
 import { killAllTerminals } from './services/pty-manager'
@@ -51,9 +51,18 @@ const isWin = process.platform === 'win32'
 const SANDBOX_OFF_FLAG = join(app.getPath('userData'), 'disable-sandbox.flag')
 const STARTUP_CRUMB = join(app.getPath('userData'), 'startup-incomplete.flag')
 
+// Nombre de démarrages CONSÉCUTIFS n'ayant jamais atteint la fenêtre (compteur porté par la miette).
+// Le backstop n'enclenche no-sandbox qu'à partir de 2 échecs d'affilée → un force-quit isolé pendant le
+// démarrage ne dégrade PAS silencieusement la sécurité. (Le fast-path, lui, enclenche dès 1 crash
+// 0xC0000135 CONFIRMÉ — voir fallbackToNoSandbox.) La miette est effacée dès qu'une fenêtre s'affiche.
+function readStartupFails(): number {
+  try { return parseInt(readFileSync(STARTUP_CRUMB, 'utf8').trim(), 10) || 0 } catch { return 0 }
+}
+const priorStartupFails = isWin ? readStartupFails() : 0
+
 if (isWin) {
-  if (existsSync(STARTUP_CRUMB) && !existsSync(SANDBOX_OFF_FLAG)) {
-    try { writeFileSync(SANDBOX_OFF_FLAG, 'auto: lancement précédent crashé avant la fenêtre\n') } catch { /* ignore */ }
+  if (priorStartupFails >= 2 && !existsSync(SANDBOX_OFF_FLAG)) {
+    try { writeFileSync(SANDBOX_OFF_FLAG, `auto: ${priorStartupFails} démarrages consécutifs sans fenêtre\n`) } catch { /* ignore */ }
   }
   if (existsSync(SANDBOX_OFF_FLAG)) app.commandLine.appendSwitch('no-sandbox')
 }
@@ -93,7 +102,8 @@ function createWindow() {
   // Miette de démarrage : posée AVANT de créer la fenêtre (donc avant que le GPU/renderer ne se lance).
   // Effacée dès qu'une fenêtre s'affiche. Si elle subsiste au prochain lancement → crash pré-fenêtre détecté.
   if (isWin) {
-    try { writeFileSync(STARTUP_CRUMB, 'launching\n') } catch { /* ignore */ }
+    // Compteur d'échecs consécutifs : si CE démarrage échoue aussi (miette non effacée), le prochain lira N+1.
+    try { writeFileSync(STARTUP_CRUMB, String(priorStartupFails + 1)) } catch { /* ignore */ }
   }
   const win = new BrowserWindow({
     title: app.isPackaged ? 'Oryon' : 'Oryon Dev', // distingue visuellement les fenêtres dev et prod simultanées
