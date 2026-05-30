@@ -21,7 +21,8 @@ const AGENT_BRANCH_PREFIX = 'oryon/agent-'
 
 /** git synchrone dans `cwd`. Lève sur code de sortie non nul (comportement execFileSync). */
 function git(cwd: string, args: string[]): string {
-  return execFileSync('git', ['-c', 'core.quotePath=false', ...args], {
+  // core.editor=true : un merge non-ff ne doit JAMAIS ouvrir d'éditeur (bloquerait le process enfant Windows).
+  return execFileSync('git', ['-c', 'core.quotePath=false', '-c', 'core.editor=true', ...args], {
     cwd,
     windowsHide: true,
     encoding: 'utf8',
@@ -129,6 +130,32 @@ export function ensureWorktree(main: string, agent: string, base?: string): stri
     }
   }
   return existsSync(dir) ? dir : main
+}
+
+/**
+ * Phase 2 (anti stale-fork) : amène le worktree d'un agent à MAIN-HEAD AVANT de (re)dispatcher une task,
+ * pour qu'il voie les dépendances déjà mergées (sinon il forke un tronc périmé créé à l'ouverture du workspace).
+ * N'opère QUE sur un worktree PROPRE : un re-dispatch après 'changes' a du travail non commité → on saute
+ * (le rebase-before-merge de l'intégration réconciliera). Merge non-éditeur ; sur conflit → abort + 'conflict'
+ * (l'agent travaille quand même : pas pire qu'aujourd'hui, et l'intégration conserve la branche sur conflit).
+ * JAMAIS d'écriture sur MAIN — uniquement la branche de l'agent dans son worktree.
+ */
+export function refreshWorktreeToHead(main: string, agent: string): 'updated' | 'dirty' | 'conflict' | 'skip' {
+  if (!isGitRepo(main)) return 'skip'
+  const dir = worktreeDir(main, agent)
+  if (dir === main || !existsSync(dir) || !isRegistered(main, dir)) return 'skip'
+  if ((tryGit(dir, ['status', '--porcelain']) ?? '').trim()) return 'dirty'
+  const head = (tryGit(main, ['rev-parse', 'HEAD']) ?? '').trim()
+  if (!head) return 'skip'
+  // MAIN-HEAD déjà ancêtre du worktree → rien à amener (is-ancestor sort 0 → tryGit ≠ null).
+  if (tryGit(dir, ['merge-base', '--is-ancestor', head, 'HEAD']) !== null) return 'updated'
+  try {
+    git(dir, ['merge', '--no-edit', head])
+    return 'updated'
+  } catch {
+    tryGit(dir, ['merge', '--abort'])
+    return 'conflict'
+  }
 }
 
 /** Retire le worktree d'un agent (dir + enregistrement) mais CONSERVE la branche (commits survivent). */

@@ -21,7 +21,7 @@ import {
   parseOutputFile,
 } from './run-files'
 import { getOrCreateProjectId, createTask, listTasks, getTask, updateTask } from './task-store'
-import { isGitRepo, worktreeDir, branchFor } from '../worktrees'
+import { isGitRepo, worktreeDir, branchFor, refreshWorktreeToHead } from '../worktrees'
 import { enqueueMergeBack } from './merge-back'
 import type { OrchestratorEvent, PlanTask, SubmitMode, Task, TaskStatus, Workspace } from '../../../shared/types'
 
@@ -213,6 +213,12 @@ function dispatchReady(): void {
     assigned.add(t.id)
     // re-run (après changes/blocked/timeout) : on autorise un nouveau result.md à re-déclencher
     processedOutputs.delete(resultFileName(num))
+    // Phase 2 (anti stale-fork) : amène le worktree à MAIN-HEAD pour inclure les dépendances déjà mergées.
+    // No-op si déjà à jour ; sauté si le worktree a du travail non commité (re-dispatch après 'changes').
+    const refresh = refreshWorktreeToHead(swarm.projectPath, terminalName(term))
+    if (refresh === 'conflict') {
+      notice(swarm.workspaceId, `#${num} : le worktree de ${terminalName(term)} diverge de MAIN — démarré sans rafraîchir (l'intégration finale gérera le conflit en conservant la branche).`)
+    }
     inject(
       term,
       t.id,

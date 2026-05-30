@@ -17,7 +17,9 @@ import { verifyMain } from './green-gate'
 const exec = promisify(execFile)
 
 async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await exec('git', ['-c', 'core.quotePath=false', ...args], {
+  // core.editor=true : un merge non-ff (rebase-before-merge) ne doit JAMAIS ouvrir d'éditeur (bloquerait
+  // le process enfant). Les merges qui passent -m ne sont pas affectés.
+  const { stdout } = await exec('git', ['-c', 'core.quotePath=false', '-c', 'core.editor=true', ...args], {
     cwd,
     maxBuffer: 64 * 1024 * 1024,
     windowsHide: true,
@@ -84,6 +86,23 @@ async function integrate(job: MergeBackJob): Promise<void> {
         appendFileSync(log, `${new Date().toISOString()}  merge ${branch}  ->  git stash apply ${snap}\n`)
       } catch {
         /* best-effort : ne jamais bloquer le merge sur le log */
+      }
+    }
+    // 4b) REBASE-BEFORE-MERGE (Phase 2) : réconcilie la branche avec MAIN-courant DANS LE WORKTREE (jamais
+    //     sur MAIN). Les conflits sémantiques/textuels surgissent ici, récupérables, MAIN intact → le merge
+    //     final devient propre. Le worktree est propre (étape 1 a commité). Sur conflit : abort + branche
+    //     conservée. (Avec --no-ff à l'étape 5, le tip pré-merge reste le 1er parent → revert green-gate OK.)
+    const mainHead = ((await tryGit(mainPath, ['rev-parse', 'HEAD'])) ?? '').trim()
+    if (mainHead && (await tryGit(worktree, ['merge-base', '--is-ancestor', mainHead, 'HEAD'])) === null) {
+      try {
+        await git(worktree, ['merge', '--no-edit', mainHead])
+      } catch {
+        await tryGit(worktree, ['merge', '--abort'])
+        const recover = snap ? ` Récupération : \`git stash apply ${snap}\`.` : ''
+        job.onConflict(
+          `#${task} : \`${branch}\` diverge de MAIN — réconciliation en conflit dans le worktree, intégration reportée, branche CONSERVÉE.${recover}`,
+        )
+        return
       }
     }
     // 5) Merge --no-ff. En cas de conflit TEXTUEL : abort + branche CONSERVÉE + ligne de récupération exacte.
