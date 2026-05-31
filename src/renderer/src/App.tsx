@@ -7,6 +7,7 @@ import TerminalGrid from './components/TerminalGrid'
 import RightPanel from './components/RightPanel'
 import { IconButton } from './components/ui/IconButton'
 import { SettingsModal } from './components/Settings/SettingsModal'
+import { VoiceProvider } from './components/Voice/VoiceProvider'
 import { Toaster } from './components/ui/Toaster'
 import { UpdateToast } from './components/Update/UpdateToast'
 import { useAppStore } from './store'
@@ -14,7 +15,7 @@ import { useUiStore } from './store/ui'
 import { useUpdateStore } from './store/update'
 import { fadeUp, staggerContainer, transition } from './lib/motion'
 
-export default function App() {
+function AppContent() {
   const [railCollapsed, setRailCollapsed] = useState(false)
   const settingsOpen = useUiStore((s) => s.settingsOpen)
   const settingsTab = useUiStore((s) => s.settingsTab)
@@ -181,5 +182,13 @@ export default function App() {
       <Toaster />
       <UpdateToast />
     </div>
+  )
+}
+
+export default function App() {
+  return (
+    <VoiceProvider>
+      <AppContent />
+    </VoiceProvider>
   )
 }

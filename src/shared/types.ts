@@ -177,7 +177,7 @@ export interface VoiceHistoryItem {
   source: string | null
   created_at: number | null
 }
-export type VoiceState = 'idle' | 'listening' | 'processing'
+export type VoiceState = 'idle' | 'listening' | 'processing' | 'downloading'
 
 // ---- Oryon Memory (Phase 5) : knowledge graph local en markdown + [[wikilinks]] ----
 export interface MemoryNote {
