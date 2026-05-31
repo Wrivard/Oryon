@@ -57,15 +57,47 @@ function configPath(): string {
  * Idempotent (n'écrit que si nécessaire) et atomique (temp + rename) pour ne pas corrompre le
  * fichier en cas d'écriture concurrente. Ne touche JAMAIS aux credentials (auth reste l'OAuth existant).
  */
+let claudeCfgSeq = 0
+
+// Lecture résiliente de ~/.claude.json : plusieurs `claude` qui démarrent en parallèle écrivent ce même
+// fichier et peuvent le corrompre (ex. « }} » en fin). On RÉPARE (tronque le bruit final jusqu'à un JSON
+// valide), sinon on restaure le `.backup` que claude maintient. Évite (1) que claude refuse de démarrer
+// sur un JSON invalide, (2) qu'Oryon ÉCRASE la config de l'utilisateur par un objet vide. `repaired` force
+// la réécriture du fichier réparé même si le seeding ne change rien d'autre (= auto-guérison au spawn).
+function readClaudeConfigResilient(p: string): { cfg: Record<string, unknown>; repaired: boolean } {
+  let raw: string
+  try {
+    raw = readFileSync(p, 'utf8')
+  } catch {
+    return { cfg: {}, repaired: false } // pas de fichier → config neuve
+  }
+  try {
+    return { cfg: JSON.parse(raw) as Record<string, unknown>, repaired: false }
+  } catch {
+    /* corrompu → réparation ci-dessous */
+  }
+  let cut = raw
+  for (let i = 0; i < 8 && cut.length; i++) {
+    try {
+      return { cfg: JSON.parse(cut) as Record<string, unknown>, repaired: true }
+    } catch (e) {
+      const m = /position (\d+)/.exec((e as Error).message)
+      if (m) cut = cut.slice(0, Number(m[1])).replace(/\s+$/, '')
+      else break
+    }
+  }
+  try {
+    return { cfg: JSON.parse(readFileSync(`${p}.backup`, 'utf8')) as Record<string, unknown>, repaired: true }
+  } catch {
+    /* pas de backup exploitable */
+  }
+  return { cfg: {}, repaired: true } // dernier recours (rare)
+}
+
 export function ensureClaudeReady(projectPath: string): void {
   const p = configPath()
-  let cfg: Record<string, unknown>
-  try {
-    cfg = JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>
-  } catch {
-    cfg = {} // pas de config encore → on en crée une minimale
-  }
-  let changed = false
+  const { cfg, repaired } = readClaudeConfigResilient(p)
+  let changed = repaired // fichier réparé → toujours réécrit (auto-guérison)
 
   // Onboarding global (thème + "Select login method") — barrière one-time de la 1re session interactive.
   if (cfg.hasCompletedOnboarding !== true) { cfg.hasCompletedOnboarding = true; changed = true }
@@ -94,7 +126,7 @@ export function ensureClaudeReady(projectPath: string): void {
   // avec une routine…) ne doit JAMAIS casser le spawn du terminal. Écriture atomique (temp + rename)
   // pour ne pas laisser de fichier à moitié écrit, puis relecture de contrôle.
   try {
-    const tmp = `${p}.oryon-${process.pid}.tmp`
+    const tmp = `${p}.oryon-${process.pid}-${++claudeCfgSeq}.tmp`
     const serialized = JSON.stringify(cfg, null, 2)
     writeFileSync(tmp, serialized)
     renameSync(tmp, p)

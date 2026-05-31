@@ -58,6 +58,9 @@ function styleBlock(el: HTMLElement, block: CmdBlock, onClick: () => void): void
   el.onclick = onClick
 }
 
+// Décalage entre démarrages de terminaux (anti-corruption de ~/.claude.json par boots concurrents).
+const SPAWN_STAGGER_MS = 500
+
 export function Terminal({ term, focused }: { term: TermRow; focused: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<Xterm | null>(null)
@@ -153,28 +156,37 @@ export function Terminal({ term, focused }: { term: TermRow; focused: boolean })
     const inputSub = xterm.onData((data) => window.bridge.terminals.write(term.id, data))
 
     // Defer fit()+spawn au frame suivant : le conteneur doit être dimensionné AVANT fit().
+    // + ÉTALEMENT des démarrages : les N `claude` partagent ~/.claude.json et le corrompent s'ils bootent
+    // tous en même temps (écritures concurrentes → JSON invalide → « Configuration Error »). On échelonne :
+    // l'orchestrateur (pane_index < 0) démarre en premier, puis chaque worker SPAWN_STAGGER_MS plus tard.
     let created = false
+    let spawnTimer: ReturnType<typeof setTimeout> | null = null
     const raf = requestAnimationFrame(() => {
       safeFit()
-      created = true
-      window.bridge.terminals.create({
-        id: term.id,
-        // Le shell démarre dans le WORKTREE de l'agent (isolation des éditions + git diff) ; repli sur cwd
-        // (= projet principal) pour les projets non-git.
-        cwd: term.worktree_path ?? term.cwd,
-        // Ancre de la mémoire partagée + du run d'orchestration = projet PRINCIPAL (cf. terminals.ipc).
-        mainProjectPath: term.cwd,
-        autostart: term.autostart_cmd,
-        cols: xterm.cols,
-        rows: xterm.rows,
-        // Identité de l'agent + workspace → provenance auto (Oryon Memory) ET scope du serveur MCP au
-        // SEUL workspace de ce terminal (le serveur lit ces env). ORYON_WORKSPACE_ID isole les workspaces.
-        env: {
-          ORYON_AGENT_NAME: term.name,
-          ORYON_WORKSPACE_ID: term.workspace_id,
-          ...(term.role ? { ORYON_AGENT_ROLE: term.role } : {}),
-        },
-      })
+      const slot = term.pane_index < 0 ? 0 : term.pane_index + 1
+      spawnTimer = setTimeout(() => {
+        if (xtermRef.current !== xterm) return // remonté entre-temps (StrictMode / changement de workspace)
+        safeFit()
+        created = true
+        window.bridge.terminals.create({
+          id: term.id,
+          // Le shell démarre dans le WORKTREE de l'agent (isolation des éditions + git diff) ; repli sur cwd
+          // (= projet principal) pour les projets non-git.
+          cwd: term.worktree_path ?? term.cwd,
+          // Ancre de la mémoire partagée + du run d'orchestration = projet PRINCIPAL (cf. terminals.ipc).
+          mainProjectPath: term.cwd,
+          autostart: term.autostart_cmd,
+          cols: xterm.cols,
+          rows: xterm.rows,
+          // Identité de l'agent + workspace → provenance auto (Oryon Memory) ET scope du serveur MCP au
+          // SEUL workspace de ce terminal (le serveur lit ces env). ORYON_WORKSPACE_ID isole les workspaces.
+          env: {
+            ORYON_AGENT_NAME: term.name,
+            ORYON_WORKSPACE_ID: term.workspace_id,
+            ...(term.role ? { ORYON_AGENT_ROLE: term.role } : {}),
+          },
+        })
+      }, slot * SPAWN_STAGGER_MS)
     })
 
     const ro = new ResizeObserver(() => {
@@ -200,6 +212,7 @@ export function Terminal({ term, focused }: { term: TermRow; focused: boolean })
 
     return () => {
       cancelAnimationFrame(raf)
+      if (spawnTimer) clearTimeout(spawnTimer)
       ro.disconnect()
       window.bridge.terminals.offData(term.id)
       window.bridge.terminals.offExit(term.id)
