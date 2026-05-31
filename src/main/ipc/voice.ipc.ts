@@ -27,7 +27,9 @@ function listReplacements(): VoiceReplacement[] {
 
 // Exporté : l'auto-add (learn.ts, INC4) ajoute des remplacements appris (source='auto') côté main.
 export function addReplacement(spoken: string, replacement: string, source = 'manual'): VoiceReplacement {
-  const row: VoiceReplacement = { id: uuid(), spoken: str(spoken), replacement: str(replacement), source, created_at: Date.now() }
+  // Coercition défensive (str) + trim : une clé paddée (' foo ') échapperait à l'index UNIQUE NOCASE (007)
+  // et créerait un doublon.
+  const row: VoiceReplacement = { id: uuid(), spoken: str(spoken).trim(), replacement: str(replacement).trim(), source, created_at: Date.now() }
   const db = getDb()
   // upsert sur la clé spoken (index unique NOCASE migration 007) : on remplace l'éventuelle règle existante.
   db.prepare('DELETE FROM voice_replacements WHERE spoken = ? COLLATE NOCASE').run(row.spoken)
@@ -53,7 +55,8 @@ function listVocab(): VoiceVocab[] {
 
 // Exporté : l'auto-add (learn.ts, INC4) ajoute des termes appris (source='auto') côté main.
 export function addVocab(term: string, starred = false, source = 'manual'): VoiceVocab {
-  const row: VoiceVocab = { id: uuid(), term: str(term), starred, source: str(source) || 'manual', created_at: Date.now() }
+  // Coercition défensive (str) + trim : un terme paddé échapperait à l'index UNIQUE NOCASE (009) et créerait un doublon.
+  const row: VoiceVocab = { id: uuid(), term: str(term).trim(), starred, source: str(source) || 'manual', created_at: Date.now() }
   const db = getDb()
   // Upsert NOCASE : supprime l'éventuelle variante de casse (index NOCASE migration 009) puis réinsère.
   db.prepare('DELETE FROM voice_vocab WHERE term = ? COLLATE NOCASE').run(row.term)
@@ -67,7 +70,8 @@ function listSnippets(): VoiceSnippet[] {
   return getDb().prepare('SELECT * FROM voice_snippets ORDER BY created_at DESC').all() as VoiceSnippet[]
 }
 function addSnippet(trigger: string, expansion: string): VoiceSnippet {
-  const row: VoiceSnippet = { id: uuid(), trigger: str(trigger), expansion: str(expansion), created_at: Date.now() }
+  // Coercition défensive (str) + trim : un trigger paddé échapperait à l'index UNIQUE NOCASE (007) et créerait un doublon.
+  const row: VoiceSnippet = { id: uuid(), trigger: str(trigger).trim(), expansion: str(expansion).trim(), created_at: Date.now() }
   const db = getDb()
   db.prepare('DELETE FROM voice_snippets WHERE trigger = ? COLLATE NOCASE').run(row.trigger)
   db.prepare(
