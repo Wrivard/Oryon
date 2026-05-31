@@ -6,7 +6,7 @@ import { addDataObserver, addExitObserver, writeTerminal, hasLiveTerminal } from
 import { decompose, localDecompose, prewarmDecomposer, classifyIntent } from './decomposer'
 import { extractDirectives } from './directives'
 import { buildAgentPrompt, buildReviewPrompt } from './roles'
-import { stripAnsi, recordMailbox } from './mailbox'
+import { stripAnsi, recordMailbox, listMailbox } from './mailbox'
 import {
   initRun,
   tasksDir,
@@ -506,6 +506,87 @@ function runBroadcast(workspaceId: string, prompt: string): void {
   noticeIntent(workspaceId, parts.join(' — '))
 }
 
+// Crée les tasks d'un plan en DB, résout les dépendances (cassage de cycles), écrit les fichiers
+// d'instructions, (re)démarre la surveillance puis dispatche — SAUF en mode propose (étapes à approuver).
+// Suppose que `swarm` + initSwarmState ont déjà été établis par l'appelant.
+function materializePlan(
+  workspaceId: string,
+  projectId: string,
+  projectPath: string,
+  goal: string,
+  plan: PlanTask[],
+  propose: boolean,
+): void {
+  // Dossier de run + GOAL.md (nettoie l'ancien run).
+  initRun(projectPath, goal)
+
+  // Créer les tasks en DB + assigner les numéros (ordre de création = numéro).
+  const indexToId: string[] = []
+  for (const pt of plan) {
+    const t = createTask({
+      workspaceId,
+      projectId,
+      title: pt.title,
+      role: pt.role === 'scout' ? 'scout' : 'builder',
+      instructions: pt.instructions,
+      dependsOn: [],
+    })
+    if (propose) updateTask(t.id, { status: 'proposed' }) // étape en attente d'approbation (mode Plan)
+    indexToId.push(t.id)
+    assignNumber(t.id)
+  }
+
+  // dependsOn (indices bornés) + cassage de cycles : un index non "satisfiable" (dans/derrière un
+  // cycle, ou self-dep) verrait ses deps jamais 'complete' → deadlock. On vide ses deps.
+  const depIdx: number[][] = plan.map((pt) =>
+    (pt.dependsOn ?? []).filter((d) => Number.isInteger(d) && d >= 0 && d < plan.length),
+  )
+  const sat = new Array(plan.length).fill(false)
+  let progress = true
+  while (progress) {
+    progress = false
+    for (let i = 0; i < plan.length; i++) {
+      if (!sat[i] && depIdx[i].every((d) => sat[d])) {
+        sat[i] = true
+        progress = true
+      }
+    }
+  }
+  let hadCycle = false
+  for (let i = 0; i < plan.length; i++) {
+    if (!sat[i]) {
+      depIdx[i] = []
+      hadCycle = true
+    }
+  }
+  if (hadCycle) notice(workspaceId, '⚠ cycle de dépendances détecté — tâches concernées exécutées sans ordre')
+  for (let i = 0; i < plan.length; i++) {
+    const depIds = depIdx[i].map((d) => indexToId[d])
+    if (depIds.length) {
+      getDb().prepare('UPDATE tasks SET depends_on = ? WHERE id = ?').run(JSON.stringify(depIds), indexToId[i])
+    }
+  }
+
+  // Écrire un fichier d'instructions par sub-task (avec les numéros de dépendances pour le contexte).
+  for (let i = 0; i < plan.length; i++) {
+    const num = taskIdToNumber.get(indexToId[i])!
+    const depNums = depIdx[i].map((d) => taskIdToNumber.get(indexToId[d])!)
+    const role = plan[i].role === 'scout' ? 'scout' : 'builder'
+    const fname = writeTaskFile(projectPath, {
+      n: num,
+      title: plan[i].title,
+      role,
+      instructions: plan[i].instructions,
+      depNumbers: depNums,
+    })
+    numberToTaskFile.set(num, fname)
+  }
+
+  startWatcher(projectPath)
+  emitTasks(workspaceId)
+  if (!propose) dispatchReady() // mode Plan : on attend l'approbation des étapes (cf. approvePlan / updateTaskStatus)
+}
+
 // ---- API ----
 export async function submitGoal(workspaceId: string, goal: string, mode: SubmitMode): Promise<ReturnType<typeof listTasks>> {
   if (submitting) throw new Error('Une décomposition est déjà en cours — patiente quelques secondes.')
@@ -573,74 +654,7 @@ export async function submitGoal(workspaceId: string, goal: string, mode: Submit
       swarm.think = directives.think
     }
 
-    // Dossier de run + GOAL.md (nettoie l'ancien run).
-    initRun(ws.project_path, goal)
-
-    // Créer les tasks en DB + assigner les numéros (ordre de création = numéro).
-    const indexToId: string[] = []
-    for (const pt of plan) {
-      const t = createTask({
-        workspaceId,
-        projectId,
-        title: pt.title,
-        role: pt.role === 'scout' ? 'scout' : 'builder',
-        instructions: pt.instructions,
-        dependsOn: [],
-      })
-      if (propose) updateTask(t.id, { status: 'proposed' }) // étape en attente d'approbation (mode Plan)
-      indexToId.push(t.id)
-      assignNumber(t.id)
-    }
-
-    // dependsOn (indices bornés) + cassage de cycles : un index non "satisfiable" (dans/derrière un
-    // cycle, ou self-dep) verrait ses deps jamais 'complete' → deadlock. On vide ses deps.
-    const depIdx: number[][] = plan.map((pt) =>
-      (pt.dependsOn ?? []).filter((d) => Number.isInteger(d) && d >= 0 && d < plan.length),
-    )
-    const sat = new Array(plan.length).fill(false)
-    let progress = true
-    while (progress) {
-      progress = false
-      for (let i = 0; i < plan.length; i++) {
-        if (!sat[i] && depIdx[i].every((d) => sat[d])) {
-          sat[i] = true
-          progress = true
-        }
-      }
-    }
-    let hadCycle = false
-    for (let i = 0; i < plan.length; i++) {
-      if (!sat[i]) {
-        depIdx[i] = []
-        hadCycle = true
-      }
-    }
-    if (hadCycle) notice(workspaceId, '⚠ cycle de dépendances détecté — tâches concernées exécutées sans ordre')
-    for (let i = 0; i < plan.length; i++) {
-      const depIds = depIdx[i].map((d) => indexToId[d])
-      if (depIds.length) {
-        getDb().prepare('UPDATE tasks SET depends_on = ? WHERE id = ?').run(JSON.stringify(depIds), indexToId[i])
-      }
-    }
-
-    // Écrire un fichier d'instructions par sub-task (avec les numéros de dépendances pour le contexte).
-    for (let i = 0; i < plan.length; i++) {
-      const num = taskIdToNumber.get(indexToId[i])!
-      const depNums = depIdx[i].map((d) => taskIdToNumber.get(indexToId[d])!)
-      const role = plan[i].role === 'scout' ? 'scout' : 'builder'
-      const fname = writeTaskFile(ws.project_path, {
-        n: num,
-        title: plan[i].title,
-        role,
-        instructions: plan[i].instructions,
-        depNumbers: depNums,
-      })
-      numberToTaskFile.set(num, fname)
-    }
-
-    startWatcher(ws.project_path)
-    emitTasks(workspaceId)
-    if (!propose) dispatchReady() // mode Plan : on attend l'approbation des étapes (cf. approvePlan / updateTaskStatus)
+    materializePlan(workspaceId, projectId, ws.project_path, goal, plan, propose)
     return listTasks(workspaceId)
   } finally {
     submitting = false
@@ -723,4 +737,82 @@ export function stopSwarm(workspaceId: string): void {
     stopWatcher()
   }
   emitTasks(workspaceId)
+}
+
+// ---- API pour l'orchestrateur conversationnel (cf. agent.ts) ----
+
+export interface SwarmSnapshot {
+  terminals: { name: string; state: 'free' | 'busy' | 'offline'; task?: number }[]
+  tasks: { number: number; title: string | null; status: TaskStatus; role: string | null }[]
+  mailbox: { from: string; body: string }[]
+}
+
+/** Photo de l'état courant d'un workspace (terminaux + tâches + activité), pour le contexte de l'orchestrateur. */
+export function getSwarmSnapshot(workspaceId: string): SwarmSnapshot {
+  const terminals = terminalIds(workspaceId).map((id) => {
+    const busy = terminalBusy.get(id)
+    let state: 'free' | 'busy' | 'offline'
+    if (!hasLiveTerminal(id)) state = 'offline'
+    else if (busy) state = 'busy'
+    else if (terminalReady.get(id)) state = 'free'
+    else state = 'offline' // vivant mais pas encore prêt → inutilisable pour l'instant
+    const num = busy ? taskIdToNumber.get(busy) : undefined
+    return { name: terminalName(id), state, task: num }
+  })
+  const tasks = listTasks(workspaceId)
+    .filter((t) => t.status !== 'proposed')
+    .map((t) => ({ number: taskIdToNumber.get(t.id) ?? 0, title: t.title, status: t.status, role: t.role }))
+  const mailbox = listMailbox(workspaceId)
+    .slice(-8)
+    .map((m) => ({ from: m.from_agent ?? '?', body: m.body }))
+  return { terminals, tasks, mailbox }
+}
+
+/** Dispatch GOUVERNÉ d'un plan décidé par l'orchestrateur (worktrees + revue + merge-back). Reset le batch. */
+export function agentDispatchPipeline(
+  workspaceId: string,
+  plan: PlanTask[],
+  directives?: { effort?: string; think?: boolean },
+): { count: number; terminals: string[] } {
+  const ws = getWorkspace(workspaceId)
+  if (!ws) throw new Error(`Workspace ${workspaceId} introuvable`)
+  const projectId = getOrCreateProjectId(ws.name, ws.project_path)
+  const goal = plan.map((t) => t.title).join(' ; ')
+  swarm = { workspaceId, projectId, projectPath: ws.project_path, goal, effort: directives?.effort, think: directives?.think }
+  initSwarmState(workspaceId)
+  materializePlan(workspaceId, projectId, ws.project_path, goal, plan, false)
+  const terminals: string[] = []
+  for (const [tid, busy] of terminalBusy) if (busy) terminals.push(terminalName(tid))
+  return { count: plan.length, terminals }
+}
+
+/** Injection DIRECTE d'une instruction dans un terminal (par nom ou position #N). Léger, hors pipeline. */
+export function agentInject(workspaceId: string, terminalRef: string, prompt: string): { terminal: string } {
+  const ids = terminalIds(workspaceId)
+  const ref = terminalRef.trim().replace(/^#/, '')
+  let id: string | undefined
+  const idx = Number(ref)
+  if (Number.isInteger(idx) && idx >= 1 && idx <= ids.length) id = ids[idx - 1]
+  if (!id) id = ids.find((x) => terminalName(x).toLowerCase() === ref.toLowerCase())
+  if (!id) throw new Error(`terminal « ${terminalRef} » introuvable`)
+  if (!hasLiveTerminal(id)) throw new Error(`terminal « ${terminalName(id)} » hors-ligne`)
+  const tid = id
+  const line = prompt.replace(/\s+/g, ' ').trim()
+  writeTerminal(tid, line)
+  // claude TUI (bracketed paste) : Entrée comme événement SÉPARÉ, gardé par la vivacité du PTY.
+  setTimeout(() => {
+    if (hasLiveTerminal(tid)) writeTerminal(tid, '\r')
+  }, INJECT_ENTER_DELAY)
+  return { terminal: terminalName(tid) }
+}
+
+/** Diffuse une instruction unique à tous les terminaux libres (réutilise runBroadcast). */
+export function agentBroadcast(workspaceId: string, prompt: string): void {
+  runBroadcast(workspaceId, prompt)
+}
+
+/** Poste un message dans la mailbox de l'orchestrateur. Appelé par send_mailbox (MCP tool). */
+export function agentMailbox(workspaceId: string, fromAgent: string | null, body: string): void {
+  const msg = recordMailbox(workspaceId, fromAgent, body)
+  broadcast({ type: 'mailbox', workspaceId, message: msg })
 }

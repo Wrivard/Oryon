@@ -1,14 +1,18 @@
 import { ipcMain } from 'electron'
 import { submitGoal, runTask, setTaskStatus, stopSwarm, initOrchestrator, approvePlan } from '../services/orchestrator/router'
+import { chatToOrchestrator } from '../services/orchestrator/agent'
 import { listTasks } from '../services/orchestrator/task-store'
 import { listMailbox } from '../services/orchestrator/mailbox'
-import type { Task, MailboxMessage, TaskStatus, SubmitMode } from '../../shared/types'
+import type { Task, MailboxMessage, TaskStatus, SubmitMode, ChatMessage } from '../../shared/types'
 
 export function registerOrchestratorIpc() {
   initOrchestrator() // installe l'observateur du flux PTY (une fois)
 
   ipcMain.handle('orchestrator:submit', (_e, workspaceId: string, goal: string, mode: SubmitMode): Promise<Task[]> =>
     submitGoal(workspaceId, goal, mode),
+  )
+  ipcMain.handle('orchestrator:chat', (_e, workspaceId: string, text: string): Promise<ChatMessage> =>
+    chatToOrchestrator(workspaceId, text),
   )
   ipcMain.handle('orchestrator:approvePlan', (_e, workspaceId: string): void => approvePlan(workspaceId))
   ipcMain.handle('orchestrator:listTasks', (_e, workspaceId: string): Task[] => listTasks(workspaceId))

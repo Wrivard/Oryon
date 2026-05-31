@@ -270,6 +270,14 @@ export interface MailboxMessage {
   created_at: number | null
 }
 
+// Message du fil de conversation avec l'orchestrateur (panneau de chat dédié). 'user' = toi, 'assistant' = l'orchestrateur.
+export interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  body: string
+  created_at: number
+}
+
 export type OrchestratorEvent =
   | { type: 'tasks'; workspaceId: string; tasks: Task[] }
   | { type: 'mailbox'; workspaceId: string; message: MailboxMessage }
@@ -413,6 +421,8 @@ export interface BridgeApi {
   orchestrator: {
     /** Décompose un objectif. 'direct' → local instantané ; 'ai' → LLM + routage ; 'plan' → propose des étapes à approuver. */
     submit: (workspaceId: string, goal: string, mode: SubmitMode) => Promise<Task[]>
+    /** Conversation avec l'orchestrateur : un tour de chat ; il répond et pilote les terminaux (injection directe). */
+    chat: (workspaceId: string, text: string) => Promise<ChatMessage>
     /** Approuve toutes les étapes 'proposed' (mode Plan) → les dispatche. */
     approvePlan: (workspaceId: string) => Promise<void>
     listTasks: (workspaceId: string) => Promise<Task[]>

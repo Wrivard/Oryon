@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
-import { FileCode, Globe, ListTree, GitCompareArrows, KanbanSquare, Network, type LucideIcon } from 'lucide-react'
+import { Bot, FileCode, Globe, ListTree, GitCompareArrows, KanbanSquare, Network, type LucideIcon } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { transition } from '../../lib/motion'
 import { useAppStore } from '../../store'
@@ -10,6 +10,7 @@ import { TasksPanel } from './TasksPanel'
 import { PlanPanel } from './PlanPanel'
 import { SourcePanel } from './SourcePanel'
 import { MemoryPanel } from './MemoryPanel'
+import { OrchestratorChat } from '../Orchestrator/OrchestratorChat'
 
 interface TabDef {
   id: string
@@ -18,6 +19,7 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
+  { id: 'chat', label: 'Chat', icon: Bot },
   { id: 'editor', label: 'Editor', icon: FileCode },
   { id: 'browser', label: 'Browser', icon: Globe },
   { id: 'plan', label: 'Plan', icon: ListTree },
@@ -27,7 +29,7 @@ const TABS: TabDef[] = [
 ]
 
 export default function RightPanel() {
-  const [active, setActive] = useState('editor')
+  const [active, setActive] = useState('chat')
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const workspace = useAppStore((s) => s.workspaces.find((w) => w.id === activeWorkspaceId))
   const openFileNonce = useAppStore((s) => s.openFileRequest?.nonce)
@@ -88,6 +90,12 @@ export default function RightPanel() {
             <div className={cn('absolute inset-0', active === 'source' ? 'block' : 'hidden')}>
               <SourcePanel key={workspace.id} projectPath={workspace.project_path} active={active === 'source'} />
             </div>
+
+            {active === 'chat' && (
+              <div className="absolute inset-0">
+                <OrchestratorChat />
+              </div>
+            )}
 
             {active === 'memory' && (
               <div className="absolute inset-0">

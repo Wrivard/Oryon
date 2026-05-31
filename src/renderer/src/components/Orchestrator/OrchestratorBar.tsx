@@ -32,7 +32,7 @@ const HISTORY_KEY = (wid: string) => `bf:goalHistory:${wid}`
 // Couleur de l'auteur dans la mailbox : l'interprétation d'intention ressort (accent), les notices
 // système s'effacent (subtle), les agents prennent un bleu doux distinct du travail réel.
 function authorClass(from: string | null): string {
-  if (from === 'intention') return 'text-accent'
+  if (from === 'intention' || from === 'orchestrateur') return 'text-accent'
   if (from === 'système') return 'text-fg-subtle'
   return 'text-[#7aa2f7]'
 }
