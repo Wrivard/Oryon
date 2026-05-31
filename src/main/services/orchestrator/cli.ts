@@ -26,11 +26,13 @@ export function emptyMcpConfigPath(): string {
   return p
 }
 
-/** Env d'un appel claude : copie process.env SANS ANTHROPIC_API_KEY → force l'OAuth subscription ($0). */
+/** Env d'un appel claude : copie process.env SANS les vars d'auth Anthropic (API_KEY / AUTH_TOKEN / BASE_URL) → force l'OAuth subscription ($0). */
 export function subscriptionEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v
   delete env.ANTHROPIC_API_KEY
+  delete env.ANTHROPIC_AUTH_TOKEN
+  delete env.ANTHROPIC_BASE_URL
   return env
 }
 
