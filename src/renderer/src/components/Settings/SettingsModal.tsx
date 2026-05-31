@@ -9,12 +9,9 @@ import { UpdatesSettings } from './UpdatesSettings'
 import { ThemePicker } from '../Theme/ThemePicker'
 import type { McpConnector, McpScope, McpTransport, SkillInfo } from '@shared/types'
 
-const MODELS = [
-  { v: '', label: 'Défaut (session)' },
-  { v: 'haiku', label: 'Haiku (rapide)' },
-  { v: 'sonnet', label: 'Sonnet' },
-  { v: 'opus', label: 'Opus (max)' },
-]
+// Tous les agents (orchestrateur + workers) sont CLAMPÉS sur Opus au spawn (enforceAgentSpawn) : un modèle
+// faible est non-exprimable. Le contrôle reste pour rendre la politique « toujours le plus puissant » explicite.
+const MODELS = [{ v: 'opus', label: 'Opus (max) — imposé à tous les agents' }]
 
 type Tab = 'app' | 'project' | 'voice' | 'updates'
 
@@ -180,7 +177,7 @@ export function SettingsModal({
                         </h3>
                         <div className="flex flex-wrap gap-1.5">
                           {MODELS.map((m) => {
-                            const active = (appSettings.agentModel ?? '') === m.v
+                            const active = (appSettings.agentModel || 'opus') === m.v
                             return (
                               <button
                                 key={m.v}

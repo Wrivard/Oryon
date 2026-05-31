@@ -9,6 +9,7 @@
 import { readFileSync, writeFileSync, renameSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+import { WORKER_TERMINAL_SYSTEM } from './orchestrator/roles'
 
 export interface ClaudeCommandOpts {
   /** ex "opus", "sonnet". Omis = modèle par défaut de la session. */
@@ -25,6 +26,10 @@ export interface ClaudeCommandOpts {
 // swarm parallèle). Le warning "bypass" est pré-accepté via bypassPermissionsModeAccepted (cf. config).
 const AUTONOMY_FLAG = '--permission-mode bypassPermissions'
 
+// Modèle imposé à TOUS les agents (orchestrateur + workers). Subscription $0 → toujours le plus puissant.
+// 'opus' = alias du dernier Opus le plus capable. Non-contournable (cf. enforceAgentSpawn + clamp au spawn).
+export const AGENT_MODEL = 'opus'
+
 /** Quote PowerShell-safe (double les apostrophes internes). */
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "''")}'`
@@ -36,6 +41,24 @@ export function buildClaudeCommand(opts: ClaudeCommandOpts = {}): string {
   if (opts.effort) cmd += ` --effort ${opts.effort}`
   if (opts.appendSystemPrompt) cmd += ` --append-system-prompt ${shellQuote(opts.appendSystemPrompt)}`
   if (opts.continueSession) cmd += ' --continue'
+  return cmd
+}
+
+/**
+ * Enforcement au SPAWN (chokepoint universel, cf. terminals.ipc) appliqué à tout agent claude :
+ * 1) MODÈLE clampé sur le plus puissant — un `--model` faible (haiku|sonnet) est réécrit en AGENT_MODEL,
+ *    une commande sans `--model` le reçoit. Aucun réglage ne peut downgrader un agent (corrige F1).
+ * 2) IDENTITÉ : un agent claude SANS `--append-system-prompt` est un WORKER → on lui injecte son rôle
+ *    durable (WORKER_TERMINAL_SYSTEM). L'orchestrateur a déjà le sien, il est donc exclu (corrige F2/F3/F5/F6).
+ * 3) EFFORT max par défaut. Idempotent : ré-appliquer ne change rien.
+ */
+export function enforceAgentSpawn(autostart: string): string {
+  if (!/^claude(\s|$)/.test(autostart.trim())) return autostart // pas une commande claude → inchangé
+  let cmd = autostart
+  if (/--model\s+(haiku|sonnet)\b/i.test(cmd)) cmd = cmd.replace(/--model\s+\S+/i, `--model ${AGENT_MODEL}`)
+  else if (!/--model\b/.test(cmd)) cmd += ` --model ${AGENT_MODEL}`
+  if (!/--effort\b/.test(cmd)) cmd += ' --effort max'
+  if (!/--append-system-prompt\b/.test(cmd)) cmd += ` --append-system-prompt ${shellQuote(WORKER_TERMINAL_SYSTEM)}`
   return cmd
 }
 
