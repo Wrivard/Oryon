@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Mic, Wand2, PictureInPicture2, ShieldCheck } from 'lucide-react'
+import { Mic, Wand2, PictureInPicture2, ShieldCheck, Zap } from 'lucide-react'
 import { cn } from '../../../lib/cn'
 import { SectionHeader, SettingRow, Toggle } from './_parts'
 
@@ -70,6 +70,8 @@ export function VoiceGeneral() {
               <option value="base">Base</option>
               <option value="small">Small (recommandé QC)</option>
               <option value="medium">Medium (précis, lourd)</option>
+              <option value="large">Large (très précis, très lourd)</option>
+              <option value="distil-large">Distil-Large (équilibre)</option>
             </select>
           </label>
           <label className="flex flex-col gap-1.5">
@@ -86,6 +88,66 @@ export function VoiceGeneral() {
           </label>
         </div>
         <p className="mt-2 text-[11px] text-fg-subtle">Small + français recommandé pour le québécois.</p>
+      </section>
+
+      {/* 1.5 — Mode de dictée */}
+      <section>
+        <SectionHeader icon={Zap} title="Mode de dictée" />
+        <div className="space-y-4">
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Destination</span>
+            <select value={s['voice.target'] ?? 'orchestrator'} onChange={(e) => set('voice.target', e.target.value)} className={SELECT_CLS}>
+              <option value="orchestrator">Orchestrateur (traitement IA)</option>
+              <option value="terminal">Terminal (texte brut)</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Mode</span>
+            <div className="inline-flex gap-1.5">
+              {[
+                { v: 'toggle', label: 'Toggle (appui = bascule)' },
+                { v: 'ptt', label: 'PTT (maintien = dictée)' },
+              ].map((o) => (
+                <button
+                  key={o.v}
+                  onClick={() => set('voice.mode', o.v)}
+                  className={cn(
+                    'rounded-md border px-2.5 py-1.5 text-[12px] transition-colors duration-fast',
+                    (s['voice.mode'] ?? 'toggle') === o.v ? 'border-accent bg-accent-soft text-accent' : 'border-border text-fg-muted hover:text-fg',
+                  )}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </label>
+          <fieldset className="flex flex-col gap-1.5">
+            <legend className="text-[10px] uppercase tracking-wide text-fg-subtle">Langues</legend>
+            <div className="space-y-2">
+              {[
+                { v: 'french', label: 'Français' },
+                { v: 'english', label: 'Anglais' },
+              ].map((lang) => {
+                const langs = (s['voice.languages'] ?? 'french,english').split(',').map((l) => l.trim())
+                const checked = langs.includes(lang.v)
+                return (
+                  <label key={lang.v} className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        const newLangs = e.target.checked ? [...langs, lang.v] : langs.filter((l) => l !== lang.v)
+                        set('voice.languages', newLangs.join(','))
+                      }}
+                      className="rounded border border-border"
+                    />
+                    <span className="text-[12px] text-fg">{lang.label}</span>
+                  </label>
+                )
+              })}
+            </div>
+          </fieldset>
+        </div>
       </section>
 
       {/* 2 — Nettoyage du texte (formatting) */}
