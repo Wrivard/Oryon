@@ -7,6 +7,7 @@ import { migration005 } from './005_voice'
 import { migration006 } from './006_voice_vocab'
 import { migration007 } from './007_voice_learning'
 import { migration008 } from './008_terminal_worktree'
+import { migration009 } from './009_voice_vocab_nocase'
 
 export interface Migration {
   /** Entier strictement croissant. Stocké dans `PRAGMA user_version`. */
@@ -29,6 +30,7 @@ export const MIGRATIONS: Migration[] = [
   migration006,
   migration007,
   migration008,
+  migration009,
 ]
 
 /**
