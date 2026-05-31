@@ -182,10 +182,11 @@ export function agentAssignTask(
     [
       `[task ${task.id}]`,
       instructions,
-      'Work in your current git worktree (a full mirror of the repo).',
-      'Use the Oryon Memory MCP tools (search_memories FIRST to reuse context, append_memory to record key decisions).',
-      'Make surgical changes only; respect repo conventions; never run destructive commands.',
-      'When the task is GENUINELY finished, call the MCP tool report_task with status "done" (or "blocked" if you truly cannot proceed) and a real one-line summary of what you changed.',
+      'You are a FOCUSED IMPLEMENTATION WORKER, not an orchestrator: do ONLY the task above — never orchestrate, never ask the user what to do, never wait for further direction.',
+      'Work EXCLUSIVELY inside your current git worktree (a full mirror of the repo). NEVER `cd` to another directory and never edit files outside this worktree — the main project tree and the other agents’ worktrees are OFF-LIMITS.',
+      'Touch only the files the task names; make surgical changes; respect repo conventions; never run destructive commands.',
+      'Do NOT read shared/session memory (it is orchestrator context, not your task). Use search_memories ONLY if the task explicitly asks you to.',
+      'When the task is GENUINELY finished: commit your changes to your branch, confirm with `git status`/`git diff` that the work is actually present, then call report_task with status "done" (or "blocked" if you truly cannot proceed) and a truthful one-line summary. NEVER report "done" unless the committed diff really contains the changes.',
     ].join(' '),
   )
   pasteLine(id, prompt)
