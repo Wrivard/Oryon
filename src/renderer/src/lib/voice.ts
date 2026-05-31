@@ -36,33 +36,41 @@ const ortCacheReady: Promise<void> = (async () => {
   }
 })()
 
-let asrPromise: Promise<AutomaticSpeechRecognitionPipeline> | null = null
-let loadedKey = ''
+const asrCache = new Map<string, Promise<AutomaticSpeechRecognitionPipeline>>()
+// Sonde WebGPU une seule fois au chargement du module — fallback WASM si API absente ou pas d'adapter.
+const gpuDevice: Promise<'webgpu' | 'wasm'> = (async () => {
+  try {
+    const adapter = await (navigator as unknown as { gpu?: { requestAdapter: () => Promise<unknown> } }).gpu?.requestAdapter()
+    return adapter ? 'webgpu' : 'wasm'
+  } catch {
+    return 'wasm'
+  }
+})()
 
-/** Charge (lazy, et recharge si modèle/dtype change) le pipeline ASR (WASM) — après la purge du cache ORT.
- *  dtype 'q8' par défaut (léger/rapide) ; 'fp32' en dernier repli — NON quantifié, donc immunisé à l'erreur
- *  ORT « MatMulNBits / required scale » que certains modèles whisper quantifiés déclenchent (cf. transcribe). */
+/** Charge (lazy, recharge par clé model@dtype) le pipeline ASR — après la purge du cache ORT.
+ *  dtype 'q8' par défaut (léger/rapide) ; 'fp32' en dernier repli (NON quantifié → immunisé MatMulNBits). */
 export function loadAsr(
   model: string,
   onProgress?: (p: { status: string; progress?: number; file?: string }) => void,
   dtype: 'q8' | 'fp32' = 'q8',
 ): Promise<AutomaticSpeechRecognitionPipeline> {
   const key = `${model}@${dtype}`
-  if (asrPromise && key === loadedKey) return asrPromise
-  loadedKey = key
-  asrPromise = ortCacheReady.then(
-    () =>
+  const cached = asrCache.get(key)
+  if (cached) return cached
+  const promise = Promise.all([ortCacheReady, gpuDevice]).then(
+    ([, device]) =>
       pipeline('automatic-speech-recognition', model, {
-        device: 'wasm',
+        device,
         dtype,
         progress_callback: onProgress as never,
       } as never) as Promise<AutomaticSpeechRecognitionPipeline>,
   )
-  return asrPromise
+  asrCache.set(key, promise)
+  return promise
 }
 
-async function runAsr(model: string, pcm16k: Float32Array, language?: string, dtype: 'q8' | 'fp32' = 'q8'): Promise<string> {
-  const asr = await loadAsr(model, undefined, dtype)
+async function runAsr(model: string, pcm16k: Float32Array, language?: string, dtype: 'q8' | 'fp32' = 'q8', onProgress?: (p: { status: string; progress?: number; file?: string }) => void): Promise<string> {
+  const asr = await loadAsr(model, onProgress, dtype)
   const out = await asr(pcm16k, {
     chunk_length_s: 30,
     stride_length_s: 5,
@@ -76,23 +84,32 @@ async function runAsr(model: string, pcm16k: Float32Array, language?: string, dt
 /** Transcrit un PCM mono 16 kHz (Float32) → texte. `language` ex 'french' | 'english' | undefined (auto). */
 export async function transcribe(
   pcm16k: Float32Array,
-  opts: { model: string; language?: string },
+  opts: { model: string; language?: string; onProgress?: (p: { status: string; progress?: number; file?: string }) => void },
 ): Promise<string> {
   try {
-    return await runAsr(opts.model, pcm16k, opts.language)
+    return await runAsr(opts.model, pcm16k, opts.language, 'q8', opts.onProgress)
   } catch (e) {
     const msg = (e as Error)?.message ?? ''
     // Échec de création de session ORT (y.c. « MatMulNBits / required scale » des modèles quantifiés) → replis.
     if (!/create a session|ORT_FAIL|failed to load|MatMulNBits|required scale/i.test(msg)) throw e
-    asrPromise = null
+    asrCache.delete(`${opts.model}@q8`)
     // Repli 1 : whisper-base en q8 (plus léger). Repli 2 : whisper-base en fp32 (NON quantifié → le plus sûr).
     try {
-      if (!/whisper-base/.test(opts.model)) return await runAsr('Xenova/whisper-base', pcm16k, opts.language)
+      if (!/whisper-base/.test(opts.model)) return await runAsr('Xenova/whisper-base', pcm16k, opts.language, 'q8', opts.onProgress)
     } catch {
       /* le repli q8 échoue aussi → fp32 ci-dessous */
     }
-    asrPromise = null
-    return runAsr('Xenova/whisper-base', pcm16k, opts.language, 'fp32')
+    asrCache.delete('Xenova/whisper-base@q8')
+    try {
+      return await runAsr('Xenova/whisper-base', pcm16k, opts.language, 'fp32', opts.onProgress)
+    } catch (e2) {
+      const msg2 = (e2 as Error)?.message ?? ''
+      throw new Error(
+        /network|fetch|Failed to fetch/i.test(msg2)
+          ? 'Modèle vocal indisponible (réseau). Vérifiez votre connexion internet et relancez la dictée.'
+          : `Reconnaissance vocale indisponible (ORT/modèle). Relancez l'app si le problème persiste. [${msg2}]`,
+      )
+    }
   }
 }
 
@@ -226,46 +243,20 @@ export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
   }
 }
 
-/** Ré-échantillonne un PCM mono vers 16 kHz (format attendu par Whisper) via OfflineAudioContext. */
-async function resampleTo16k(samples: Float32Array, srcRate: number): Promise<Float32Array> {
+/** Ré-échantillonne un PCM mono vers 16 kHz (interpolation linéaire JS, sans OfflineAudioContext). */
+function resampleTo16k(samples: Float32Array, srcRate: number): Float32Array {
   if (samples.length === 0) return samples
   if (srcRate === 16000) return samples
-  const length = Math.max(1, Math.round((samples.length * 16000) / srcRate))
-  const offline = new OfflineAudioContext(1, length, 16000)
-  const buf = offline.createBuffer(1, samples.length, srcRate)
-  buf.getChannelData(0).set(samples) // évite le typage strict de copyToChannel (Float32Array générique)
-  const src = offline.createBufferSource()
-  src.buffer = buf
-  src.connect(offline.destination)
-  src.start()
-  const rendered = await offline.startRendering()
-  return rendered.getChannelData(0)
-}
-
-function normTerm(s: string): string {
-  return s
-    .toLowerCase()
-    .normalize('NFKD')
-    .replace(/\p{Diacritic}/gu, '')
-    .replace(/[^a-z0-9]/g, '')
-}
-
-/**
- * Boost vocabulaire (étape 1, conservateur) : corrige chaque MOT transcrit dont la forme normalisée
- * (sans casse/accents/ponctuation) == un terme connu → la graphie canonique du terme. Sûr (match exact
- * normalisé = haute confiance, pas de fuzzy hasardeux). Le fuzzy/multi-mots viendra d'un incrément suivant.
- */
-export function applyVocabBoost(text: string, terms: string[]): string {
-  if (!terms.length) return text
-  const byNorm = new Map<string, string>()
-  for (const t of terms) {
-    const n = normTerm(t)
-    if (n && !byNorm.has(n)) byNorm.set(n, t)
+  const ratio = srcRate / 16000
+  const outLen = Math.round(samples.length / ratio)
+  const out = new Float32Array(outLen)
+  for (let i = 0; i < outLen; i++) {
+    const pos = i * ratio
+    const lo = Math.floor(pos)
+    const hi = Math.min(lo + 1, samples.length - 1)
+    out[i] = samples[lo] * (1 - (pos - lo)) + samples[hi] * (pos - lo)
   }
-  return text.replace(/[\p{L}\p{N}][\p{L}\p{N}'.-]*/gu, (tok) => {
-    const canon = byNorm.get(normTerm(tok))
-    return canon && canon !== tok ? canon : tok
-  })
+  return out
 }
 
 // ---- fuzzyBoost (INC2) : correction post-transcription vers le vocabulaire (Damerau-Levenshtein + n-gram) ----
@@ -319,7 +310,10 @@ export function fuzzyBoost(
     let bestSim = threshold
     for (const t of terms) {
       if (Math.abs(t.key.length - key.length) > 2) continue
-      const sim = 1 - dlDistance(key, t.key) / Math.max(key.length, t.key.length) + t.bonus
+      const dist = dlDistance(key, t.key)
+      const sim = 1 - dist / Math.max(key.length, t.key.length) + t.bonus
+      // Clés courtes (≤6) : exige sim≥0.9 ET dist≤1 — évite 'table'→'ctable' à 0.833.
+      if (key.length <= 6 && (sim < 0.9 || dist > 1)) continue
       if (sim > bestSim) {
         bestSim = sim
         bestTerm = t.term
@@ -328,7 +322,7 @@ export function fuzzyBoost(
     return bestTerm
   }
 
-  const tokens = text.match(/[\p{L}\p{N}][\p{L}\p{N}'’.\-_]*|[^\p{L}\p{N}]+/gu) ?? [text]
+  const tokens = text.match(/[\p{L}\p{N}][\p{L}\p{N}''.\-_]*|[^\p{L}\p{N}]+/gu) ?? [text]
   const isWord = (s: string): boolean => /[\p{L}\p{N}]/u.test(s[0] ?? '')
   const wordIdx: number[] = []
   tokens.forEach((t, i) => isWord(t) && wordIdx.push(i))
@@ -365,7 +359,7 @@ export function applySnippets(text: string, snippets: { trigger: string; expansi
   for (const { trigger, expansion } of snippets) {
     if (!trigger) continue
     const esc = trigger.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    out = out.replace(new RegExp(`\\b${esc}\\b`, 'gi'), expansion)
+    out = out.replace(new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, 'giu'), expansion)
   }
   return out
 }
@@ -376,7 +370,7 @@ export function applyDictionary(text: string, replacements: { spoken: string; re
   for (const { spoken, replacement } of replacements) {
     if (!spoken) continue
     const esc = spoken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    out = out.replace(new RegExp(`\\b${esc}\\b`, 'gi'), replacement)
+    out = out.replace(new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, 'giu'), replacement)
   }
   return out
 }

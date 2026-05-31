@@ -29,7 +29,9 @@ export function VoiceDictionaries() {
   const [dRepl, setDRepl] = useState('')
   const [snTrigger, setSnTrigger] = useState('')
   const [snExpansion, setSnExpansion] = useState('')
+  const [csvMessage, setCsvMessage] = useState<{ text: string; kind: 'success' | 'error' } | null>(null)
   const csvRef = useRef<HTMLInputElement>(null)
+  const csvTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   const loadVocab = () => window.bridge.voice.listVocab().then(setVocab)
   const loadReps = () => window.bridge.voice.listReplacements().then(setReps)
@@ -71,16 +73,31 @@ export function VoiceDictionaries() {
   }
 
   const onCsv = async (file: File) => {
-    const text = await file.text()
-    for (const raw of text.split(/\r?\n/)) {
-      const line = raw.trim()
-      if (!line) continue
-      const cols = line.split(/[;,\t]/).map((c) => c.trim().replace(/^"|"$/g, ''))
-      if (cols.length >= 2 && cols[0] && cols[1]) await window.bridge.voice.addReplacement(cols[0], cols[1])
-      else if (cols[0]) await window.bridge.voice.addVocab(cols[0])
+    try {
+      const text = await file.text()
+      let vocabCount = 0
+      let repCount = 0
+      for (const raw of text.split(/\r?\n/)) {
+        const line = raw.trim()
+        if (!line) continue
+        const cols = line.split(/[;,\t]/).map((c) => c.trim().replace(/^"|"$/g, ''))
+        if (cols.length >= 2 && cols[0] && cols[1]) {
+          await window.bridge.voice.addReplacement(cols[0], cols[1])
+          repCount++
+        } else if (cols[0]) {
+          await window.bridge.voice.addVocab(cols[0])
+          vocabCount++
+        }
+      }
+      const msg = `${vocabCount} terme${vocabCount !== 1 ? 's' : ''} + ${repCount} règle${repCount !== 1 ? 's' : ''} importé${vocabCount + repCount !== 1 ? 's' : ''}`
+      setCsvMessage({ text: msg, kind: 'success' })
+      void loadVocab()
+      void loadReps()
+    } catch (e) {
+      setCsvMessage({ text: `Erreur lors de l'import: ${e instanceof Error ? e.message : 'erreur inconnue'}`, kind: 'error' })
     }
-    void loadVocab()
-    void loadReps()
+    if (csvTimeoutRef.current) clearTimeout(csvTimeoutRef.current)
+    csvTimeoutRef.current = setTimeout(() => setCsvMessage(null), 4000)
   }
 
   return (
@@ -91,6 +108,11 @@ export function VoiceDictionaries() {
         placeholder="Rechercher dans les dictionnaires…"
         className="w-full rounded-md border border-border bg-bg-inset px-2.5 py-1.5 text-[12px] text-fg outline-none focus:border-accent"
       />
+      {csvMessage && (
+        <div className={cn('rounded-md px-3 py-2 text-[12px]', csvMessage.kind === 'success' ? 'bg-accent-soft text-accent' : 'bg-danger-soft text-danger')}>
+          {csvMessage.text}
+        </div>
+      )}
 
       {/* A — Vocabulaire (boost) */}
       <section>
@@ -100,10 +122,10 @@ export function VoiceDictionaries() {
           count={vocab.length}
           action={
             <div className="flex items-center gap-2">
-              <button onClick={() => csvRef.current?.click()} title="1 colonne = vocabulaire · 2 colonnes = entendu/corrigé" className={HEADER_ACTION}>
+              <button onClick={() => csvRef.current?.click()} title="1 colonne = vocabulaire · 2 colonnes = entendu/corrigé" aria-label="Importer CSV" className={HEADER_ACTION}>
                 <Upload size={12} /> CSV
               </button>
-              <button onClick={() => setAddingV((a) => !a)} className={HEADER_ACTION}>
+              <button onClick={() => setAddingV((a) => !a)} aria-label="Ajouter vocabulaire" className={HEADER_ACTION}>
                 <Plus size={12} /> Ajouter
               </button>
             </div>
@@ -132,6 +154,8 @@ export function VoiceDictionaries() {
                     void loadVocab()
                   }}
                   title={v.starred ? 'Prioritaire' : 'Mettre en priorité'}
+                  aria-label={v.starred ? 'Retirer de priorité' : 'Mettre en priorité'}
+                  aria-pressed={v.starred}
                   className={cn('flex h-5 w-5 items-center justify-center rounded', v.starred ? 'text-accent' : 'text-fg-subtle hover:text-fg')}
                 >
                   <Star size={12} className={v.starred ? 'fill-current' : ''} />
@@ -146,6 +170,7 @@ export function VoiceDictionaries() {
                     await window.bridge.voice.deleteVocab(v.id)
                     void loadVocab()
                   }}
+                  aria-label={`Supprimer "${v.term}"`}
                   className="flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:bg-hover hover:text-danger"
                 >
                   <Trash2 size={12} />
@@ -177,7 +202,7 @@ export function VoiceDictionaries() {
           title="Règles de remplacement"
           count={reps.length}
           action={
-            <button onClick={() => setAddingR((a) => !a)} className={HEADER_ACTION}>
+            <button onClick={() => setAddingR((a) => !a)} aria-label="Ajouter règle de remplacement" className={HEADER_ACTION}>
               <Plus size={12} /> Ajouter
             </button>
           }
@@ -197,6 +222,7 @@ export function VoiceDictionaries() {
                     await window.bridge.voice.deleteReplacement(r.id)
                     void loadReps()
                   }}
+                  aria-label={`Supprimer la règle "${r.spoken}" → "${r.replacement}"`}
                   className="ml-auto flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:bg-hover hover:text-danger"
                 >
                   <Trash2 size={12} />
@@ -233,7 +259,7 @@ export function VoiceDictionaries() {
           title="Snippets"
           count={snippets.length}
           action={
-            <button onClick={() => setAddingS((a) => !a)} className={HEADER_ACTION}>
+            <button onClick={() => setAddingS((a) => !a)} aria-label="Ajouter snippet" className={HEADER_ACTION}>
               <Plus size={12} /> Ajouter
             </button>
           }
@@ -254,6 +280,7 @@ export function VoiceDictionaries() {
                     await window.bridge.voice.deleteSnippet(sn.id)
                     void loadSnippets()
                   }}
+                  aria-label={`Supprimer le snippet "${sn.trigger}"`}
                   className="ml-auto flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:bg-hover hover:text-danger"
                 >
                   <Trash2 size={12} />
