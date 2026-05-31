@@ -18,7 +18,7 @@ type VoiceSub = (typeof SUBS)[number]['id']
 
 /** Catégorie Voice des réglages : sous-rail vertical + panneau de contenu (router AnimatePresence). */
 export function VoiceSettings() {
-  const [sub, setSub] = useState<VoiceSub>('stats') // ouvre sur Stats (la page vitrine)
+  const [sub, setSub] = useState<VoiceSub>('general') // ouvre sur Général (configuration utile pour les nouveaux)
 
   return (
     <div className="flex min-h-0 flex-1">
