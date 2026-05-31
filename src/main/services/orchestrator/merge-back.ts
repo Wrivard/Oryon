@@ -11,7 +11,7 @@ import { promisify } from 'util'
 import { mkdirSync, appendFileSync } from 'fs'
 import { join, dirname } from 'path'
 import type { MergeResult } from '../../../shared/types'
-import { worktreeDir, branchFor } from '../worktrees'
+import { worktreeDir, branchFor, listAgentWorktrees, refreshWorktreeToHead } from '../worktrees'
 import { verifyMain } from './green-gate'
 
 const exec = promisify(execFile)
@@ -70,10 +70,13 @@ async function integrate(job: MergeBackJob): Promise<void> {
       job.onDone(`#${task} : rien à intégrer (\`${branch}\` à 0 commit d'avance).`)
       return
     }
-    // 3) Garde : MAIN doit être propre — protège la session éditeur/Source de l'humain sur le tronc.
+    // 3) Garde : MAIN doit être propre — protège la session éditeur/Source de l'humain sur le tronc. Au lieu
+    //    d'ABANDONNER le job (F7 : un tronc sale stranglait tout le travail approuvé), on le met EN ATTENTE :
+    //    drainPendingMerges() (tick mcp-export 2s) le rejoue dès que MAIN redevient propre. Branche conservée.
     if (!(await isClean(mainPath))) {
+      pending.set(branch, job)
       job.onConflict(
-        `#${task} : le projet principal a des changements non commités — intégration de \`${branch}\` reportée (branche conservée).`,
+        `#${task} : projet principal sale — intégration de \`${branch}\` REPORTÉE (auto-retry dès que MAIN sera propre ; branche conservée).`,
       )
       return
     }
@@ -127,6 +130,7 @@ async function integrate(job: MergeBackJob): Promise<void> {
     const mergeCommit = ((await tryGit(mainPath, ['rev-parse', 'HEAD'])) ?? '').trim()
     const gate = await verifyMain(mainPath)
     if (gate.green) {
+      refreshOtherWorktrees(mainPath, agent) // F7 : les autres workers in-flight voient la dépendance fraîchement mergée
       job.onDone(`#${task} : \`${branch}\` intégrée dans le projet principal (merge --no-ff${gate.skipped ? '' : ', green-gate ✓'}).`)
       return
     }
@@ -167,6 +171,32 @@ async function integrate(job: MergeBackJob): Promise<void> {
 
 // Sérialiseur : exactement un merge touche MAIN à la fois. .catch absorbe pour ne pas casser la chaîne.
 let chain: Promise<void> = Promise.resolve()
+
+// Jobs REPORTÉS faute de MAIN propre (F7), rejoués par drainPendingMerges quand le tronc redevient propre.
+const pending = new Map<string, MergeBackJob>()
+
+/** Rejoue les merges en attente dès que MAIN est propre (appelé périodiquement par mcp-export, tick 2s). */
+export async function drainPendingMerges(): Promise<void> {
+  if (pending.size === 0) return
+  const jobs = [...pending.values()]
+  pending.clear()
+  for (const j of jobs) {
+    if (await isClean(j.mainPath)) void enqueueMergeBack(j)
+    else pending.set(j.branch, j) // toujours sale → reste en attente
+  }
+}
+
+/** Après un merge réussi : amène les AUTRES worktrees d'agents (propres) à MAIN-HEAD (F7, anti stale-fork). */
+function refreshOtherWorktrees(main: string, justMerged: string): void {
+  try {
+    for (const w of listAgentWorktrees(main)) {
+      if (w.agent.toLowerCase() === justMerged.toLowerCase()) continue
+      refreshWorktreeToHead(main, w.agent) // saute en interne les worktrees sales/busy
+    }
+  } catch {
+    /* best-effort : ne jamais casser le merge sur le refresh */
+  }
+}
 
 export function enqueueMergeBack(job: MergeBackJob): Promise<void> {
   chain = chain.then(() => integrate(job)).catch(() => {})
