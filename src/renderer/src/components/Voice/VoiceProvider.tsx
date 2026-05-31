@@ -47,9 +47,9 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
           orchestratorTargetRef.current.applyResult(text, sel)
         }
       } else if (target === 'terminal') {
-        const activeTermId = useAppStore.getState().activeTerminalId
-        if (activeTermId) {
-          window.bridge.terminals.write(activeTermId, text)
+        const focusedTermId = useAppStore.getState().focusedTerminalId
+        if (focusedTermId) {
+          window.bridge.terminals.write(focusedTermId, text)
         }
       }
     },
@@ -65,7 +65,7 @@ export function VoiceProvider({ children }: VoiceProviderProps) {
       return
     }
     voiceProviderMounted = true
-    warmModel('Xenova/whisper-small', 'q8', (p) => {
+    warmModel('Xenova/whisper-small', 'q8', (p: { status: string; progress?: number; file?: string }) => {
       if (p.status === 'loading model') toast.info('Chargement modèle vocal…', { title: 'Dictée' })
     }).catch(() => {
       /* error is logged elsewhere */

@@ -73,13 +73,29 @@ async function runAsr(model: string, pcm16k: Float32Array, language?: string, dt
   return (text ?? '').trim()
 }
 
+export function warmModel(
+  model: string,
+  dtype: 'q8' | 'fp32' = 'q8',
+  onProgress?: (p: { status: string; progress?: number; file?: string }) => void,
+): Promise<void> {
+  return loadAsr(model, onProgress, dtype).then(() => undefined)
+}
+
 /** Transcrit un PCM mono 16 kHz (Float32) → texte. `language` ex 'french' | 'english' | undefined (auto). */
 export async function transcribe(
   pcm16k: Float32Array,
-  opts: { model: string; language?: string },
+  opts: { model: string; language?: string; onProgress?: (p: { status: string; progress?: number; file?: string }) => void },
 ): Promise<string> {
   try {
-    return await runAsr(opts.model, pcm16k, opts.language)
+    const asr = await loadAsr(opts.model, opts.onProgress)
+    const out = await asr(pcm16k, {
+      chunk_length_s: 30,
+      stride_length_s: 5,
+      language: opts.language || undefined,
+      task: 'transcribe',
+    } as never)
+    const text = Array.isArray(out) ? out.map((o) => o.text).join(' ') : (out as { text?: string }).text
+    return (text ?? '').trim()
   } catch (e) {
     const msg = (e as Error)?.message ?? ''
     // Échec de création de session ORT (y.c. « MatMulNBits / required scale » des modèles quantifiés) → replis.

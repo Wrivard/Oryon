@@ -5,6 +5,7 @@ import logoUrl from './assets/app-logo.png'
 import WorkspaceRail from './components/WorkspaceRail'
 import TerminalGrid from './components/TerminalGrid'
 import RightPanel from './components/RightPanel'
+import { VoiceProvider } from './components/Voice/VoiceProvider'
 import { IconButton } from './components/ui/IconButton'
 import { SettingsModal } from './components/Settings/SettingsModal'
 import { Toaster } from './components/ui/Toaster'
@@ -14,7 +15,7 @@ import { useUiStore } from './store/ui'
 import { useUpdateStore } from './store/update'
 import { fadeUp, staggerContainer, transition } from './lib/motion'
 
-export default function App() {
+function AppContent() {
   const [railCollapsed, setRailCollapsed] = useState(false)
   const settingsOpen = useUiStore((s) => s.settingsOpen)
   const settingsTab = useUiStore((s) => s.settingsTab)
@@ -96,7 +97,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-full flex-col bg-bg text-fg">
+    <div className="flex h-full flex-col bg-bg text-fg overflow-hidden">
       {/* Top bar */}
       <motion.header
         initial={{ opacity: 0 }}
@@ -181,5 +182,13 @@ export default function App() {
       <Toaster />
       <UpdateToast />
     </div>
+  )
+}
+
+export default function App() {
+  return (
+    <VoiceProvider>
+      <AppContent />
+    </VoiceProvider>
   )
 }
