@@ -377,6 +377,8 @@ export interface BridgeApi {
     update: (id: string, data: UpdateWorkspaceInput) => Promise<Workspace>
     open: (id: string) => Promise<WorkspaceWithTerminals>
     listTerminals: (workspaceId: string) => Promise<Terminal[]>
+    /** Terminal orchestrateur dédié du workspace (9e terminal, hors grille) ; lazy-create si absent. */
+    getOrchestrator: (workspaceId: string) => Promise<Terminal>
     /** Map workspaceId -> nombre de terminaux (pour les badges du rail). */
     terminalCounts: () => Promise<Record<string, number>>
     /** Ajoute un terminal au workspace (split). */
@@ -419,19 +421,11 @@ export interface BridgeApi {
     offDevLog: () => void
   }
   orchestrator: {
-    /** Décompose un objectif. 'direct' → local instantané ; 'ai' → LLM + routage ; 'plan' → propose des étapes à approuver. */
-    submit: (workspaceId: string, goal: string, mode: SubmitMode) => Promise<Task[]>
-    /** Conversation avec l'orchestrateur : un tour de chat ; il répond et pilote les terminaux (injection directe). */
-    chat: (workspaceId: string, text: string) => Promise<ChatMessage>
-    /** Approuve toutes les étapes 'proposed' (mode Plan) → les dispatche. */
-    approvePlan: (workspaceId: string) => Promise<void>
     listTasks: (workspaceId: string) => Promise<Task[]>
     listMailbox: (workspaceId: string) => Promise<MailboxMessage[]>
     /** Changement de statut manuel (drag-drop Kanban). */
     updateTaskStatus: (taskId: string, status: TaskStatus) => Promise<void>
-    /** "Run with agent" depuis une carte. */
-    runTask: (taskId: string) => Promise<void>
-    /** Stoppe le swarm du workspace (remet les in-progress en todo). */
+    /** Stoppe le travail en cours du workspace (interrompt les workers, remet les in-progress en todo). */
     stop: (workspaceId: string) => Promise<void>
     onEvent: (cb: (e: OrchestratorEvent) => void) => void
     offEvent: () => void

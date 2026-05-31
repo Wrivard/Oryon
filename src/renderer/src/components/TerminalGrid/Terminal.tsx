@@ -61,6 +61,9 @@ function styleBlock(el: HTMLElement, block: CmdBlock, onClick: () => void): void
 export function Terminal({ term, focused }: { term: TermRow; focused: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<Xterm | null>(null)
+  // Re-fit + resize PTY + scroll en bas : appelé au clic pour garantir que la ligne de saisie de claude
+  // (en bas du TUI) soit dimensionnée correctement et visible, même si un fit initial a échoué.
+  const refitRef = useRef<() => void>(() => {})
   const setStatus = useAppStore((s) => s.setStatus)
   const { theme } = useTheme()
   const themeRef = useRef(theme)
@@ -164,16 +167,36 @@ export function Terminal({ term, focused }: { term: TermRow; focused: boolean })
         autostart: term.autostart_cmd,
         cols: xterm.cols,
         rows: xterm.rows,
-        // Identité de l'agent → provenance auto des écritures Oryon Memory (le serveur MCP lit ces env).
-        env: { ORYON_AGENT_NAME: term.name, ...(term.role ? { ORYON_AGENT_ROLE: term.role } : {}) },
+        // Identité de l'agent + workspace → provenance auto (Oryon Memory) ET scope du serveur MCP au
+        // SEUL workspace de ce terminal (le serveur lit ces env). ORYON_WORKSPACE_ID isole les workspaces.
+        env: {
+          ORYON_AGENT_NAME: term.name,
+          ORYON_WORKSPACE_ID: term.workspace_id,
+          ...(term.role ? { ORYON_AGENT_ROLE: term.role } : {}),
+        },
       })
     })
 
     const ro = new ResizeObserver(() => {
       safeFit()
-      if (created && canFit()) window.bridge.terminals.resize(term.id, xterm.cols, xterm.rows)
+      if (created && canFit()) {
+        window.bridge.terminals.resize(term.id, xterm.cols, xterm.rows)
+        // Reste collé en bas : un redimensionnement (ex. plein écran) fait redessiner le TUI claude ;
+        // sans ça le viewport ne suit pas et la ligne de saisie « ❯ » passe sous la zone visible.
+        xterm.scrollToBottom()
+        // claude redessine en ASYNCHRONE après le SIGWINCH → re-scroll au frame suivant pour le rattraper.
+        requestAnimationFrame(() => xterm.scrollToBottom())
+      }
     })
     ro.observe(el)
+
+    // Au clic : re-fit (corrige un fit initial raté → ligne de saisie claude clippée), resync la taille
+    // du PTY, et scrolle en bas pour révéler le prompt « ❯ ».
+    refitRef.current = () => {
+      safeFit()
+      if (created && canFit()) window.bridge.terminals.resize(term.id, xterm.cols, xterm.rows)
+      xterm.scrollToBottom()
+    }
 
     return () => {
       cancelAnimationFrame(raf)
@@ -199,5 +222,16 @@ export function Terminal({ term, focused }: { term: TermRow; focused: boolean })
     if (focused) xtermRef.current?.focus()
   }, [focused])
 
-  return <div ref={containerRef} className="h-full w-full overflow-hidden px-2 py-1" />
+  // Clic = focus clavier explicite sur xterm (les workers se tapent directement, sans passer par
+  // l'orchestrateur). Garde-fou si le focus React/onglet n'a pas (re)donné le focus à ce terminal.
+  return (
+    <div
+      ref={containerRef}
+      onMouseDown={() => {
+        refitRef.current()
+        xtermRef.current?.focus()
+      }}
+      className="h-full w-full overflow-hidden px-2 py-1"
+    />
+  )
 }

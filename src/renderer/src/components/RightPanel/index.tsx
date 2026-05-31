@@ -10,7 +10,7 @@ import { TasksPanel } from './TasksPanel'
 import { PlanPanel } from './PlanPanel'
 import { SourcePanel } from './SourcePanel'
 import { MemoryPanel } from './MemoryPanel'
-import { OrchestratorChat } from '../Orchestrator/OrchestratorChat'
+import { OrchestratorPanel } from './OrchestratorPanel'
 
 interface TabDef {
   id: string
@@ -19,7 +19,7 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
-  { id: 'chat', label: 'Chat', icon: Bot },
+  { id: 'orchestrator', label: 'Orchestrator', icon: Bot },
   { id: 'editor', label: 'Editor', icon: FileCode },
   { id: 'browser', label: 'Browser', icon: Globe },
   { id: 'plan', label: 'Plan', icon: ListTree },
@@ -29,7 +29,7 @@ const TABS: TabDef[] = [
 ]
 
 export default function RightPanel() {
-  const [active, setActive] = useState('chat')
+  const [active, setActive] = useState('orchestrator')
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const workspace = useAppStore((s) => s.workspaces.find((w) => w.id === activeWorkspaceId))
   const openFileNonce = useAppStore((s) => s.openFileRequest?.nonce)
@@ -91,11 +91,11 @@ export default function RightPanel() {
               <SourcePanel key={workspace.id} projectPath={workspace.project_path} active={active === 'source'} />
             </div>
 
-            {active === 'chat' && (
-              <div className="absolute inset-0">
-                <OrchestratorChat />
-              </div>
-            )}
+            {/* Orchestrator reste MONTÉ au toggle d'onglets : le terminal (session claude) ne doit JAMAIS
+                redémarrer quand on revient dessus. focused={actif} le refocus à l'affichage sans le remonter. */}
+            <div className={cn('absolute inset-0', active === 'orchestrator' ? 'block' : 'hidden')}>
+              <OrchestratorPanel key={workspace.id} workspaceId={workspace.id} active={active === 'orchestrator'} />
+            </div>
 
             {active === 'memory' && (
               <div className="absolute inset-0">

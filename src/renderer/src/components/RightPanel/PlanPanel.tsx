@@ -1,21 +1,17 @@
 import { AnimatePresence, motion } from 'motion/react'
-import { Check, X, ListChecks, CheckCheck } from 'lucide-react'
+import { Check, X, ListChecks } from 'lucide-react'
 import { useAppStore } from '../../store'
 import { transitionFast } from '../../lib/motion'
 
-// Panneau Plan : file d'approbation des étapes 'proposed' (mode Plan de l'orchestrator bar).
-// Approuver une étape la passe 'todo' → l'orchestrateur la dispatche ; rejeter la passe 'cancelled'.
+// Panneau Plan : file d'approbation des étapes 'proposed'.
+// Approuver une étape la passe 'todo' ; rejeter la passe 'cancelled'.
 // L'état se met à jour réactivement via l'événement 'tasks' (store), aucune relecture manuelle.
 export function PlanPanel() {
-  const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const tasks = useAppStore((s) => s.tasks)
   const proposed = tasks.filter((t) => t.status === 'proposed')
 
   const approveStep = (id: string) => void window.bridge.orchestrator.updateTaskStatus(id, 'todo')
   const rejectStep = (id: string) => void window.bridge.orchestrator.updateTaskStatus(id, 'cancelled')
-  const approveAll = () => {
-    if (activeWorkspaceId) void window.bridge.orchestrator.approvePlan(activeWorkspaceId)
-  }
 
   if (proposed.length === 0) {
     return (
@@ -37,13 +33,6 @@ export function PlanPanel() {
         <span className="text-[11px] font-semibold uppercase tracking-wide text-fg-muted">
           Plan · {proposed.length} étape{proposed.length > 1 ? 's' : ''}
         </span>
-        <button
-          onClick={approveAll}
-          className="flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1 text-[11px] font-medium text-on-accent transition duration-fast hover:bg-accent-hover active:scale-95"
-        >
-          <CheckCheck size={13} />
-          Tout approuver
-        </button>
       </div>
 
       <ol className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-2">

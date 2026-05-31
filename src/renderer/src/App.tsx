@@ -5,7 +5,6 @@ import logoUrl from './assets/app-logo.png'
 import WorkspaceRail from './components/WorkspaceRail'
 import TerminalGrid from './components/TerminalGrid'
 import RightPanel from './components/RightPanel'
-import OrchestratorBar from './components/Orchestrator/OrchestratorBar'
 import { IconButton } from './components/ui/IconButton'
 import { SettingsModal } from './components/Settings/SettingsModal'
 import { Toaster } from './components/ui/Toaster'
@@ -171,8 +170,6 @@ export default function App() {
           <RightPanel />
         </motion.div>
       </motion.div>
-
-      <OrchestratorBar />
 
       <SettingsModal
         open={settingsOpen}

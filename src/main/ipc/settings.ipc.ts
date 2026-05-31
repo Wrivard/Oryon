@@ -90,7 +90,14 @@ export function buildProjectMcpConfigForPath(projectPath: string): string | null
   mcpServers['oryon'] = {
     command: process.execPath,
     args: [serverPath],
-    env: { ORYON_PROJECT_DIR: projectPath, ELECTRON_RUN_AS_NODE: '1' },
+    // ORYON_MCP_STATE : MÊME dossier d'état que mcp-export (userData/mcp-state). Sans lui, server.mjs retombe
+    // sur APPDATA/Oryon/mcp-state, qui DIFFÈRE en dev (« Oryon Dev ») → le serveur lirait un meta.json périmé
+    // et écrirait ses commandes dans le mauvais dossier (assign/report/broadcast jamais traités par le main).
+    env: {
+      ORYON_PROJECT_DIR: projectPath,
+      ORYON_MCP_STATE: join(app.getPath('userData'), 'mcp-state'),
+      ELECTRON_RUN_AS_NODE: '1',
+    },
   }
   for (const r of rows) {
     const name = String(r.name)

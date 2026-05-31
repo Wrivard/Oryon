@@ -334,3 +334,62 @@ export async function findProjectDir(startCwd) {
   }
   return startCwd
 }
+
+/** Chemin du fichier de claims (reserved files pour les agents). */
+function claimsPath(projectDir) {
+  return join(memDir(projectDir), 'claims.json')
+}
+
+/** Lit claims.json (mapping fichier → agent + uuid). Retourne {} si absent. */
+export async function readClaims(projectDir) {
+  try {
+    const content = await fs.readFile(claimsPath(projectDir), 'utf8')
+    return JSON.parse(content)
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return {}
+    throw e
+  }
+}
+
+/** Ajoute/met à jour un claim (fichier → {agent, uuid, ts}). Détection de conflit : si un autre agent
+ *  possède déjà ce fichier avec un uuid différent, renvoie {conflict:true, owner}. Sinon {conflict:false}. */
+export async function claimFile(projectDir, filepath, agentName, opts = {}) {
+  const path = claimsPath(projectDir)
+  const uuid = opts.uuid || String(Math.random()).slice(2)
+  const ts = Date.now()
+  const dir = memDir(projectDir)
+  await ensureDir(dir)
+
+  let claims = await readClaims(projectDir)
+  const existing = claims[filepath]
+
+  // Conflit si un autre agent a déjà ce fichier
+  if (existing && existing.agent !== agentName) {
+    return { conflict: true, owner: existing.agent, uuid: existing.uuid }
+  }
+
+  // Pas de conflit : créer ou mettre à jour
+  claims[filepath] = { agent: agentName, uuid, ts }
+
+  // Écriture atomique
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${++tmpSeq}`
+  await fs.writeFile(tmp, JSON.stringify(claims, null, 2), 'utf8')
+  await renameRetry(tmp, path)
+
+  return { conflict: false, uuid }
+}
+
+/** Relâche un claim (supprime le fichier de claims.json). Idempotent. */
+export async function releaseClaim(projectDir, filepath) {
+  const path = claimsPath(projectDir)
+  let claims = await readClaims(projectDir)
+
+  if (claims[filepath]) {
+    delete claims[filepath]
+    const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${++tmpSeq}`
+    await fs.writeFile(tmp, JSON.stringify(claims, null, 2), 'utf8')
+    await renameRetry(tmp, path)
+  }
+
+  return { released: true }
+}

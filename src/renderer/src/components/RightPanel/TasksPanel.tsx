@@ -1,4 +1,3 @@
-import { Play } from 'lucide-react'
 import { useAppStore } from '../../store'
 import type { Task, TaskStatus } from '@shared/types'
 
@@ -69,15 +68,6 @@ function Card({ task }: { task: Task }) {
       <p className="text-[11px] font-medium leading-snug text-fg">
         {task.title ?? task.instructions.slice(0, 60)}
       </p>
-      {task.status === 'todo' && (
-        <button
-          onClick={() => void window.bridge.orchestrator.runTask(task.id)}
-          className="mt-1.5 flex items-center gap-1 text-[10px] text-fg-subtle transition-colors hover:text-accent"
-        >
-          <Play size={9} />
-          Run with agent
-        </button>
-      )}
     </div>
   )
 }

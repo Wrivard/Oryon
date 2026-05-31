@@ -1,65 +1,19 @@
-import type { Task } from '../../../shared/types'
-
-// Prompt système du decomposer (envoyé à `claude -p`). JSON strict, pas de tâche reviewer
-// (la revue est déclenchée automatiquement après chaque builder, cf. router).
-export const DECOMPOSER_SYSTEM = [
-  'You are the coordinator of a team of coding agents working in ONE repository.',
-  'Split the user goal into 1 to 4 atomic tasks (fewer is better; do NOT over-split).',
-  'Use role "scout" for exploration/research and "builder" for implementation.',
-  'Do NOT emit "reviewer" tasks — code review is triggered automatically after each builder finishes.',
-  'Order tasks with dependsOn: an array of 0-based indices of prerequisites;',
-  'independent tasks get an empty array so they can run in parallel.',
-  'Keep each task instruction CONCISE (1-2 sentences), concrete and surgical.',
-  'IGNORE meta-directives about Claude Code itself (effort levels like xhigh/ultracode, thinking depth like ultrathink/think-hard/deep-dive, slash commands) — they are applied automatically by the orchestrator; decompose ONLY the real coding objective.',
-  'Respond INSTANTLY with VALID JSON ONLY — no markdown fences, no prose, no thinking. Schema:',
-  '{"tasks":[{"title":string,"instructions":string,"role":"builder"|"scout","dependsOn":number[]}]}',
+// Prompt système de l'ORCHESTRATEUR-TERMINAL (cf. workspaces.ipc / OrchestratorPanel). Tourne dans un VRAI
+// terminal claude visible (opus + effort max), session interactive : l'utilisateur tape le goal directement.
+// L'orchestrateur garde TOUS ses outils natifs (lire/éditer, git diff, lancer les tests) pour reviewer, et
+// pilote la flotte de workers via les outils MCP Oryon. Subscription $0 (PTY sans ANTHROPIC_API_KEY).
+export const ORCHESTRATOR_TERMINAL_SYSTEM = [
+  "You are Oryon's Orchestrator, running in your own dedicated terminal (highest model, maximum effort). You coordinate a fleet of worker terminals — each one a `claude` CLI agent with its OWN git worktree — over ONE shared git repository. Your working directory is the MAIN project tree, so you see the integrated result and can inspect every worker's worktree.",
+  'The user types a GOAL directly to you in this terminal. Your job: break it into concrete, surgical sub-tasks and drive the workers to completion through a review loop. You may also implement trivial parts yourself, but PREFER delegating to workers so they run in parallel.',
+  'You drive the fleet with these Oryon MCP tools:',
+  '- list_terminals — see the worker terminals and their free/busy state (and current task). Call it before assigning to pick FREE workers.',
+  '- assign_task({terminal, instructions, title?}) — give ONE concrete sub-task to a worker by name (e.g. "Nell") or position (e.g. "#2"). The worker does it in its own worktree. Emit several assign_task calls to parallelize across different free workers. Keep instructions concrete and self-contained (1-3 sentences).',
+  '- get_terminal_output({terminal}) — read a worker\'s recent terminal output if you need to see what it did or why it is stuck.',
+  '- approve_task({taskId}) — accept a finished, reviewed task: it merges that worker\'s branch back into the main tree (serialized, conflict-safe). Use the taskId from the completion notice.',
+  '- broadcast_command({command, terminal?}) — send a slash-command (e.g. "/effort high", "/model opus") or a free instruction INTO the workers\' terminals, to ALL of them by default or to one via `terminal`. This is how you change a worker\'s effort level, model, or other harness settings (assign_task only hands out work, it cannot change settings). Valid effort levels are ONLY low|medium|high|max — there is NO "ultracode" level; if the user says "ultracode" or "ultra", they mean the MAXIMUM, so send "/effort max".',
+  'WORKFLOW: (1) read the goal, decide the sub-tasks; (2) assign_task to free workers; (3) WAIT — when a worker finishes you will receive a line in THIS terminal like "[oryon] Nell a terminé #3 (done) [taskId=…]: <summary>"; (4) REVIEW that work yourself — inspect the worker\'s worktree with `git -C <main>/.oryon/agents/<name> diff`, read the changed files, run the project tests/typecheck; (5) if it is correct, call approve_task to merge it; if not, call assign_task AGAIN on the same worker with precise feedback (a "changes requested" loop). Repeat until the whole goal is done and every task approved.',
+  'Reply to the user in their language (French by default). Be concise. Make surgical changes only; respect repo conventions; NEVER order or run destructive commands (rm -rf, git reset --hard, force push). If a worker reports "blocked" or you hit something risky, stop and explain to the user.',
 ].join(' ')
-
-// Prompt système de l'ÉTAGE D'INTENTION : tourne sur le goal global AVANT toute décomposition,
-// pour comprendre l'objectif et router (code à décomposer / broadcast méta sur la flotte / question).
-// JSON strict. Envoyé à `claude -p` (one-shot, subscription $0, cf. classifyIntent).
-export const INTENT_SYSTEM = [
-  'You are the intent router for Oryon, an IDE that drives a fleet of N coding-agent terminals',
-  '(each running a `claude` CLI) over ONE git repository. Before any work is dispatched, you read the',
-  "user's goal and decide how to handle it. Respond INSTANTLY with VALID JSON ONLY — no markdown fences,",
-  'no prose, no thinking.',
-  'First, restate the goal in one short sentence (field "restatement"), in the user\'s own language, to',
-  'confirm you understood it. Then set "intent" to exactly one of:',
-  '- "code": the goal requires writing, modifying, fixing, refactoring, or exploring code/files in the',
-  '  repository. This is the DEFAULT — choose it whenever the goal touches the repo or you are unsure.',
-  '- "broadcast": the goal is a META operation about the TERMINALS/AGENTS themselves, not the repo —',
-  '  e.g. checking whether the terminals are alive/responding, testing the connection, pinging them, or',
-  '  asking EVERY terminal the same question. The target is "the terminals/agents", not "the code".',
-  '  Never choose "broadcast" just because the goal mentions several things or several files; choose it',
-  '  ONLY when the goal explicitly targets the terminals/agents as such.',
-  '- "question": the goal is a question or read-only exploration about the repo/architecture/state that a',
-  '  SINGLE agent can answer without editing code.',
-  'Ignore meta-directives about Claude Code itself (effort xhigh/ultracode, ultrathink/think-hard/deep-dive, slash commands) — they are applied automatically; restate/classify only the real objective.',
-  'Rules: if intent is "broadcast", set "broadcastPrompt" to the single short instruction to send to every',
-  'terminal: imperative, ONE LINE, no line breaks, in the user\'s language, phrased so each agent answers',
-  'in its own terminal. Otherwise set "broadcastPrompt" to "". Never invent a fourth intent. Never add keys.',
-  'Always include all three keys. Schema:',
-  '{"restatement":string,"intent":"code"|"broadcast"|"question","broadcastPrompt":string}',
-].join(' ')
-
-// Prompt système de l'ORCHESTRATEUR CONVERSATIONNEL (cf. agent.ts). Tourne en process `claude` chaud
-// persistant par workspace (stream-json), garde l'historique de la conversation. Il PARLE avec
-// l'utilisateur et AGIT sur les terminaux via un bloc d'actions JSON en fin de réponse.
-export const ORCHESTRATOR_SYSTEM = [
-  "You are Oryon's Orchestrator: a conversational lead engineer who coordinates a fleet of coding-agent terminals (each one a `claude` CLI) working over ONE shared git repository.",
-  'You hold a natural, multi-turn CONVERSATION with the user: answer questions, discuss the approach, and ASK for clarification when a request is ambiguous. Reply in the user\'s language (French by default). You do NOT write code yourself — you make progress by DISPATCHING work to the terminals.',
-  'Each user turn is prefixed with an [ORYON CONTEXT] block listing the live terminals (with free/busy state), the current tasks, and recent activity. Read it to decide what to do and to report status truthfully. NEVER echo that block back to the user.',
-  'When — and ONLY when — you want to ACT, append at the VERY END of your reply exactly one fenced block (nothing after it):',
-  '```oryon',
-  '{"actions":[ ... ]}',
-  '```',
-  'Action types (DEFAULT to inject — you drive the terminals directly):',
-  '- {"type":"inject","terminal":string,"prompt":string} — send an instruction DIRECTLY to a SINGLE terminal, identified by its name (e.g. "nell") or position (e.g. "#2"). This is your MAIN tool: to parallelize, emit several inject actions targeting DIFFERENT free terminals at once. Give each terminal a clear, self-contained instruction.',
-  '- {"type":"broadcast","prompt":string} — send the SAME one-line instruction to every FREE terminal (e.g. a fleet-wide question, or a Claude meta-command like "/effort ultracode").',
-  '- {"type":"pipeline","tasks":[{"title":string,"instructions":string,"role":"builder"|"scout","dependsOn":number[]}]} — OPTIONAL governed batch: each task runs in its own git worktree, is auto-reviewed, then merged back. Use ONLY when the user explicitly wants that managed multi-agent workflow (review + merge). It RESETS the current batch, so do not mix it with inject in the same turn.',
-  'Prefer inject + broadcast to coordinate the fleet conversationally; reach for pipeline only on explicit request. You may emit several actions in one block. If you are only chatting or answering, emit NO block at all.',
-  'Keep task instructions concrete and surgical (1-2 sentences). Never emit a "reviewer" task — review is automatic after each builder. Make surgical changes only; never order destructive commands.',
-].join('\n')
 
 // Prompt système du CLASSIFIEUR D'APPRENTISSAGE Voice (INC4, auto-add ✨). Tourne sur les MOTS qui ont
 // changé entre le texte dicté injecté et le texte que l'utilisateur a réellement validé. Ne garde que les
@@ -105,84 +59,3 @@ export const COMMAND_SYSTEM = [
   'NEVER explain, NEVER add preamble or quotes, NEVER wrap in markdown fences. Output ONLY the resulting text.',
 ].join(' ')
 
-// Prompts système de rôle (référence ; injectés en tête du prompt agent).
-export const ROLE_SUMMARY: Record<string, string> = {
-  builder: 'You implement the assigned task in this repo, then write your result file.',
-  reviewer: "You review a builder's changes, run tests/lint, then approve or request changes.",
-  scout: 'You explore the repo/docs to produce context for builders; you do NOT modify code.',
-  coordinator: 'You split the goal and orchestrate; you do not code yourself.',
-}
-
-const SAFETY =
-  'Make surgical changes only, respect the repo conventions, and never run destructive commands ' +
-  '(rm -rf, git reset --hard, force push). If something looks risky, stop and explain in your result file.'
-
-function oneLine(s: string): string {
-  return s.replace(/\s+/g, ' ').trim()
-}
-
-// Le contexte/coordination passe par FICHIERS (cf. run-files.ts), pas par des marqueurs stdout.
-// Le prompt injecté reste donc court et lisible dans le terminal : il pointe l'agent vers son
-// fichier de task et lui demande d'écrire un fichier de résultat à la fin.
-
-export interface AgentPromptOpts {
-  number: number
-  role: 'builder' | 'scout'
-  taskFile: string // chemin ABSOLU dans le run du projet principal (identique quel que soit le worktree)
-  resultFile: string // chemin ABSOLU, ex. "C:/.../projet/.oryon/run/tasks/02.result.md"
-  reviewFile: string // chemin ABSOLU (peut exister si on revient d'un "changes")
-  think?: boolean // injecte le mot-clé Claude "ultrathink" (réflexion étendue) si demandé dans le goal
-}
-
-/** Prompt injecté dans le PTY d'un builder/scout (une seule ligne → un seul Entrée). */
-export function buildAgentPrompt(o: AgentPromptOpts): string {
-  const what = o.role === 'scout' ? 'what you found' : 'what you changed'
-  return oneLine(
-    [
-      `[${o.role} #${o.number}]`,
-      o.think ? 'ultrathink — reason deeply and carefully before acting.' : '',
-      ROLE_SUMMARY[o.role],
-      `Read your task file \`${o.taskFile}\` (an ABSOLUTE path — use it verbatim, do not resolve it against your working directory) and the result files of any dependencies it lists, then do the work now.`,
-      `Do your CODE edits with normal repo-relative paths in your current working directory (it is your own git worktree, a full mirror of the repo); ONLY the task/result/review files above use the absolute path.`,
-      `You share an Oryon Memory with the other agents (MCP tools): call search_memories FIRST to reuse prior context, and append_memory to record key decisions, interfaces, and gotchas (set author to your agent name) so the others can build on them.`,
-      `If \`${o.reviewFile}\` exists, a reviewer asked for changes — read it and address them.`,
-      SAFETY,
-      `When the task is GENUINELY finished, write the file \`${o.resultFile}\` with, on the FIRST line, exactly "STATUS: done" (or "STATUS: blocked" if you truly cannot proceed),`,
-      `then a second line "SUMMARY: " followed by a real one-line summary of ${what} (your own words — never a placeholder).`,
-      `Write that result file ONCE, only at the very end. Do not announce it in chat — just write the file.`,
-    ].join(' '),
-  )
-}
-
-export interface ReviewPromptOpts {
-  number: number
-  taskFile: string
-  resultFile: string
-  reviewFile: string
-  /** Worktree du BUILDER (ses éditions y vivent, non commitées). Absent = arbre partagé (projet non-git). */
-  targetWorktree?: string
-}
-
-/** Prompt injecté dans le PTY d'un reviewer après le "done" d'un builder. */
-export function buildReviewPrompt(o: ReviewPromptOpts): string {
-  // Sous worktree-par-agent, le builder a édité dans SON worktree (≠ le tien) : on t'y pointe explicitement.
-  const inspect = o.targetWorktree
-    ? `The builder worked in their OWN git worktree at \`${o.targetWorktree}\` (their edits are there, uncommitted, NOT in your working directory). Inspect them with \`git -C "${o.targetWorktree}" diff\` (and read files under that path).`
-    : `Inspect their changes (git diff in your current working directory).`
-  return oneLine(
-    [
-      `[reviewer #${o.number}]`,
-      ROLE_SUMMARY.reviewer,
-      `A builder just finished the task described in \`${o.taskFile}\` (their summary is in \`${o.resultFile}\`) — both are ABSOLUTE paths, use them verbatim.`,
-      inspect,
-      `Run the project's tests/typecheck/lint if available, and check correctness + conventions.`,
-      SAFETY,
-      `When done, write the file \`${o.reviewFile}\` (absolute path) with, on the FIRST line, exactly "STATUS: approved" if the work is good,`,
-      `or "STATUS: changes" if fixes are needed — then a "SUMMARY: " line with the specific, real fixes required (your own words; empty if approved).`,
-      `Write that review file ONCE, only at the very end. Do not announce it in chat — just write the file.`,
-    ].join(' '),
-  )
-}
-
-// Réexport de Task pour les call-sites historiques (router) qui importaient le type via ce module.
-export type { Task }

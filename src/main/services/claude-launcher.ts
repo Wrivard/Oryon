@@ -13,6 +13,8 @@ import { join } from 'path'
 export interface ClaudeCommandOpts {
   /** ex "opus", "sonnet". Omis = modèle par défaut de la session. */
   model?: string
+  /** Niveau d'effort Claude pour la session (ex. "ultracode"). Flag --effort. */
+  effort?: string
   /** Prompt système de rôle (builder/reviewer/...). Phase 3. */
   appendSystemPrompt?: string
   /** Reprend la conversation la plus récente du dossier. */
@@ -31,6 +33,7 @@ function shellQuote(s: string): string {
 export function buildClaudeCommand(opts: ClaudeCommandOpts = {}): string {
   let cmd = `claude ${AUTONOMY_FLAG}`
   if (opts.model) cmd += ` --model ${opts.model}`
+  if (opts.effort) cmd += ` --effort ${opts.effort}`
   if (opts.appendSystemPrompt) cmd += ` --append-system-prompt ${shellQuote(opts.appendSystemPrompt)}`
   if (opts.continueSession) cmd += ' --continue'
   return cmd

@@ -13,6 +13,7 @@ const bridge: BridgeApi = {
     update: (id, data) => ipcRenderer.invoke('workspaces:update', id, data),
     open: (id) => ipcRenderer.invoke('workspaces:open', id),
     listTerminals: (workspaceId) => ipcRenderer.invoke('workspaces:listTerminals', workspaceId),
+    getOrchestrator: (workspaceId) => ipcRenderer.invoke('workspaces:getOrchestrator', workspaceId),
     terminalCounts: () => ipcRenderer.invoke('workspaces:terminalCounts'),
     addTerminal: (workspaceId) => ipcRenderer.invoke('workspaces:addTerminal', workspaceId),
     removeTerminal: (id) => ipcRenderer.invoke('workspaces:removeTerminal', id),
@@ -55,13 +56,10 @@ const bridge: BridgeApi = {
     offDevLog: () => ipcRenderer.removeAllListeners('browser:dev-log'),
   },
   orchestrator: {
-    submit: (workspaceId, goal, mode) => ipcRenderer.invoke('orchestrator:submit', workspaceId, goal, mode),
-    approvePlan: (workspaceId) => ipcRenderer.invoke('orchestrator:approvePlan', workspaceId),
     listTasks: (workspaceId) => ipcRenderer.invoke('orchestrator:listTasks', workspaceId),
     listMailbox: (workspaceId) => ipcRenderer.invoke('orchestrator:listMailbox', workspaceId),
     updateTaskStatus: (taskId, status) =>
       ipcRenderer.invoke('orchestrator:updateTaskStatus', taskId, status),
-    runTask: (taskId) => ipcRenderer.invoke('orchestrator:runTask', taskId),
     stop: (workspaceId) => ipcRenderer.invoke('orchestrator:stop', workspaceId),
     onEvent: (cb) => {
       ipcRenderer.on('orchestrator:event', (_e: IpcRendererEvent, ev) => cb(ev))
