@@ -202,3 +202,34 @@ export function listAgentWorktrees(main: string): AgentBranch[] {
   }
   return result
 }
+
+export interface BranchEvidence {
+  ahead: number // commits de la branche en avance sur MAIN-HEAD
+  filesChanged: string[] // fichiers modifiés (commités + non commités)
+  worktreeDirty: boolean // modifs non commitées dans le worktree
+  mainDirty: boolean // tronc principal avec modifs SUIVIES (contamination possible — F3)
+  empty: boolean // aucun travail : 0 commit d'avance ET worktree propre
+}
+
+/**
+ * Sonde de PREUVE pour la porte de complétion (cf. agentReportTask, F4/F8) : l'état git RÉEL de la branche
+ * d'un agent vs MAIN, lu en synchrone. Sert à ne plus faire confiance au seul rapport texte du worker.
+ */
+export function branchEvidence(main: string, agent: string): BranchEvidence {
+  const dir = worktreeDir(main, agent)
+  const branch = branchFor(agent)
+  const ahead = parseInt((tryGit(main, ['rev-list', '--count', `HEAD..${branch}`]) ?? '0').trim(), 10) || 0
+  const wtStatus = existsSync(dir) ? (tryGit(dir, ['status', '--porcelain']) ?? '') : ''
+  const worktreeDirty = !!wtStatus.trim()
+  const committed = (tryGit(main, ['diff', '--name-only', `HEAD..${branch}`]) ?? '')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const uncommitted = wtStatus
+    .split('\n')
+    .map((l) => l.slice(3).trim())
+    .filter(Boolean)
+  const filesChanged = Array.from(new Set([...committed, ...uncommitted]))
+  const mainDirty = !!((tryGit(main, ['status', '--porcelain', '--untracked-files=no']) ?? '').trim())
+  return { ahead, filesChanged, worktreeDirty, mainDirty, empty: ahead === 0 && !worktreeDirty }
+}
