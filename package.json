@@ -19,7 +19,8 @@
     "dist:mac": "electron-vite build && electron-builder --mac",
     "dist:linux": "electron-vite build && electron-builder --linux",
     "publish:win": "electron-vite build && electron-builder --win --publish always",
-    "release:stable": "npm version patch && npm run publish:win",
+    "release:stable": "npm version patch && git push --follow-tags",
+    "release:stable:local": "npm version patch && npm run publish:win",
     "release:dev": "node scripts/bump-dev.mjs && npm run publish:win"
   },
   "dependencies": {

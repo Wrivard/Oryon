@@ -93,13 +93,11 @@ linux:
   artifactName: ${productName}-${version}.${ext}
 
 # Auto-update via GitHub Releases (electron-updater lit app-update.yml généré ici).
-# releaseType: release → la release est PUBLIÉE directement (pas en draft) : `release:stable` met l'update à
-# disposition des apps installées sans étape manuelle « Publish » sur GitHub.
+# Le feed = le repo PRINCIPAL Wrivard/Oryon, qui est PUBLIC → l'app installée lit les releases (installeur +
+# latest.yml/dev.yml) ANONYMEMENT, sans token embarqué. releaseType: release = la release est PUBLIÉE
+# directement (pas en draft), donc dispo immédiatement pour les apps installées dès qu'elle est créée.
 publish:
   provider: github
   owner: Wrivard
-  # Feed de release PUBLIC séparé : le code reste dans Wrivard/Oryon (privé), seuls les installeurs + les
-  # manifestes latest.yml/dev.yml vivent ici → l'app installée les lit ANONYMEMENT (pas de token embarqué).
-  # Auto-update depuis un repo privé = impossible sans auth ; embarquer un token = extractible. D'où ce repo.
-  repo: Oryon-releases
+  repo: Oryon
   releaseType: release

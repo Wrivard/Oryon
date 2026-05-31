@@ -1,0 +1,35 @@
+name: Release
+
+# Publie une release Windows quand on pousse un tag de version (ex. v0.1.2).
+# Le flux : `npm run release:stable` bump la version + crée le tag + le pousse → ce workflow build
+# l'installeur NSIS et le publie (avec latest.yml) dans les GitHub Releases de Wrivard/Oryon.
+# L'app installée le voit alors depuis Réglages → Mises à jour (electron-updater lit ce repo public).
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Nécessaire pour qu'electron-builder crée/édite la release via le GITHUB_TOKEN d'Actions.
+permissions:
+  contents: write
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # Installe les deps + rebuild natif (better-sqlite3 via postinstall ; node-pty via npmRebuild d'eb).
+      - run: npm ci
+
+      # electron-vite build + electron-builder --win --publish always.
+      # GH_TOKEN = token d'Actions, scoped sur Wrivard/Oryon (= repo de publish) → push de la release autorisé.
+      - name: Build + publish Windows installer
+        run: npm run publish:win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
