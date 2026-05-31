@@ -20,6 +20,22 @@ function patch(p: Partial<UpdaterState>): void {
   state = { ...state, ...p }
   broadcast()
 }
+// Traduit les erreurs brutes d'electron-updater en messages COURTS et actionnables (au lieu de dumper du HTML
+// 404 / des en-têtes dans un toast). Le 404 sur releases.atom = dépôt privé sans accès OU aucune release.
+function friendlyUpdateError(raw: string): string {
+  const s = String(raw ?? '')
+  if (/404|Not Found|releases\.atom|HttpError: 404/i.test(s)) {
+    return "Aucune mise à jour trouvée : dépôt de releases privé/inaccessible, ou aucune version publiée. Vérifie la configuration des releases (publish)."
+  }
+  if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|network|getaddrinfo/i.test(s)) {
+    return 'Serveur de mises à jour injoignable (réseau indisponible).'
+  }
+  if (/ERR_UPDATER_CHANNEL_FILE_NOT_FOUND|latest.*\.yml/i.test(s)) {
+    return "Manifeste de mise à jour introuvable (latest.yml absent de la release). La release est-elle complète et publiée ?"
+  }
+  // Repli : 1re ligne seulement, tronquée (jamais un mur de HTML/headers).
+  return s.split('\n')[0].slice(0, 180)
+}
 function applyChannel(ch: UpdateChannel): void {
   if (updater) {
     if (ch === 'dev') {
@@ -74,10 +90,10 @@ export async function initUpdater(): Promise<void> {
       patch({ phase: 'downloading', progress: { percent: p?.percent ?? 0, bytesPerSecond: p?.bytesPerSecond ?? 0, transferred: p?.transferred ?? 0, total: p?.total ?? 0 } }),
     )
     updater.on('update-downloaded', () => patch({ phase: 'downloaded' }))
-    updater.on('error', (e: any) => patch({ phase: 'error', error: e?.message ?? String(e) }))
+    updater.on('error', (e: any) => patch({ phase: 'error', error: friendlyUpdateError(e?.message ?? String(e)) }))
     setTimeout(() => updater.checkForUpdates().catch(() => {}), 3000) // check silencieux au boot
   } catch (e) {
-    state = { ...state, phase: 'error', error: (e as Error).message }
+    state = { ...state, phase: 'error', error: friendlyUpdateError((e as Error).message) }
   }
 }
 
@@ -87,14 +103,14 @@ export function getUpdaterState(): UpdaterState {
 export async function checkUpdate(): Promise<UpdaterState> {
   if (updater) {
     patch({ phase: 'checking', error: undefined })
-    await updater.checkForUpdates().catch((e: any) => patch({ phase: 'error', error: e?.message ?? String(e) }))
+    await updater.checkForUpdates().catch((e: any) => patch({ phase: 'error', error: friendlyUpdateError(e?.message ?? String(e)) }))
   }
   return state
 }
 export function downloadUpdate(): void {
   if (!updater) return
   patch({ phase: 'downloading', progress: { percent: 0, bytesPerSecond: 0, transferred: 0, total: 0 } })
-  updater.downloadUpdate().catch((e: any) => patch({ phase: 'error', error: e?.message ?? String(e) }))
+  updater.downloadUpdate().catch((e: any) => patch({ phase: 'error', error: friendlyUpdateError(e?.message ?? String(e)) }))
 }
 export function installUpdate(): void {
   // isSilent=true → l'installeur tourne en mode silencieux (/S) : pas d'assistant, l'update s'applique en

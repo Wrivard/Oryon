@@ -98,5 +98,8 @@ linux:
 publish:
   provider: github
   owner: Wrivard
-  repo: Oryon
+  # Feed de release PUBLIC séparé : le code reste dans Wrivard/Oryon (privé), seuls les installeurs + les
+  # manifestes latest.yml/dev.yml vivent ici → l'app installée les lit ANONYMEMENT (pas de token embarqué).
+  # Auto-update depuis un repo privé = impossible sans auth ; embarquer un token = extractible. D'où ce repo.
+  repo: Oryon-releases
   releaseType: release
