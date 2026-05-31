@@ -96,6 +96,8 @@ export async function learnFromEdit(injected: string, edited: string, context: s
   if (!changes.length) return { learned: [] }
   // Mode privacy : aucun appel réseau (le classifieur est un appel `claude`). On a quand même loggé.
   if ((appSetting('voice.privacy') ?? '0') === '1') return { learned: [] }
+  // Garde coût : édition trop large = pas une correction vocale typique (> 20 paires ou payload > 512 B).
+  if (changes.length > 20 || JSON.stringify(changes).length > 512) return { learned: [] }
 
   const raw = await voiceCliOneShot(LEARN_SYSTEM, JSON.stringify({ changes }))
   let parsed: { terms?: ClassifiedTerm[] } = {}
