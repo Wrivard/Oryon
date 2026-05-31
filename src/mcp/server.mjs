@@ -25,6 +25,16 @@ const DEFAULT_ROLE = process.env.ORYON_AGENT_ROLE || undefined
 // propre serveur MCP avec cet env → un orchestrateur ne voit/pilote jamais les terminaux d'un autre workspace.
 const WORKSPACE_ID = process.env.ORYON_WORKSPACE_ID || ''
 
+// Role-gate (F2) : un WORKER ne doit PAS LIRE la mémoire partagée — c'est le contexte orchestrateur/session,
+// et des workers s'en servaient pour se prendre pour l'orchestrateur (« qu'est-ce que je dois faire ? »).
+// Les outils de LECTURE mémoire ne sont exposés qu'au rôle 'orchestrator' (fail-safe : un rôle absent =
+// traité comme worker → pas de lecture). Les workers gardent l'écriture (append/create/update), la
+// coordination (claim_files) et report_task/send_mailbox.
+const isOrchestrator = DEFAULT_ROLE === 'orchestrator'
+const readMemoryTool = (...args) => {
+  if (isOrchestrator) server.tool(...args)
+}
+
 function readMeta() {
   try {
     return JSON.parse(readFileSync(join(STATE_DIR, 'meta.json'), 'utf8'))
@@ -104,21 +114,21 @@ server.tool(
 // Toutes ces opérations sont du pur FS (aucun appel Claude → coût $0). Écritures sûres en parallèle :
 // préférer append_memory (sans conflit) ; update_memory utilise la concurrence optimiste (expectedUpdated).
 
-server.tool(
+readMemoryTool(
   'list_memories',
   'Liste toutes les notes de mémoire partagée du projet (nom, titre, extrait, liens). Survol bon marché du contexte existant avant de travailler.',
   {},
   async () => text(JSON.stringify(await memory.listMemories(PROJECT_DIR), null, 2)),
 )
 
-server.tool(
+readMemoryTool(
   'search_memories',
   'Recherche plein-texte (titre + corps) dans la mémoire partagée. Utilise-le pour retrouver ce qu\'un AUTRE agent a noté avant de refaire le travail.',
   { query: z.string().describe('mots-clés'), limit: z.number().optional() },
   async ({ query, limit }) => text(JSON.stringify(await memory.searchMemories(PROJECT_DIR, query, limit ?? 20), null, 2)),
 )
 
-server.tool(
+readMemoryTool(
   'read_memory',
   "Lit le contenu complet d'une note par son nom. Renvoie existed:false si absente (ne devine pas).",
   { name: z.string() },
@@ -148,28 +158,28 @@ server.tool(
   async ({ name, content, expectedUpdated }) => text(JSON.stringify(await memory.writeMemory(PROJECT_DIR, name, content, { expectedUpdated }), null, 2)),
 )
 
-server.tool(
+readMemoryTool(
   'find_backlinks',
   'Notes qui pointent vers une note donnée (signal de coordination : qui dépend de ce contexte).',
   { name: z.string() },
   async ({ name }) => text(JSON.stringify(await memory.findBacklinks(PROJECT_DIR, name), null, 2)),
 )
 
-server.tool(
+readMemoryTool(
   'get_links',
   "Liens sortants d'une note, séparés en résolus vs non résolus (notes fantômes à créer).",
   { name: z.string() },
   async ({ name }) => text(JSON.stringify(await memory.getLinks(PROJECT_DIR, name), null, 2)),
 )
 
-server.tool(
+readMemoryTool(
   'get_memory_graph',
   'Topologie du graphe de mémoire (nœuds + arêtes des [[wikilinks]]). Aucune mise en page (concern de l\'UI).',
   {},
   async () => text(JSON.stringify(await memory.buildGraph(PROJECT_DIR), null, 2)),
 )
 
-server.tool(
+readMemoryTool(
   'suggest_connections',
   'Notes liées à une note via des [[wikilinks]] partagés (heuristique pure, sans IA). Pour découvrir du contexte connexe.',
   { name: z.string(), limit: z.number().optional() },
