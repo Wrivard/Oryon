@@ -69,6 +69,27 @@ export function loadAsr(
   return promise
 }
 
+/** Préchauffe le modèle ASR à l'idle (download + init session ORT) hors du chemin critique de la 1re dictée. */
+export function warmModel(
+  model: string,
+  dtype: 'q8' | 'fp32' = 'q8',
+  onProgress?: (p: { status: string; progress?: number; file?: string }) => void,
+): Promise<void> {
+  return loadAsr(model, onProgress, dtype).then(() => undefined)
+}
+
+/** Résout le nom court de modèle (réglage voice.model) en id de dépôt HF/ONNX réel (tiny|base|small|medium|large|distil-large). */
+export function resolveModelId(short: string): string {
+  switch (short) {
+    case 'large':
+      return 'Xenova/whisper-large-v3'
+    case 'distil-large':
+      return 'distil-whisper/distil-large-v3' // repli gracieux via la cascade fp32/whisper-base si l'id ONNX diffère
+    default:
+      return 'Xenova/whisper-' + short
+  }
+}
+
 async function runAsr(model: string, pcm16k: Float32Array, language?: string, dtype: 'q8' | 'fp32' = 'q8', onProgress?: (p: { status: string; progress?: number; file?: string }) => void): Promise<string> {
   const asr = await loadAsr(model, onProgress, dtype)
   const out = await asr(pcm16k, {
