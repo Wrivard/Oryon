@@ -79,6 +79,10 @@ const bridge: BridgeApi = {
   settings: {
     getApp: () => ipcRenderer.invoke('settings:getApp'),
     setApp: (key, value) => ipcRenderer.invoke('settings:setApp', key, value),
+    onAppChanged: (cb) => {
+      ipcRenderer.on('settings:appChanged', (_e: IpcRendererEvent, p) => cb(p))
+    },
+    offAppChanged: () => ipcRenderer.removeAllListeners('settings:appChanged'),
     listConnectors: (projectId) => ipcRenderer.invoke('settings:listConnectors', projectId),
     addConnector: (input) => ipcRenderer.invoke('settings:addConnector', input),
     toggleConnector: (id, enabled) => ipcRenderer.invoke('settings:toggleConnector', id, enabled),
@@ -135,6 +139,7 @@ const bridge: BridgeApi = {
     offState: () => ipcRenderer.removeAllListeners('voice:state'),
     setWidget: (visible) => ipcRenderer.invoke('voice:setWidget', visible),
     reregisterHotkeys: () => ipcRenderer.invoke('voice:reregisterHotkeys'),
+    getHotkeyConflicts: () => ipcRenderer.invoke('voice:getHotkeyConflicts'),
     onHotkeyConflict: (cb) => {
       ipcRenderer.on('voice:hotkeyConflict', (_e: IpcRendererEvent, info) => cb(info))
     },
