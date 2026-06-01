@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plug, Plus, Trash2, Pencil, Download, Check, X } from 'lucide-react'
+import { Plug, Plus, Trash2, Pencil, Download, Check, X, Eye, EyeOff } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import type {
   McpConnector,
@@ -74,6 +74,8 @@ export function ConnectorsSection({ projectPath }: { projectPath: string | null 
   const [form, setForm] = useState<Form>(emptyForm())
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
+  // Révélation par champ secret (env/headers) : masqués (password) par défaut, œil pour afficher.
+  const [showVals, setShowVals] = useState<Record<string, boolean>>({})
 
   // Test de connexion (handshake initialize + tools/list) AVANT enregistrement.
   const [testing, setTesting] = useState(false)
@@ -327,8 +329,16 @@ export function ConnectorsSection({ projectPath }: { projectPath: string | null 
             value={row.value}
             onChange={(e) => setKv(which, form[which].map((r, j) => (j === i ? { ...r, value: e.target.value } : r)))}
             placeholder="valeur"
+            type={showVals[`${which}-${i}`] ? 'text' : 'password'}
             className="flex-1 rounded-md border border-border bg-bg-panel px-2 py-1 text-[11px] text-fg outline-none focus:border-accent"
           />
+          <button
+            onClick={() => setShowVals((s) => ({ ...s, [`${which}-${i}`]: !s[`${which}-${i}`] }))}
+            title={showVals[`${which}-${i}`] ? 'Masquer' : 'Afficher'}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-fg-subtle transition-colors hover:text-fg"
+          >
+            {showVals[`${which}-${i}`] ? <EyeOff size={12} /> : <Eye size={12} />}
+          </button>
           <button
             onClick={() => setKv(which, form[which].filter((_, j) => j !== i))}
             title="Retirer"
@@ -487,7 +497,7 @@ export function ConnectorsSection({ projectPath }: { projectPath: string | null 
                     c.scope === 'app' ? 'bg-accent-soft text-accent' : 'bg-[#7aa2f7]/15 text-[#7aa2f7]',
                   )}
                 >
-                  {c.scope}
+                  {c.scope === 'app' ? 'global' : 'projet'}
                 </span>
                 <span className="truncate text-[10px] text-fg-subtle">
                   {c.transport === 'stdio' ? `${c.command ?? ''} ${parseArgs(c.args)}`.trim() : c.url}
