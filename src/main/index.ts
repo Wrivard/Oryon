@@ -261,6 +261,10 @@ app.whenReady().then(() => {
   registerVoiceHotkey()
   // Ré-enregistrement à chaud des hotkeys après un changement de réglage (le renderer appelle via le preload).
   ipcMain.handle('voice:reregisterHotkeys', () => registerVoiceHotkey())
+  // Conflits du DERNIER enregistrement : le renderer les récupère au montage. L'event 'voice:hotkeyConflict'
+  // émis au boot part AVANT que VoiceProvider ne soit abonné (registerVoiceHotkey court juste après
+  // createWindow, le renderer n'a pas chargé) → sans ce pull, une hotkey morte n'a aucun feedback.
+  ipcMain.handle('voice:getHotkeyConflicts', () => lastHotkeyConflicts)
   if (appSetting('voice.showWidget') !== '0') createVoiceWidget() // widget flottant (activé par défaut)
   void initUpdater() // auto-update brandé (canaux stable/dev) — no-op hors build packagé
 
@@ -296,6 +300,7 @@ function registerMediaPermissions(): void {
 // État module : accélérateurs réellement enregistrés (pour ré-enregistrement à chaud) et horodatage de
 // coalescence — module-scoped pour survivre à un ré-enregistrement (sinon le debounce se réarmerait à zéro).
 let registeredAccels: string[] = []
+let lastHotkeyConflicts: { accel: string; mode: string }[] = []
 let lastToggle = 0
 
 /**
@@ -312,6 +317,7 @@ export function registerVoiceHotkey(): void {
     try { globalShortcut.unregister(accel) } catch { /* ignore */ }
   }
   registeredAccels = []
+  lastHotkeyConflicts = []
 
   const broadcast = (channel: string): void => {
     for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send(channel)
@@ -330,6 +336,7 @@ export function registerVoiceHotkey(): void {
     const okToggle = globalShortcut.register(toggleAccel, sendToggle)
     if (!okToggle || !globalShortcut.isRegistered(toggleAccel)) {
       console.warn('Voice hotkey conflict:', toggleAccel)
+      lastHotkeyConflicts.push({ accel: toggleAccel, mode: 'toggle' })
       BrowserWindow.getAllWindows()[0]?.webContents.send('voice:hotkeyConflict', { accel: toggleAccel, mode: 'toggle' })
     } else {
       registeredAccels.push(toggleAccel)
@@ -342,6 +349,7 @@ export function registerVoiceHotkey(): void {
       const okCommand = globalShortcut.register(commandAccel, () => broadcast('voice:command-key'))
       if (!okCommand || !globalShortcut.isRegistered(commandAccel)) {
         console.warn('Voice hotkey conflict:', commandAccel)
+        lastHotkeyConflicts.push({ accel: commandAccel, mode: 'command' })
         BrowserWindow.getAllWindows()[0]?.webContents.send('voice:hotkeyConflict', { accel: commandAccel, mode: 'command' })
       } else {
         registeredAccels.push(commandAccel)
