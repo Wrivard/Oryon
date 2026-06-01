@@ -1,9 +1,16 @@
-import { ipcMain, app } from 'electron'
+import { ipcMain, app, safeStorage } from 'electron'
 import { v4 as uuid } from 'uuid'
-import { writeFileSync } from 'fs'
+import { writeFileSync, renameSync } from 'fs'
 import { join } from 'path'
 import { getDb } from '../db'
-import type { McpConnector, McpConnectorInput } from '../../shared/types'
+import type {
+  McpConnector,
+  McpConnectorInput,
+  McpConnectorUpdate,
+  McpConnectorSecrets,
+  McpScope,
+  McpTransport,
+} from '../../shared/types'
 
 // ---- app settings (clé/valeur) ----
 function getAppSettings(): Record<string, string> {
@@ -29,6 +36,50 @@ function resolveProjectId(projectPath?: string | null): string | null {
   return (getDb().prepare('SELECT id FROM projects WHERE path = ?').pluck().get(projectPath) as string | undefined) ?? null
 }
 
+// ---- secrets (env/headers) chiffrés au repos ----
+// Chiffrés via Electron safeStorage (DPAPI sous Windows / Keychain / libsecret). Stockés préfixés
+// `enc:v1:` + base64 ; repli en JSON clair si le coffre OS est indisponible (le préfixe disambigue
+// la lecture). Déchiffrés UNIQUEMENT à la génération du config (just-in-time, écrit en 0o600) et pour
+// préremplir le formulaire d'édition (connectorSecrets) — jamais renvoyés par listConnectors.
+const ENC_PREFIX = 'enc:v1:'
+function encryptSecrets(obj: Record<string, string> | null | undefined): string | null {
+  if (!obj || Object.keys(obj).length === 0) return null
+  const json = JSON.stringify(obj)
+  if (safeStorage.isEncryptionAvailable()) return ENC_PREFIX + safeStorage.encryptString(json).toString('base64')
+  return json
+}
+function decryptSecrets(stored: unknown): Record<string, string> {
+  if (typeof stored !== 'string' || stored.length === 0) return {}
+  try {
+    if (stored.startsWith(ENC_PREFIX)) {
+      const buf = Buffer.from(stored.slice(ENC_PREFIX.length), 'base64')
+      return JSON.parse(safeStorage.decryptString(buf)) as Record<string, string>
+    }
+    return JSON.parse(stored) as Record<string, string>
+  } catch {
+    return {}
+  }
+}
+
+/** Mappe une ligne DB vers le type public : enabled→bool, présence de secrets (jamais les VALEURS). */
+function rowToConnector(r: Record<string, unknown>): McpConnector {
+  return {
+    id: String(r.id),
+    name: String(r.name),
+    scope: r.scope as McpScope,
+    project_id: (r.project_id as string | null) ?? null,
+    transport: r.transport as McpTransport,
+    command: (r.command as string | null) ?? null,
+    args: (r.args as string | null) ?? null,
+    url: (r.url as string | null) ?? null,
+    enabled: !!r.enabled,
+    created_at: (r.created_at as number | null) ?? null,
+    catalog_id: (r.catalog_id as string | null) ?? null,
+    hasEnv: typeof r.env === 'string' && r.env.length > 0,
+    hasHeaders: typeof r.headers === 'string' && r.headers.length > 0,
+  }
+}
+
 function listConnectors(projectPath?: string | null): McpConnector[] {
   const projectId = resolveProjectId(projectPath)
   const rows = getDb()
@@ -36,12 +87,13 @@ function listConnectors(projectPath?: string | null): McpConnector[] {
       `SELECT * FROM mcp_connectors WHERE scope = 'app' OR (scope = 'project' AND project_id = ?) ORDER BY scope, name`,
     )
     .all(projectId) as Array<Record<string, unknown>>
-  return rows.map((r) => ({ ...r, enabled: !!r.enabled })) as McpConnector[]
+  return rows.map(rowToConnector)
 }
 
 function addConnector(input: McpConnectorInput): McpConnector {
-  const row: McpConnector = {
-    id: uuid(),
+  const id = uuid()
+  const row = {
+    id,
     name: input.name,
     scope: input.scope,
     project_id: input.scope === 'project' ? resolveProjectId(input.projectPath) : null,
@@ -49,16 +101,49 @@ function addConnector(input: McpConnectorInput): McpConnector {
     command: input.command ?? null,
     args: input.args ? JSON.stringify(input.args) : null,
     url: input.url ?? null,
-    enabled: true,
+    env: encryptSecrets(input.env),
+    headers: encryptSecrets(input.headers),
+    catalog_id: input.catalogId ?? null,
     created_at: Date.now(),
   }
   getDb()
     .prepare(
-      `INSERT INTO mcp_connectors (id, name, scope, project_id, transport, command, args, url, enabled, created_at)
-       VALUES (@id, @name, @scope, @project_id, @transport, @command, @args, @url, 1, @created_at)`,
+      `INSERT INTO mcp_connectors (id, name, scope, project_id, transport, command, args, url, env, headers, catalog_id, enabled, created_at)
+       VALUES (@id, @name, @scope, @project_id, @transport, @command, @args, @url, @env, @headers, @catalog_id, 1, @created_at)`,
     )
     .run(row)
-  return row
+  regenerateAllConfigs()
+  const saved = getDb().prepare('SELECT * FROM mcp_connectors WHERE id = ?').get(id) as Record<string, unknown>
+  return rowToConnector(saved)
+}
+
+/** Édition d'un connecteur : champ absent = inchangé ; env/headers à null = vidés. Régénère les configs. */
+function updateConnector(input: McpConnectorUpdate): McpConnector | null {
+  const exists = getDb().prepare('SELECT 1 FROM mcp_connectors WHERE id = ?').get(input.id)
+  if (!exists) return null
+  const sets: string[] = []
+  const params: Record<string, unknown> = { id: input.id }
+  if (input.name !== undefined) { sets.push('name = @name'); params.name = input.name }
+  if (input.transport !== undefined) { sets.push('transport = @transport'); params.transport = input.transport }
+  if (input.command !== undefined) { sets.push('command = @command'); params.command = input.command }
+  if (input.args !== undefined) { sets.push('args = @args'); params.args = input.args ? JSON.stringify(input.args) : null }
+  if (input.url !== undefined) { sets.push('url = @url'); params.url = input.url }
+  if (input.env !== undefined) { sets.push('env = @env'); params.env = input.env === null ? null : encryptSecrets(input.env) }
+  if (input.headers !== undefined) { sets.push('headers = @headers'); params.headers = input.headers === null ? null : encryptSecrets(input.headers) }
+  if (sets.length > 0) {
+    getDb().prepare(`UPDATE mcp_connectors SET ${sets.join(', ')} WHERE id = @id`).run(params)
+    regenerateAllConfigs()
+  }
+  const saved = getDb().prepare('SELECT * FROM mcp_connectors WHERE id = ?').get(input.id) as Record<string, unknown>
+  return rowToConnector(saved)
+}
+
+/** Secrets DÉCHIFFRÉS d'un connecteur — pour préremplir le formulaire d'édition (jamais via la liste). */
+function connectorSecrets(id: string): McpConnectorSecrets {
+  const row = getDb().prepare('SELECT env, headers FROM mcp_connectors WHERE id = ?').get(id) as
+    | { env: unknown; headers: unknown }
+    | undefined
+  return { env: decryptSecrets(row?.env), headers: decryptSecrets(row?.headers) }
 }
 
 /**
@@ -101,12 +186,42 @@ export function buildProjectMcpConfigForPath(projectPath: string): string | null
   for (const r of rows) {
     const name = String(r.name)
     if (name === 'oryon') continue // ne pas écraser notre serveur
-    if (r.transport === 'http' && r.url) mcpServers[name] = { type: 'http', url: r.url }
-    else if (r.command) mcpServers[name] = { command: r.command, args: r.args ? JSON.parse(String(r.args)) : [] }
+    const env = decryptSecrets(r.env)
+    const headers = decryptSecrets(r.headers)
+    if ((r.transport === 'http' || r.transport === 'sse') && r.url) {
+      const server: Record<string, unknown> = { type: String(r.transport), url: r.url }
+      if (Object.keys(headers).length > 0) server.headers = headers
+      mcpServers[name] = server
+    } else if (r.command) {
+      const server: Record<string, unknown> = { command: r.command, args: r.args ? JSON.parse(String(r.args)) : [] }
+      if (Object.keys(env).length > 0) server.env = env
+      mcpServers[name] = server
+    }
   }
   const file = join(app.getPath('userData'), `oryon-mcp-${projectId ?? 'app'}.json`)
-  writeFileSync(file, JSON.stringify({ mcpServers }, null, 2))
+  // Écriture atomique en 0o600 : le fichier contient des secrets DÉCHIFFRÉS (env/headers) que le CLI
+  // doit lire en clair ; temp+rename évite qu'un claude au boot lise un JSON tronqué (cf. mcp-export.ts).
+  const tmp = `${file}.tmp-${process.pid}`
+  writeFileSync(tmp, JSON.stringify({ mcpServers }, null, 2), { mode: 0o600 })
+  renameSync(tmp, file)
   return file
+}
+
+/**
+ * Réécrit les fichiers de config MCP de TOUS les projets enrôlés pour refléter l'état courant de la DB.
+ * Appelé après chaque mutation de connecteur (add/update/toggle/delete) : sans ça, l'action n'a aucun
+ * effet sur disque tant qu'un nouveau terminal claude n'est pas spawné. Ne relance PAS les agents vivants
+ * (ils relisent au prochain spawn). Un projet illisible n'interrompt pas la régénération des autres.
+ */
+function regenerateAllConfigs(): void {
+  const paths = getDb().prepare('SELECT path FROM projects').pluck().all() as string[]
+  for (const p of paths) {
+    try {
+      buildProjectMcpConfigForPath(p)
+    } catch {
+      /* projet illisible / chemin disparu : on continue les autres */
+    }
+  }
 }
 
 export function registerSettingsIpc(): void {
@@ -114,10 +229,14 @@ export function registerSettingsIpc(): void {
   ipcMain.handle('settings:setApp', (_e, key: string, value: string): void => setAppSetting(key, value))
   ipcMain.handle('settings:listConnectors', (_e, projectPath?: string | null): McpConnector[] => listConnectors(projectPath))
   ipcMain.handle('settings:addConnector', (_e, input: McpConnectorInput): McpConnector => addConnector(input))
+  ipcMain.handle('settings:updateConnector', (_e, input: McpConnectorUpdate): McpConnector | null => updateConnector(input))
+  ipcMain.handle('settings:connectorSecrets', (_e, id: string): McpConnectorSecrets => connectorSecrets(id))
   ipcMain.handle('settings:toggleConnector', (_e, id: string, enabled: boolean): void => {
     getDb().prepare('UPDATE mcp_connectors SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id)
+    regenerateAllConfigs()
   })
   ipcMain.handle('settings:deleteConnector', (_e, id: string): void => {
     getDb().prepare('DELETE FROM mcp_connectors WHERE id = ?').run(id)
+    regenerateAllConfigs()
   })
 }
