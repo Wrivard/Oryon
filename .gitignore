@@ -11,6 +11,7 @@ src/renderer/public/ort/
 # Local / machine-specific
 .claude/
 .oryon/
+.mcp.json
 *.tsbuildinfo
 final_a11y_audit.txt
 .DS_Store
