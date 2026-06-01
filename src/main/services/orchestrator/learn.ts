@@ -127,6 +127,10 @@ export async function learnFromEdit(injected: string, edited: string, context: s
     context,
     Date.now(),
   )
+  // Borne de rétention : ne conserve que les 2000 corrections les plus récentes (pas de migration).
+  db.prepare(
+    'DELETE FROM voice_corrections_log WHERE id NOT IN (SELECT id FROM voice_corrections_log ORDER BY ts DESC LIMIT 2000)',
+  ).run()
   // Le classifieur n'apprend QUE des substitutions/corrections de casse : une insertion pure (from='')
   // n'a aucun mot mal transcrit à corriger. On la garde dans le log mais on ne la soumet pas.
   const classifiable = changes.filter((c) => c.from !== '')
