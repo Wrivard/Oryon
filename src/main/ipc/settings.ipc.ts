@@ -175,6 +175,29 @@ function connectorSecrets(id: string): McpConnectorSecrets {
   return { env: decryptSecrets(row?.env), headers: decryptSecrets(row?.headers) }
 }
 
+/** Sonde un connecteur DÉJÀ enregistré (par id) : reconstruit son input (secrets déchiffrés, args reparsés) et
+ *  lance le handshake MCP (initialize + tools/list) → statut connecté/échec + liste des outils. Read-only. */
+async function probeConnector(id: string): Promise<McpTestResult> {
+  const r = getDb().prepare('SELECT * FROM mcp_connectors WHERE id = ?').get(id) as Record<string, unknown> | undefined
+  if (!r) return { ok: false, error: 'Connecteur introuvable.' }
+  let args: string[] | undefined
+  try {
+    args = r.args ? (JSON.parse(String(r.args)) as string[]) : undefined
+  } catch {
+    args = undefined
+  }
+  return testConnector({
+    name: String(r.name),
+    scope: r.scope as McpScope,
+    transport: r.transport as McpTransport,
+    command: (r.command as string | null) ?? undefined,
+    args,
+    url: (r.url as string | null) ?? undefined,
+    env: decryptSecrets(r.env),
+    headers: decryptSecrets(r.headers),
+  })
+}
+
 /** Importe des candidats détectés dans un scope donné. Saute ceux déjà présents (même name+scope) ou de forme
  *  invalide (rejetés par addConnector, ex. stdio sans command dans la config source). */
 function importConnectors(candidates: McpImportCandidate[], scope: McpScope, projectPath?: string | null): McpImportResult {
@@ -300,6 +323,7 @@ export function registerSettingsIpc(): void {
   ipcMain.handle('settings:updateConnector', (_e, input: McpConnectorUpdate): McpConnector | null => updateConnector(input))
   ipcMain.handle('settings:connectorSecrets', (_e, id: string): McpConnectorSecrets => connectorSecrets(id))
   ipcMain.handle('settings:testConnector', (_e, input: McpConnectorInput): Promise<McpTestResult> => testConnector(input))
+  ipcMain.handle('settings:probeConnector', (_e, id: string): Promise<McpTestResult> => probeConnector(id))
   ipcMain.handle('settings:listMcpCatalog', (): McpCatalogEntry[] => MCP_CATALOG)
   ipcMain.handle('settings:importMcpCandidates', (): McpImportCandidate[] => detectImportCandidates(app.getPath('appData')))
   ipcMain.handle(

@@ -76,6 +76,7 @@ const bridge: BridgeApi = {
     updateConnector: (input) => ipcRenderer.invoke('settings:updateConnector', input),
     connectorSecrets: (id) => ipcRenderer.invoke('settings:connectorSecrets', id),
     testConnector: (input) => ipcRenderer.invoke('settings:testConnector', input),
+    probeConnector: (id) => ipcRenderer.invoke('settings:probeConnector', id),
     listMcpCatalog: () => ipcRenderer.invoke('settings:listMcpCatalog'),
     importMcpCandidates: () => ipcRenderer.invoke('settings:importMcpCandidates'),
     importConnectors: (candidates, scope, projectPath) =>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Plug, Plus, Trash2, Pencil, Download, Check, X, Eye, EyeOff } from 'lucide-react'
+import { Plug, Plus, Trash2, Pencil, Download, Check, X, Eye, EyeOff, RefreshCw } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import type {
   McpConnector,
@@ -53,6 +53,10 @@ const kvRecord = (kv: KV[]): Record<string, string> => {
 const recordKv = (r: Record<string, string>): KV[] =>
   Object.entries(r).map(([key, value]) => ({ key, value }))
 
+// Couleur de la pastille de statut d'un connecteur selon sa dernière sonde.
+const statusDot = (p?: { loading?: boolean; result?: McpTestResult }): string =>
+  p?.loading ? 'animate-pulse bg-amber-400' : p?.result ? (p.result.ok ? 'bg-green-500' : 'bg-danger') : 'bg-fg-subtle/40'
+
 // args stockés en JSON ; tolère absence/malformation sans planter l'édition.
 const parseArgs = (args: string | null): string => {
   if (!args) return ''
@@ -76,6 +80,10 @@ export function ConnectorsSection({ projectPath }: { projectPath: string | null 
   const [error, setError] = useState('')
   // Révélation par champ secret (env/headers) : masqués (password) par défaut, œil pour afficher.
   const [showVals, setShowVals] = useState<Record<string, boolean>>({})
+
+  // Sonde par connecteur (statut live + outils exposés + debug) : par id.
+  const [probes, setProbes] = useState<Record<string, { loading?: boolean; result?: McpTestResult }>>({})
+  const [expanded, setExpanded] = useState<string | null>(null)
 
   // Test de connexion (handshake initialize + tools/list) AVANT enregistrement.
   const [testing, setTesting] = useState(false)
@@ -132,6 +140,7 @@ export function ConnectorsSection({ projectPath }: { projectPath: string | null 
 
   const startEdit = async (c: McpConnector) => {
     setDeletingId(null)
+    setExpanded(null)
     setAddOpen(false)
     setError('')
     setTest(null)
@@ -236,6 +245,28 @@ export function ConnectorsSection({ projectPath }: { projectPath: string | null 
     } catch (e) {
       setDeleteError(msg(e))
     }
+  }
+
+  // Sonde un connecteur enregistré (handshake MCP read-only) → statut + outils. Le serveur est lancé
+  // transitoirement pour le test (comme à l'usage réel), pas de connexion persistante.
+  const checkOne = async (id: string) => {
+    setProbes((p) => ({ ...p, [id]: { loading: true } }))
+    try {
+      const result = await window.bridge.settings.probeConnector(id)
+      setProbes((p) => ({ ...p, [id]: { result } }))
+    } catch (e) {
+      setProbes((p) => ({ ...p, [id]: { result: { ok: false, error: msg(e) } } }))
+    }
+  }
+  // Séquentiel : évite de spawner tous les serveurs MCP d'un coup.
+  const checkAll = async () => {
+    for (const c of connectors) await checkOne(c.id)
+  }
+  const toggleExpand = (id: string) => {
+    setEditingId(null)
+    setDeletingId(null)
+    setExpanded((cur) => (cur === id ? null : id))
+    if (!probes[id]) void checkOne(id) // 1re ouverture → sonde
   }
 
   const openCatalog = async () => {
@@ -454,12 +485,23 @@ export function ConnectorsSection({ projectPath }: { projectPath: string | null 
         <h3 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-fg-subtle">
           <Plug size={12} /> Connecteurs MCP
         </h3>
-        <button
-          onClick={openAdd}
-          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-fg-subtle transition-colors hover:text-accent"
-        >
-          <Plus size={12} /> Ajouter
-        </button>
+        <div className="flex items-center gap-1">
+          {connectors.length > 0 && (
+            <button
+              onClick={() => void checkAll()}
+              title="Vérifier la connexion de tous les connecteurs"
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-fg-subtle transition-colors hover:text-accent"
+            >
+              <RefreshCw size={12} /> Tout vérifier
+            </button>
+          )}
+          <button
+            onClick={openAdd}
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-fg-subtle transition-colors hover:text-accent"
+          >
+            <Plus size={12} /> Ajouter
+          </button>
+        </div>
       </div>
 
       {connectors.length === 0 && !addOpen && (
@@ -504,6 +546,13 @@ export function ConnectorsSection({ projectPath }: { projectPath: string | null 
                 </span>
                 <div className="ml-auto flex shrink-0 items-center gap-0.5">
                   <button
+                    onClick={() => toggleExpand(c.id)}
+                    title="Vérifier la connexion / voir les outils"
+                    className="flex h-6 w-6 items-center justify-center rounded text-fg-subtle transition-colors hover:bg-hover hover:text-fg"
+                  >
+                    <span className={cn('h-2 w-2 rounded-full', statusDot(probes[c.id]))} />
+                  </button>
+                  <button
                     onClick={() => startEdit(c)}
                     title="Éditer"
                     className="flex h-6 w-6 items-center justify-center rounded text-fg-subtle transition-colors hover:bg-hover hover:text-accent"
@@ -514,6 +563,7 @@ export function ConnectorsSection({ projectPath }: { projectPath: string | null 
                     onClick={() => {
                       setDeletingId(c.id)
                       setEditingId(null)
+                      setExpanded(null)
                       setDeleteError('')
                     }}
                     title="Supprimer"
@@ -523,6 +573,48 @@ export function ConnectorsSection({ projectPath }: { projectPath: string | null 
                   </button>
                 </div>
               </div>
+
+              {expanded === c.id &&
+                (() => {
+                  const pr = probes[c.id]
+                  return (
+                    <div className="space-y-1 border-t border-border px-2.5 py-2 text-[11px]">
+                      {pr?.loading && <p className="text-fg-subtle">Vérification… (handshake MCP)</p>}
+                      {pr?.result?.ok && (
+                        <>
+                          <p className="flex items-center gap-1 text-accent">
+                            <Check size={12} /> Connecté — {pr.result.toolCount ?? 0} outil(s)
+                          </p>
+                          {(pr.result.tools ?? []).map((t) => (
+                            <div key={t.name} className="rounded bg-bg-panel px-1.5 py-1">
+                              <span className="font-mono text-[10px] text-fg">{t.name}</span>
+                              {t.description && <span className="ml-1 text-fg-subtle">— {t.description}</span>}
+                            </div>
+                          ))}
+                          {(pr.result.tools ?? []).length === 0 && <p className="text-fg-subtle">(aucun outil exposé)</p>}
+                        </>
+                      )}
+                      {pr?.result && !pr.result.ok && (
+                        <>
+                          <p className="flex items-center gap-1 text-danger">
+                            <X size={12} /> Échec de connexion
+                          </p>
+                          <p className="break-words text-danger">{pr.result.error}</p>
+                          <p className="break-all text-fg-subtle">
+                            Config : {c.transport === 'stdio' ? `${c.command ?? ''} ${parseArgs(c.args)}`.trim() : c.url}
+                            {(c.hasEnv || c.hasHeaders) && ' · secrets masqués'}
+                          </p>
+                        </>
+                      )}
+                      <button
+                        onClick={() => void checkOne(c.id)}
+                        className="flex items-center gap-1 text-fg-subtle transition-colors hover:text-accent"
+                      >
+                        <RefreshCw size={10} /> Re-vérifier
+                      </button>
+                    </div>
+                  )
+                })()}
 
               {deleting && (
                 <div className="border-t border-border px-2.5 py-1.5">

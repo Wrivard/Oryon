@@ -51,8 +51,11 @@ export async function testConnector(input: McpConnectorInput): Promise<McpTestRe
   )
   try {
     await Promise.race([client.connect(transport), timeout])
-    const tools = (await Promise.race([client.listTools(), timeout])) as { tools: unknown[] }
-    return { ok: true, toolCount: Array.isArray(tools.tools) ? tools.tools.length : 0 }
+    const res = (await Promise.race([client.listTools(), timeout])) as {
+      tools?: Array<{ name: string; description?: string }>
+    }
+    const tools = Array.isArray(res.tools) ? res.tools.map((t) => ({ name: t.name, description: t.description })) : []
+    return { ok: true, toolCount: tools.length, tools }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
   } finally {

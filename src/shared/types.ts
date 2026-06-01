@@ -169,10 +169,16 @@ export interface McpConnectorSecrets {
   env: Record<string, string>
   headers: Record<string, string>
 }
-/** Résultat d'un test de connexion (handshake MCP initialize + tools/list). */
+/** Outil exposé par un serveur MCP (depuis tools/list). */
+export interface McpToolInfo {
+  name: string
+  description?: string
+}
+/** Résultat d'un test/sonde de connexion (handshake MCP initialize + tools/list). */
 export interface McpTestResult {
   ok: boolean
   toolCount?: number
+  tools?: McpToolInfo[] // liste des outils exposés (noms + descriptions) quand ok
   error?: string
 }
 /** Entrée du catalogue de serveurs MCP connus (wizard plug-and-play). */
@@ -615,6 +621,8 @@ export interface BridgeApi {
     connectorSecrets: (id: string) => Promise<McpConnectorSecrets>
     /** Teste un connecteur AVANT enregistrement (handshake MCP initialize + tools/list). */
     testConnector: (input: McpConnectorInput) => Promise<McpTestResult>
+    /** Sonde un connecteur DÉJÀ enregistré (par id) : statut connecté/échec + liste des outils exposés. */
+    probeConnector: (id: string) => Promise<McpTestResult>
     /** Catalogue de serveurs MCP connus (wizard plug-and-play). */
     listMcpCatalog: () => Promise<McpCatalogEntry[]>
     /** Détecte les connecteurs importables depuis les configs MCP existantes. */
