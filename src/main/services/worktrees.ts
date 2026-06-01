@@ -13,7 +13,7 @@
 // par terminal du renderer.
 
 import { execFileSync } from 'child_process'
-import { existsSync, mkdirSync, symlinkSync } from 'fs'
+import { existsSync, lstatSync, mkdirSync, rmdirSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import type { AgentBranch } from '../../shared/types'
 
@@ -171,6 +171,31 @@ export function provisionWorktreeDeps(main: string, dir: string): void {
 }
 
 /**
+ * Sévère les junctions SORTANTES d'un worktree (node_modules, .claude/skills) AVANT un `git worktree remove`.
+ * CRITIQUE : `git worktree remove --force` recurse À TRAVERS une junction et VIDE la CIBLE (le tronc) — il faut
+ * donc retirer le NŒUD de junction lui-même d'abord. `rmdirSync` retire le reparse-point SANS toucher la cible
+ * (`unlinkSync` lèverait EPERM sur une junction-dir). On ne touche QUE des reparse-points (isSymbolicLink),
+ * jamais un vrai dossier. Best-effort, idempotent, ne throw JAMAIS.
+ */
+function unlinkWorktreeJunctions(dir: string): void {
+  for (const rel of ['node_modules', join('.claude', 'skills')]) {
+    const link = join(dir, rel)
+    let isLink = false
+    try {
+      isLink = lstatSync(link).isSymbolicLink() // lstat ne suit PAS le lien (marche même si la cible a disparu)
+    } catch {
+      continue // pas de lien à cet emplacement (ENOENT) → rien à sévrer
+    }
+    if (!isLink) continue // vrai dossier (pas une junction) → ne JAMAIS le supprimer
+    try {
+      rmdirSync(link) // retire le NŒUD de junction, PAS sa cible
+    } catch (e) {
+      console.error('[worktrees] désliage junction ignoré (best-effort) :', (e as Error).message)
+    }
+  }
+}
+
+/**
  * Phase 2 (anti stale-fork) : amène le worktree d'un agent à MAIN-HEAD AVANT de (re)dispatcher une task,
  * pour qu'il voie les dépendances déjà mergées (sinon il forke un tronc périmé créé à l'ouverture du workspace).
  * N'opère QUE sur un worktree PROPRE : un re-dispatch après 'changes' a du travail non commité → on saute
@@ -214,6 +239,7 @@ export function refreshWorktreeToHead(main: string, agent: string): 'updated' | 
 export function removeWorktree(main: string, agent: string): void {
   if (!isGitRepo(main)) return
   const dir = worktreeDir(main, agent)
+  unlinkWorktreeJunctions(dir) // CRITIQUE : sévrer les junctions sortantes AVANT remove (sinon git vide le tronc)
   tryGit(main, ['worktree', 'remove', '--force', dir])
   tryGit(main, ['worktree', 'prune'])
 }
@@ -231,6 +257,7 @@ export function pruneMergedWorktrees(main: string): string[] {
     if (!e.branch || !e.branch.startsWith(AGENT_BRANCH_PREFIX)) continue
     const ahead = (tryGit(main, ['rev-list', '--count', `HEAD..${e.branch}`]) ?? '').trim()
     if (ahead === '0') {
+      unlinkWorktreeJunctions(e.path) // CRITIQUE : sévrer les junctions sortantes AVANT remove (sinon git vide le tronc)
       tryGit(main, ['worktree', 'remove', '--force', e.path])
       tryGit(main, ['worktree', 'prune'])
       tryGit(main, ['branch', '-D', e.branch])
