@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { SquareTerminal } from 'lucide-react'
+import type { Terminal as TermRow } from '@shared/types'
 import { useAppStore } from '../../store'
 import { useTheme } from '../Theme/ThemeProvider'
 import { Terminal } from './Terminal'
@@ -7,9 +8,12 @@ import { TerminalTab } from './TerminalTab'
 import { gridDims } from '../../lib/gridTemplates'
 import { cn } from '../../lib/cn'
 
-export default function TerminalGrid() {
-  const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
-  const terminals = useAppStore((s) => s.terminals)
+// Référence stable pour un workspace sans terminaux : renvoyer un nouveau [] à chaque rendu casserait
+// le cache de getSnapshot (useSyncExternalStore/zustand) → boucle de rendu.
+const EMPTY_TERMINALS: TermRow[] = []
+
+export default function TerminalGrid({ workspaceId, active }: { workspaceId: string; active: boolean }) {
+  const terminals = useAppStore((s) => s.terminalsByWorkspace[workspaceId] ?? EMPTY_TERMINALS)
   const statuses = useAppStore((s) => s.statuses)
   const focusedTerminalId = useAppStore((s) => s.focusedTerminalId)
   const maximizedTerminalId = useAppStore((s) => s.maximizedTerminalId)
@@ -21,39 +25,47 @@ export default function TerminalGrid() {
   const bumpCount = useAppStore((s) => s.bumpCount)
   const { theme } = useTheme()
 
-  // Charge (et restaure) les terminaux du workspace actif → monte la grille → spawn PTY + claude.
+  // Charge (et restaure) les terminaux de CE workspace au 1er montage → monte la grille → spawn PTY + claude.
+  // La grille est montée une seule fois (key=workspaceId) : cet effet ne tourne donc qu'à l'ouverture,
+  // et le switch ne la démonte jamais (les <Terminal> restent montés → PTY vivants).
   useEffect(() => {
-    if (!activeWorkspaceId) {
-      setTerminals([])
-      return
-    }
     let cancelled = false
-    window.bridge.workspaces.open(activeWorkspaceId).then(({ terminals }) => {
-      if (!cancelled) setTerminals(terminals)
+    window.bridge.workspaces.open(workspaceId).then(({ terminals }) => {
+      if (!cancelled) setTerminals(workspaceId, terminals)
     })
     return () => {
       cancelled = true
     }
-  }, [activeWorkspaceId, setTerminals])
+  }, [workspaceId, setTerminals])
 
-  if (!activeWorkspaceId) return <EmptyState />
+  // À l'activation, parité avec l'ancien comportement (chaque switch focalisait le 1er terminal) : si le
+  // terminal focalisé n'appartient pas à CE workspace, focalise-en le premier (sinon le focus reste sur un
+  // terminal désormais caché d'un autre workspace).
+  useEffect(() => {
+    if (!active || terminals.length === 0) return
+    if (!terminals.some((t) => t.id === useAppStore.getState().focusedTerminalId)) {
+      setFocused(terminals[0].id)
+    }
+  }, [active, terminals, setFocused])
 
   const onSplit = async () => {
-    const t = await window.bridge.workspaces.addTerminal(activeWorkspaceId)
+    const t = await window.bridge.workspaces.addTerminal(workspaceId)
     addTerminalToStore(t)
-    bumpCount(activeWorkspaceId, 1)
+    bumpCount(workspaceId, 1)
   }
   const onClose = async (id: string) => {
     await window.bridge.workspaces.removeTerminal(id)
     removeTerminalFromStore(id) // l'unmount du <Terminal> tue le PTY
-    bumpCount(activeWorkspaceId, -1)
+    bumpCount(workspaceId, -1)
   }
 
   const { cols, rows } = gridDims(terminals.length)
 
   return (
     <div
-      className="relative grid h-full gap-px bg-border"
+      // Caché (display:none) quand inactif : les <Terminal> RESTENT montés → PTY + scrollback vivants.
+      // C'est le levier du switch non destructif (même principe que l'overlay maximize, généralisé).
+      className={cn('relative grid h-full gap-px bg-border', !active && 'hidden')}
       style={{
         gridTemplateColumns: `repeat(${cols}, minmax(0,1fr))`,
         gridTemplateRows: `repeat(${rows}, minmax(0,1fr))`,
@@ -85,7 +97,7 @@ export default function TerminalGrid() {
               onClose={() => onClose(t.id)}
             />
             <div className="min-h-0 flex-1">
-              <Terminal term={t} focused={focused} />
+              <Terminal term={t} focused={focused} active={active} />
             </div>
           </div>
         )
@@ -94,7 +106,7 @@ export default function TerminalGrid() {
   )
 }
 
-function EmptyState() {
+export function EmptyState() {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 bg-bg-deep">
       <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-border bg-bg-panel">

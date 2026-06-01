@@ -3,7 +3,7 @@ import { motion } from 'motion/react'
 import { PanelLeft, Settings } from 'lucide-react'
 import logoUrl from './assets/app-logo.png'
 import WorkspaceRail from './components/WorkspaceRail'
-import TerminalGrid from './components/TerminalGrid'
+import TerminalGrid, { EmptyState } from './components/TerminalGrid'
 import RightPanel from './components/RightPanel'
 import { IconButton } from './components/ui/IconButton'
 import { SettingsModal } from './components/Settings/SettingsModal'
@@ -28,6 +28,9 @@ function AppContent() {
   rightWidthRef.current = rightWidth
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const activeWorkspace = useAppStore((s) => s.workspaces.find((w) => w.id === activeWorkspaceId))
+  const workspaces = useAppStore((s) => s.workspaces)
+  const openWorkspaceIds = useAppStore((s) => s.openWorkspaceIds)
+  const openWorkspace = useAppStore((s) => s.openWorkspace)
 
   // Largeur du panneau droit persistée par workspace (localStorage).
   useEffect(() => {
@@ -65,6 +68,13 @@ function AppContent() {
     window.bridge.orchestrator.listMailbox(activeWorkspaceId).then(setMailbox)
   }, [activeWorkspaceId])
 
+  // Tout workspace activé devient « ouvert » : sa grille reste montée en arrière-plan (PTY vivants) même
+  // après un switch. Effet sur activeWorkspaceId → couvre TOUTES les voies d'activation (rail, création,
+  // bootstrap qui pose activeWorkspaceId directement via setState).
+  useEffect(() => {
+    if (activeWorkspaceId) openWorkspace(activeWorkspaceId)
+  }, [activeWorkspaceId, openWorkspace])
+
   // En quittant un workspace, on stoppe son swarm (sinon tasks in-progress orphelines + état global pointant ailleurs).
   useEffect(() => {
     const wid = activeWorkspaceId
@@ -95,6 +105,15 @@ function AppContent() {
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
   }
+
+  // Grilles à monter : tous les workspaces ouverts (+ l'actif même pas encore persisté → pas de frame
+  // vide à la 1re activation), bornés aux workspaces existants (un workspace supprimé voit sa grille se
+  // démonter → ses PTY tués, comportement inchangé).
+  const mountedWorkspaceIds = (
+    activeWorkspaceId && !openWorkspaceIds.includes(activeWorkspaceId)
+      ? [...openWorkspaceIds, activeWorkspaceId]
+      : openWorkspaceIds
+  ).filter((id) => workspaces.some((w) => w.id === id))
 
   return (
     <div className="flex h-full flex-col bg-bg text-fg">
@@ -149,9 +168,16 @@ function AppContent() {
           </div>
         )}
 
-        {/* Centre — grille de terminaux */}
+        {/* Centre — une grille par workspace ouvert ; seule l'active est visible, les autres restent
+            MONTÉES mais cachées (display:none) → leurs PTY restent vivants. Le switch ne démonte donc rien. */}
         <motion.div variants={fadeUp} className="flex-1 overflow-hidden">
-          <TerminalGrid />
+          {mountedWorkspaceIds.length === 0 ? (
+            <EmptyState />
+          ) : (
+            mountedWorkspaceIds.map((wsId) => (
+              <TerminalGrid key={wsId} workspaceId={wsId} active={wsId === activeWorkspaceId} />
+            ))
+          )}
         </motion.div>
 
         {/* Splitter */}
