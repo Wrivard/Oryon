@@ -388,7 +388,9 @@ export function applySnippets(text: string, snippets: { trigger: string; expansi
   for (const { trigger, expansion } of snippets) {
     if (!trigger) continue
     const esc = trigger.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    out = out.replace(new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, 'giu'), expansion)
+    // Remplaçant en FONCTION : insère l'expansion VERBATIM. En 2e arg string, String.replace interpréterait
+    // $&, $$, $`, $' présents dans le texte utilisateur (snippet/auto-appris) → sortie corrompue.
+    out = out.replace(new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, 'giu'), () => expansion)
   }
   return out
 }
@@ -399,7 +401,8 @@ export function applyDictionary(text: string, replacements: { spoken: string; re
   for (const { spoken, replacement } of replacements) {
     if (!spoken) continue
     const esc = spoken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    out = out.replace(new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, 'giu'), replacement)
+    // Remplaçant en FONCTION : insère le remplacement VERBATIM (les séquences $ du texte utilisateur ne sont pas réinterprétées).
+    out = out.replace(new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, 'giu'), () => replacement)
   }
   return out
 }
