@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { X, Plug, Sparkles, SlidersHorizontal, Trash2, Plus, Pencil, Boxes, Mic, Download } from 'lucide-react'
+import { X, Sparkles, SlidersHorizontal, Trash2, Plus, Pencil, Boxes, Mic, Download } from 'lucide-react'
 import { IconButton } from '../ui/IconButton'
 import { cn } from '../../lib/cn'
 import { transitionFast } from '../../lib/motion'
 import { VoiceSettings } from './Voice/VoiceSettings'
 import { UpdatesSettings } from './UpdatesSettings'
+import { ConnectorsSection } from './ConnectorsSection'
 import { ThemePicker } from '../Theme/ThemePicker'
-import type { McpConnector, McpScope, McpTransport, SkillInfo, SkillScope, SkillImportResult } from '@shared/types'
+import type { SkillInfo, SkillScope, SkillImportResult } from '@shared/types'
 
 // Tous les agents (orchestrateur + workers) sont CLAMPÉS sur Opus au spawn (enforceAgentSpawn) : un modèle
 // faible est non-exprimable. Le contrôle reste pour rendre la politique « toujours le plus puissant » explicite.
@@ -34,17 +35,7 @@ export function SettingsModal({
     if (open && initialTab) setTab(initialTab as Tab)
   }, [open, initialTab])
   const [appSettings, setAppSettings] = useState<Record<string, string>>({})
-  const [connectors, setConnectors] = useState<McpConnector[]>([])
   const [skills, setSkills] = useState<SkillInfo[]>([])
-
-  // Formulaire d'ajout de connecteur.
-  const [adding, setAdding] = useState(false)
-  const [fName, setFName] = useState('')
-  const [fScope, setFScope] = useState<McpScope>('app')
-  const [fTransport, setFTransport] = useState<McpTransport>('stdio')
-  const [fCommand, setFCommand] = useState('')
-  const [fArgs, setFArgs] = useState('')
-  const [fUrl, setFUrl] = useState('')
 
   // Formulaire d'ajout de skill : 3 modes (créer / importer un dossier / importer depuis git).
   const [skAdding, setSkAdding] = useState(false)
@@ -71,7 +62,6 @@ export function SettingsModal({
 
   const reload = async () => {
     setAppSettings(await window.bridge.settings.getApp())
-    setConnectors(await window.bridge.settings.listConnectors(projectPath))
     setSkills(await window.bridge.skills.list(projectPath))
   }
 
@@ -90,32 +80,6 @@ export function SettingsModal({
   const setModel = async (v: string) => {
     await window.bridge.settings.setApp('agentModel', v)
     setAppSettings((s) => ({ ...s, agentModel: v }))
-  }
-  const toggleConnector = async (c: McpConnector) => {
-    await window.bridge.settings.toggleConnector(c.id, !c.enabled)
-    await reload()
-  }
-  const deleteConnector = async (id: string) => {
-    await window.bridge.settings.deleteConnector(id)
-    await reload()
-  }
-  const submitConnector = async () => {
-    if (!fName.trim()) return
-    await window.bridge.settings.addConnector({
-      name: fName.trim(),
-      scope: fScope,
-      projectPath: fScope === 'project' ? projectPath : null,
-      transport: fTransport,
-      command: fTransport === 'stdio' ? fCommand.trim() : undefined,
-      args: fTransport === 'stdio' && fArgs.trim() ? fArgs.split(/\s+/) : undefined,
-      url: fTransport === 'http' ? fUrl.trim() : undefined,
-    })
-    setFName('')
-    setFCommand('')
-    setFArgs('')
-    setFUrl('')
-    setAdding(false)
-    await reload()
   }
 
   // --- Skills : projectPath n'est pertinent que pour le scope 'project' (sinon null → base globale). ---
@@ -215,7 +179,7 @@ export function SettingsModal({
     }
   }
 
-  const TABS: { id: Tab; label: string; icon: typeof Plug }[] = [
+  const TABS: { id: Tab; label: string; icon: typeof SlidersHorizontal }[] = [
     { id: 'app', label: 'Application', icon: SlidersHorizontal },
     { id: 'project', label: 'Projet', icon: Boxes },
     { id: 'voice', label: 'Voice', icon: Mic },
@@ -321,133 +285,7 @@ export function SettingsModal({
                     </div>
                   ) : (
                     <div className="space-y-6">
-                      {/* Connecteurs MCP */}
-                      <section>
-                        <div className="mb-2 flex items-center justify-between">
-                          <h3 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-fg-subtle">
-                            <Plug size={12} /> Connecteurs MCP
-                          </h3>
-                          <button
-                            onClick={() => setAdding((a) => !a)}
-                            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-fg-subtle transition-colors hover:text-accent"
-                          >
-                            <Plus size={12} /> Ajouter
-                          </button>
-                        </div>
-
-                        {connectors.length === 0 && !adding && (
-                          <p className="rounded-lg border border-dashed border-border px-3 py-3 text-center text-[11px] text-fg-subtle">
-                            Aucun connecteur. « App » = toujours actif ; « Projet » = ce projet seulement.
-                          </p>
-                        )}
-
-                        <div className="space-y-1">
-                          {connectors.map((c) => (
-                            <div key={c.id} className="flex items-center gap-2 rounded-lg border border-border bg-bg-inset px-2.5 py-1.5">
-                              <button
-                                onClick={() => toggleConnector(c)}
-                                title={c.enabled ? 'Activé' : 'Désactivé'}
-                                className={cn(
-                                  'h-3.5 w-6 shrink-0 rounded-full p-0.5 transition-colors',
-                                  c.enabled ? 'bg-accent' : 'bg-bg-elevated',
-                                )}
-                              >
-                                <span
-                                  className={cn(
-                                    'block h-2.5 w-2.5 rounded-full bg-white transition-transform',
-                                    c.enabled ? 'translate-x-2.5' : '',
-                                  )}
-                                />
-                              </button>
-                              <span className="truncate text-[12px] font-medium text-fg">{c.name}</span>
-                              <span
-                                className={cn(
-                                  'shrink-0 rounded px-1.5 py-px text-[9px] uppercase tracking-wide',
-                                  c.scope === 'app' ? 'bg-accent-soft text-accent' : 'bg-[#7aa2f7]/15 text-[#7aa2f7]',
-                                )}
-                              >
-                                {c.scope}
-                              </span>
-                              <span className="truncate text-[10px] text-fg-subtle">
-                                {c.transport === 'http' ? c.url : `${c.command ?? ''} ${c.args ? JSON.parse(c.args).join(' ') : ''}`}
-                              </span>
-                              <button
-                                onClick={() => deleteConnector(c.id)}
-                                title="Supprimer"
-                                className="ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-subtle transition-colors hover:bg-hover hover:text-danger"
-                              >
-                                <Trash2 size={12} />
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-
-                        {adding && (
-                          <div className="mt-2 space-y-2 rounded-lg border border-border bg-bg-inset p-2.5">
-                            <input
-                              value={fName}
-                              onChange={(e) => setFName(e.target.value)}
-                              placeholder="Nom (ex. github, supabase)"
-                              className="w-full rounded-md border border-border bg-bg-panel px-2 py-1 text-[12px] text-fg outline-none focus:border-accent"
-                            />
-                            <div className="flex gap-2">
-                              <select
-                                value={fScope}
-                                onChange={(e) => setFScope(e.target.value as McpScope)}
-                                className="rounded-md border border-border bg-bg-panel px-2 py-1 text-[12px] text-fg outline-none"
-                              >
-                                <option value="app">App (toujours)</option>
-                                <option value="project" disabled={!projectPath}>
-                                  Projet
-                                </option>
-                              </select>
-                              <select
-                                value={fTransport}
-                                onChange={(e) => setFTransport(e.target.value as McpTransport)}
-                                className="rounded-md border border-border bg-bg-panel px-2 py-1 text-[12px] text-fg outline-none"
-                              >
-                                <option value="stdio">stdio</option>
-                                <option value="http">http</option>
-                              </select>
-                            </div>
-                            {fTransport === 'stdio' ? (
-                              <div className="flex gap-2">
-                                <input
-                                  value={fCommand}
-                                  onChange={(e) => setFCommand(e.target.value)}
-                                  placeholder="commande (ex. npx)"
-                                  className="w-1/3 rounded-md border border-border bg-bg-panel px-2 py-1 text-[12px] text-fg outline-none focus:border-accent"
-                                />
-                                <input
-                                  value={fArgs}
-                                  onChange={(e) => setFArgs(e.target.value)}
-                                  placeholder="arguments (séparés par espace)"
-                                  className="flex-1 rounded-md border border-border bg-bg-panel px-2 py-1 text-[12px] text-fg outline-none focus:border-accent"
-                                />
-                              </div>
-                            ) : (
-                              <input
-                                value={fUrl}
-                                onChange={(e) => setFUrl(e.target.value)}
-                                placeholder="https://… (endpoint MCP http)"
-                                className="w-full rounded-md border border-border bg-bg-panel px-2 py-1 text-[12px] text-fg outline-none focus:border-accent"
-                              />
-                            )}
-                            <div className="flex justify-end gap-2">
-                              <button onClick={() => setAdding(false)} className="rounded px-2 py-1 text-[11px] text-fg-subtle hover:text-fg">
-                                Annuler
-                              </button>
-                              <button
-                                onClick={submitConnector}
-                                disabled={!fName.trim()}
-                                className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-medium text-on-accent transition hover:bg-accent-hover disabled:opacity-40"
-                              >
-                                Ajouter
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </section>
+                      <ConnectorsSection projectPath={projectPath} />
 
                       {/* Skills — gestionnaire (créer / importer dossier / importer git / éditer / supprimer). */}
                       <section>
