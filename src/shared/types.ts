@@ -125,7 +125,7 @@ export interface MergeResult {
 
 // ---- Settings (app-global + project) ----
 export type McpScope = 'app' | 'project'
-export type McpTransport = 'stdio' | 'http'
+export type McpTransport = 'stdio' | 'http' | 'sse'
 export interface McpConnector {
   id: string
   name: string
@@ -134,9 +134,12 @@ export interface McpConnector {
   transport: McpTransport
   command: string | null
   args: string | null // JSON array (stdio)
-  url: string | null // http
+  url: string | null // http/sse
   enabled: boolean
   created_at: number | null
+  catalog_id?: string | null // id d'entrée du catalogue si installé via le wizard
+  hasEnv?: boolean // présence de variables d'env (les VALEURS ne sont jamais renvoyées par la liste ; cf. connectorSecrets)
+  hasHeaders?: boolean // présence d'en-têtes http/sse (idem, secrets non exposés en liste)
 }
 export interface McpConnectorInput {
   name: string
@@ -146,6 +149,60 @@ export interface McpConnectorInput {
   command?: string
   args?: string[]
   url?: string
+  env?: Record<string, string> // stdio : variables d'env (chiffrées au repos via safeStorage)
+  headers?: Record<string, string> // http/sse : en-têtes (ex. Authorization), chiffrés au repos
+  catalogId?: string
+}
+/** Édition d'un connecteur existant : champ absent = inchangé ; env/headers à null = vidés. */
+export interface McpConnectorUpdate {
+  id: string
+  name?: string
+  transport?: McpTransport
+  command?: string | null
+  args?: string[] | null
+  url?: string | null
+  env?: Record<string, string> | null
+  headers?: Record<string, string> | null
+}
+/** Secrets DÉCHIFFRÉS d'un connecteur, demandés à la volée pour préremplir le formulaire d'édition. */
+export interface McpConnectorSecrets {
+  env: Record<string, string>
+  headers: Record<string, string>
+}
+/** Résultat d'un test de connexion (handshake MCP initialize + tools/list). */
+export interface McpTestResult {
+  ok: boolean
+  toolCount?: number
+  error?: string
+}
+/** Entrée du catalogue de serveurs MCP connus (wizard plug-and-play). */
+export interface McpCatalogEntry {
+  id: string
+  name: string
+  description: string
+  transport: McpTransport
+  command?: string
+  args?: string[]
+  url?: string
+  /** Secrets à demander à l'utilisateur (injectés en variables d'env stdio ou en en-têtes http/sse). */
+  envFields?: { key: string; label: string; required: boolean }[]
+  headerFields?: { key: string; label: string; required: boolean }[]
+  docUrl?: string
+}
+/** Candidat d'import détecté dans une config MCP existante (~/.claude.json, Claude Desktop, .mcp.json). */
+export interface McpImportCandidate {
+  source: string // ex. '~/.claude.json' | 'claude-desktop' | '.mcp.json'
+  name: string
+  transport: McpTransport
+  command?: string
+  args?: string[]
+  url?: string
+  env?: Record<string, string>
+  headers?: Record<string, string>
+}
+export interface McpImportResult {
+  installed: string[]
+  skipped: string[]
 }
 /** Scope d'un skill : global (~/.claude/skills) ou propre au projet ouvert (<projet>/.claude/skills). */
 export type SkillScope = 'user' | 'project'
@@ -552,6 +609,22 @@ export interface BridgeApi {
     addConnector: (input: McpConnectorInput) => Promise<McpConnector>
     toggleConnector: (id: string, enabled: boolean) => Promise<void>
     deleteConnector: (id: string) => Promise<void>
+    /** Édite un connecteur existant (corrige sans delete+recreate). */
+    updateConnector: (input: McpConnectorUpdate) => Promise<McpConnector>
+    /** Secrets déchiffrés d'un connecteur (préremplissage du formulaire d'édition). */
+    connectorSecrets: (id: string) => Promise<McpConnectorSecrets>
+    /** Teste un connecteur AVANT enregistrement (handshake MCP initialize + tools/list). */
+    testConnector: (input: McpConnectorInput) => Promise<McpTestResult>
+    /** Catalogue de serveurs MCP connus (wizard plug-and-play). */
+    listMcpCatalog: () => Promise<McpCatalogEntry[]>
+    /** Détecte les connecteurs importables depuis les configs MCP existantes. */
+    importMcpCandidates: () => Promise<McpImportCandidate[]>
+    /** Importe les candidats choisis dans un scope donné. */
+    importConnectors: (
+      candidates: McpImportCandidate[],
+      scope: McpScope,
+      projectPath?: string | null,
+    ) => Promise<McpImportResult>
   }
   /** Skills Claude Code : globaux (~/.claude/skills) + ceux du projet ouvert. Gérables de bout en bout
    *  (créer depuis zéro / importer un dossier / importer depuis git / éditer / supprimer). */

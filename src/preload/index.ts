@@ -73,6 +73,13 @@ const bridge: BridgeApi = {
     addConnector: (input) => ipcRenderer.invoke('settings:addConnector', input),
     toggleConnector: (id, enabled) => ipcRenderer.invoke('settings:toggleConnector', id, enabled),
     deleteConnector: (id) => ipcRenderer.invoke('settings:deleteConnector', id),
+    updateConnector: (input) => ipcRenderer.invoke('settings:updateConnector', input),
+    connectorSecrets: (id) => ipcRenderer.invoke('settings:connectorSecrets', id),
+    testConnector: (input) => ipcRenderer.invoke('settings:testConnector', input),
+    listMcpCatalog: () => ipcRenderer.invoke('settings:listMcpCatalog'),
+    importMcpCandidates: () => ipcRenderer.invoke('settings:importMcpCandidates'),
+    importConnectors: (candidates, scope, projectPath) =>
+      ipcRenderer.invoke('settings:importConnectors', candidates, scope, projectPath),
   },
   skills: {
     list: (projectPath) => ipcRenderer.invoke('skills:list', projectPath),
