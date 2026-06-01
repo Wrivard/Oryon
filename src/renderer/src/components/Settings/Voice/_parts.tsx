@@ -46,17 +46,20 @@ export function Toggle({
   onClick,
   disabled,
   title,
+  ariaLabel,
 }: {
   on: boolean
   onClick: () => void
   disabled?: boolean
   title?: string
+  ariaLabel?: string
 }) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
       title={title}
+      aria-label={ariaLabel}
       role="switch"
       aria-checked={on}
       className={cn(

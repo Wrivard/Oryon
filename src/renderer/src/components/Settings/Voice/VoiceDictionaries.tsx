@@ -43,6 +43,13 @@ export function VoiceDictionaries() {
     void loadReps()
     void loadSnippets()
   }, [])
+  // Nettoie le timeout du message CSV au démontage.
+  useEffect(
+    () => () => {
+      if (csvTimeoutRef.current) clearTimeout(csvTimeoutRef.current)
+    },
+    [],
+  )
 
   const match = (...fields: (string | null | undefined)[]) =>
     !q.trim() || fields.some((f) => (f ?? '').toLowerCase().includes(q.toLowerCase()))
@@ -234,9 +241,10 @@ export function VoiceDictionaries() {
               onChange={(e) => setVTerm(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && addVocab()}
               placeholder="terme / nom propre (ex. Supabase, kua-coiffure)"
+              aria-label="Terme de vocabulaire"
               className={cn(INPUT_CLS, 'flex-1')}
             />
-            <button onClick={addVocab} disabled={!vTerm.trim()} className={ADD_BTN}>
+            <button onClick={addVocab} disabled={!vTerm.trim()} aria-label="Ajouter le terme" className={ADD_BTN}>
               <Plus size={13} />
             </button>
           </div>
@@ -286,16 +294,17 @@ export function VoiceDictionaries() {
         {addingR && (
           <div className="mt-2 rounded-lg border border-border bg-bg-inset p-3">
             <div className="grid grid-cols-2 gap-2">
-              <input value={dSpoken} onChange={(e) => setDSpoken(e.target.value)} placeholder="entendu (ex. next js)" className={INPUT_CLS} />
+              <input value={dSpoken} onChange={(e) => setDSpoken(e.target.value)} placeholder="entendu (ex. next js)" aria-label="Terme entendu" className={INPUT_CLS} />
               <div className="flex gap-2">
                 <input
                   value={dRepl}
                   onChange={(e) => setDRepl(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && addReplacement()}
                   placeholder="remplacé par (ex. Next.js)"
+                  aria-label="Remplacement"
                   className={cn(INPUT_CLS, 'flex-1')}
                 />
-                <button onClick={addReplacement} disabled={!dSpoken.trim() || !dRepl.trim()} className={ADD_BTN}>
+                <button onClick={addReplacement} disabled={!dSpoken.trim() || !dRepl.trim()} aria-label="Ajouter la règle" className={ADD_BTN}>
                   <Plus size={13} />
                 </button>
               </div>
@@ -347,16 +356,17 @@ export function VoiceDictionaries() {
         )}
         {addingS && (
           <div className="mt-2 space-y-2 rounded-lg border border-border bg-bg-inset p-3">
-            <input value={snTrigger} onChange={(e) => setSnTrigger(e.target.value)} placeholder="trigger parlé (ex. mon adresse)" className={cn(INPUT_CLS, 'w-full')} />
+            <input value={snTrigger} onChange={(e) => setSnTrigger(e.target.value)} placeholder="trigger parlé (ex. mon adresse)" aria-label="Trigger du snippet" className={cn(INPUT_CLS, 'w-full')} />
             <div className="flex gap-2">
               <textarea
                 value={snExpansion}
                 onChange={(e) => setSnExpansion(e.target.value)}
                 rows={2}
                 placeholder="expansion (le bloc inséré)"
+                aria-label="Expansion du snippet"
                 className={cn(INPUT_CLS, 'flex-1 resize-none')}
               />
-              <button onClick={addSnippet} disabled={!snTrigger.trim() || !snExpansion.trim()} className={ADD_BTN}>
+              <button onClick={addSnippet} disabled={!snTrigger.trim() || !snExpansion.trim()} aria-label="Ajouter le snippet" className={ADD_BTN}>
                 <Plus size={13} />
               </button>
             </div>
