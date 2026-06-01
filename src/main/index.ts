@@ -11,6 +11,7 @@ import { closeEditorWatcher } from './ipc/editor.ipc'
 import { initMcpExport } from './services/mcp-export'
 import { reconcileStaleTasks } from './services/orchestrator/task-store'
 import { appSetting } from './ipc/settings.ipc'
+import { emitVoiceToggle } from './ipc/voice.ipc'
 import { createVoiceWidget, destroyVoiceWidget } from './services/voice-widget'
 import { initUpdater } from './services/updater'
 
@@ -297,11 +298,10 @@ function registerMediaPermissions(): void {
   )
 }
 
-// État module : accélérateurs réellement enregistrés (pour ré-enregistrement à chaud) et horodatage de
-// coalescence — module-scoped pour survivre à un ré-enregistrement (sinon le debounce se réarmerait à zéro).
+// État module : accélérateurs réellement enregistrés (pour ré-enregistrement à chaud) + conflits du dernier
+// enregistrement. La coalescence du toggle vit dans voice.ipc.ts (emitVoiceToggle), partagée avec le widget (C-7).
 let registeredAccels: string[] = []
 let lastHotkeyConflicts: { accel: string; mode: string }[] = []
-let lastToggle = 0
 
 /**
  * Hotkeys globales de dictée (toggle) et de command mode → notifient le renderer. Défauts configurables.
@@ -324,16 +324,9 @@ export function registerVoiceHotkey(): void {
   }
   const toggleAccel = appSetting('voice.hotkey.toggle') || appSetting('voice.hotkey') || 'CommandOrControl+Shift+Space'
   const commandAccel = appSetting('voice.hotkey.command') || 'CommandOrControl+Shift+.'
-  // Coalescence leading-edge : deux voice:toggle rapprochés (hotkey + widget, ou rebond) ne doivent pas
-  // démarrer-puis-arrêter aussitôt une capture.
-  const sendToggle = (): void => {
-    const now = Date.now()
-    if (now - lastToggle < 250) return
-    lastToggle = now
-    broadcast('voice:toggle')
-  }
   try {
-    const okToggle = globalShortcut.register(toggleAccel, sendToggle)
+    // Toggle dictée → emitVoiceToggle : coalesceur 250 ms partagé avec le widget (C-7).
+    const okToggle = globalShortcut.register(toggleAccel, emitVoiceToggle)
     if (!okToggle || !globalShortcut.isRegistered(toggleAccel)) {
       console.warn('Voice hotkey conflict:', toggleAccel)
       lastHotkeyConflicts.push({ accel: toggleAccel, mode: 'toggle' })
