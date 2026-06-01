@@ -27,11 +27,15 @@ export function registerTerminalsIpc() {
       // Enforcement au spawn : modèle le plus puissant pour TOUS les agents (non-contournable, F1) +
       // identité worker durable injectée à tout claude sans --append-system-prompt (F2/F3/F5/F6).
       autostart = enforceAgentSpawn(autostart)
-      // Reprise de session au redémarrage : si une conversation claude existe DÉJÀ pour ce worktree,
-      // on rattache `--continue` pour reprendre au lieu de repartir à neuf. Worktree neuf (1er spawn /
-      // nouveau workspace / split) → pas de session → pas de --continue → démarrage neuf. On n'ajoute
-      // donc JAMAIS --continue sans session existante (pas d'erreur "no conversation"). Idempotent.
-      if (hasClaudeSession(opts.cwd) && !/--continue\b/.test(autostart)) autostart += ' --continue'
+      // Reprise de session au redémarrage de l'app : SEUL l'orchestrateur reprend sa conversation
+      // (`--continue`) — son contexte de coordination est précieux. Les WORKERS repartent FRAIS : leur
+      // session = une tâche ponctuelle jetable (l'orchestrateur ré-assigne au boot), et resumer une grosse
+      // session worker BLOQUE l'agent sur le prompt « résumé / session complète » + brûle de l'usage pour rien.
+      // NB : ce chokepoint n'est touché qu'au DÉMARRAGE (ou nouveau terminal/split) — JAMAIS au switch de
+      // workspace (les terminaux restent montés, PTY vivants) → le switch ne re-spawn ni ne reset rien.
+      // Worktree neuf (1er spawn / split) → pas de session → pas de --continue de toute façon.
+      const isOrchestrator = opts.env?.ORYON_AGENT_ROLE === 'orchestrator'
+      if (isOrchestrator && hasClaudeSession(opts.cwd) && !/--continue\b/.test(autostart)) autostart += ' --continue'
     }
     createTerminal({
       id: opts.id,
