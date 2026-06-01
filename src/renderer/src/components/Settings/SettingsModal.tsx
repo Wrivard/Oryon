@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { X, Sparkles, SlidersHorizontal, Trash2, Plus, Pencil, Boxes, Mic, Download } from 'lucide-react'
+import { X, Sparkles, SlidersHorizontal, Trash2, Plus, Pencil, Plug, Mic, Download } from 'lucide-react'
 import { IconButton } from '../ui/IconButton'
 import { cn } from '../../lib/cn'
 import { transitionFast } from '../../lib/motion'
@@ -14,7 +14,7 @@ import type { SkillInfo, SkillScope, SkillImportResult } from '@shared/types'
 // faible est non-exprimable. Le contrôle reste pour rendre la politique « toujours le plus puissant » explicite.
 const MODELS = [{ v: 'opus', label: 'Opus (max) — imposé à tous les agents' }]
 
-type Tab = 'app' | 'project' | 'voice' | 'updates'
+type Tab = 'app' | 'mcp' | 'skills' | 'voice' | 'updates'
 
 export function SettingsModal({
   open,
@@ -181,7 +181,8 @@ export function SettingsModal({
 
   const TABS: { id: Tab; label: string; icon: typeof SlidersHorizontal }[] = [
     { id: 'app', label: 'Application', icon: SlidersHorizontal },
-    { id: 'project', label: 'Projet', icon: Boxes },
+    { id: 'mcp', label: 'MCP', icon: Plug },
+    { id: 'skills', label: 'Skills', icon: Sparkles },
     { id: 'voice', label: 'Voice', icon: Mic },
     { id: 'updates', label: 'Mises à jour', icon: Download },
   ]
@@ -235,7 +236,7 @@ export function SettingsModal({
                     </button>
                   )
                 })}
-                {projectName && tab === 'project' && (
+                {projectName && (tab === 'mcp' || tab === 'skills') && (
                   <span className="mt-auto truncate px-2.5 py-1 text-[10px] text-fg-subtle">{projectName}</span>
                 )}
               </nav>
@@ -283,11 +284,9 @@ export function SettingsModal({
                         </p>
                       </section>
                     </div>
+                  ) : tab === 'mcp' ? (
+                    <ConnectorsSection projectPath={projectPath} />
                   ) : (
-                    <div className="space-y-6">
-                      <ConnectorsSection projectPath={projectPath} />
-
-                      {/* Skills — gestionnaire (créer / importer dossier / importer git / éditer / supprimer). */}
                       <section>
                         <div className="mb-2 flex items-center justify-between">
                           <h3 className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-fg-subtle">
@@ -530,7 +529,6 @@ export function SettingsModal({
                           </div>
                         )}
                       </section>
-                    </div>
                   )}
                 </div>
               )}
