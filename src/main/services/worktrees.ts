@@ -13,7 +13,7 @@
 // par terminal du renderer.
 
 import { execFileSync } from 'child_process'
-import { existsSync, symlinkSync } from 'fs'
+import { existsSync, mkdirSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import type { AgentBranch } from '../../shared/types'
 
@@ -138,20 +138,35 @@ export function ensureWorktree(main: string, agent: string, base?: string): stri
 }
 
 /**
- * Provisionne les dépendances d'un worktree pour qu'il puisse exécuter tsc/typecheck (green-gate au report,
- * W5) : crée une JUNCTION node_modules → tronc (Windows, sans privilège ; ignorée par git via .gitignore).
- * Best-effort, ne bloque JAMAIS : skip si déjà présent (préserve un install manuel) ou si le tronc n'a pas
- * encore de node_modules. Idempotent.
+ * Provisionne les dépendances d'un worktree via des JUNCTIONS → tronc (Windows, sans privilège ; ignorées
+ * par git via .gitignore). Chaque junction est best-effort et INDÉPENDANTE (try/catch séparé) : un échec ou
+ * un skip de l'une ne doit jamais empêcher l'autre. Idempotent ; skip si déjà présent (préserve un setup
+ * manuel) ou si la cible du tronc n'existe pas encore.
+ *   1. node_modules : pour exécuter tsc/typecheck (green-gate au report, W5).
+ *   2. .claude/skills : rend les skills Claude Code par-projet (du tronc, gitignorés donc ABSENTS d'un
+ *      worktree frais) découvrables par l'agent worker dont le cwd est ce worktree.
  */
 export function provisionWorktreeDeps(main: string, dir: string): void {
+  if (!dir || dir === main) return
+  // 1. node_modules → tronc.
   try {
-    if (!dir || dir === main) return
     const link = join(dir, 'node_modules')
     const target = join(main, 'node_modules')
-    if (existsSync(link) || !existsSync(target)) return
-    symlinkSync(target, link, 'junction')
+    if (!existsSync(link) && existsSync(target)) symlinkSync(target, link, 'junction')
   } catch (e) {
     console.error('[worktrees] junction node_modules ignorée (best-effort) :', (e as Error).message)
+  }
+  // 2. .claude/skills → tronc. Le dossier .claude est gitignoré → absent du worktree frais : on crée le
+  //    parent avant la junction (mkdir recursive = no-op s'il existe déjà).
+  try {
+    const link = join(dir, '.claude', 'skills')
+    const target = join(main, '.claude', 'skills')
+    if (!existsSync(link) && existsSync(target)) {
+      mkdirSync(join(dir, '.claude'), { recursive: true })
+      symlinkSync(target, link, 'junction')
+    }
+  } catch (e) {
+    console.error('[worktrees] junction .claude/skills ignorée (best-effort) :', (e as Error).message)
   }
 }
 
