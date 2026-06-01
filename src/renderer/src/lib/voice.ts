@@ -65,6 +65,12 @@ export function loadAsr(
         progress_callback: onProgress as never,
       } as never) as Promise<AutomaticSpeechRecognitionPipeline>,
   )
+  // Cache auto-réparant : si le chargement échoue (réseau, init session ORT…), évince l'entrée pour qu'une
+  // prochaine dictée puisse réessayer. Sinon la promesse rejetée resterait en cache et toute dictée suivante
+  // du même modèle échouerait instantanément jusqu'au reload de l'app (empoisonnement de cache).
+  promise.catch(() => {
+    if (asrCache.get(key) === promise) asrCache.delete(key)
+  })
   asrCache.set(key, promise)
   return promise
 }

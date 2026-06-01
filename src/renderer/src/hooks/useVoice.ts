@@ -228,12 +228,15 @@ export function useVoice(onText: (text: string) => void, source: string) {
     if (recRef.current) void stop()
     else void start()
   }, [start, stop, state])
+  const toggleRef = useRef(toggle)
+  toggleRef.current = toggle
 
-  // Hotkey globale / widget flottant → toggle.
+  // Hotkey globale / widget flottant → toggle. Abonnement IPC stable (enregistré une seule fois) : le handler
+  // appelle le toggle courant via ref, ce qui évite un removeAllListeners + ré-abonnement à CHAQUE changement d'état.
   useEffect(() => {
-    window.bridge.voice.onToggle(() => toggle())
+    window.bridge.voice.onToggle(() => toggleRef.current())
     return () => window.bridge.voice.offToggle()
-  }, [toggle])
+  }, [])
 
   // ESC annule pendant l'écoute / la transcription (rel-7).
   useEffect(() => {
