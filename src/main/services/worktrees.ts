@@ -13,7 +13,7 @@
 // par terminal du renderer.
 
 import { execFileSync } from 'child_process'
-import { existsSync } from 'fs'
+import { existsSync, symlinkSync } from 'fs'
 import { join } from 'path'
 import type { AgentBranch } from '../../shared/types'
 
@@ -104,7 +104,10 @@ export function ensureWorktree(main: string, agent: string, base?: string): stri
   const dir = worktreeDir(main, agent)
   const branch = branchFor(agent)
 
-  if (isRegistered(main, dir) && existsSync(dir)) return dir
+  if (isRegistered(main, dir) && existsSync(dir)) {
+    provisionWorktreeDeps(main, dir)
+    return dir
+  }
 
   const baseSha = (tryGit(main, ['rev-parse', base ?? 'HEAD']) ?? '').trim()
 
@@ -129,7 +132,27 @@ export function ensureWorktree(main: string, agent: string, base?: string): stri
       return main
     }
   }
-  return existsSync(dir) ? dir : main
+  const ready = existsSync(dir) ? dir : main
+  if (ready !== main) provisionWorktreeDeps(main, ready)
+  return ready
+}
+
+/**
+ * Provisionne les dépendances d'un worktree pour qu'il puisse exécuter tsc/typecheck (green-gate au report,
+ * W5) : crée une JUNCTION node_modules → tronc (Windows, sans privilège ; ignorée par git via .gitignore).
+ * Best-effort, ne bloque JAMAIS : skip si déjà présent (préserve un install manuel) ou si le tronc n'a pas
+ * encore de node_modules. Idempotent.
+ */
+export function provisionWorktreeDeps(main: string, dir: string): void {
+  try {
+    if (!dir || dir === main) return
+    const link = join(dir, 'node_modules')
+    const target = join(main, 'node_modules')
+    if (existsSync(link) || !existsSync(target)) return
+    symlinkSync(target, link, 'junction')
+  } catch (e) {
+    console.error('[worktrees] junction node_modules ignorée (best-effort) :', (e as Error).message)
+  }
 }
 
 /**
@@ -149,6 +172,20 @@ export function refreshWorktreeToHead(main: string, agent: string): 'updated' | 
   if (!head) return 'skip'
   // MAIN-HEAD déjà ancêtre du worktree → rien à amener (is-ancestor sort 0 → tryGit ≠ null).
   if (tryGit(dir, ['merge-base', '--is-ancestor', head, 'HEAD']) !== null) return 'updated'
+  // Worktree PROPRE ici (dirty déjà retourné plus haut). Si la branche n'a AUCUN commit authored non mergé
+  // (worktree idle d'une session passée : juste en retard sur main), un reset --hard sur MAIN-HEAD ne perd
+  // RIEN, garantit la présence des commits-prérequis (corrige W1) et évite un commit de merge (anti-inflation
+  // W4). On ne reset JAMAIS une branche qui porte du travail non mergé (cf. invariant l.98).
+  const authored = parseInt((tryGit(dir, ['rev-list', '--count', `${head}..HEAD`]) ?? '0').trim(), 10) || 0
+  if (authored === 0) {
+    try {
+      git(dir, ['reset', '--hard', head])
+      return 'updated'
+    } catch {
+      return 'conflict'
+    }
+  }
+  // La branche porte du travail non mergé → merge (jamais de reset qui le détruirait) ; conflit → abort.
   try {
     git(dir, ['merge', '--no-edit', head])
     return 'updated'
@@ -218,10 +255,14 @@ export interface BranchEvidence {
 export function branchEvidence(main: string, agent: string): BranchEvidence {
   const dir = worktreeDir(main, agent)
   const branch = branchFor(agent)
-  const ahead = parseInt((tryGit(main, ['rev-list', '--count', `HEAD..${branch}`]) ?? '0').trim(), 10) || 0
+  // Plage AUTHORED (merge-base(main,branch)..branch), PAS vs HEAD courant : sinon les commits de merge de
+  // refresh (refreshWorktreeToHead / refreshOtherWorktrees) gonflent le compte (symptôme W4). `--no-merges`
+  // + diff three-dot ne gardent que le travail réellement écrit par le worker (cf. idiome source.ipc.ts).
+  const base = (tryGit(main, ['merge-base', 'HEAD', branch]) ?? '').trim() || 'HEAD'
+  const ahead = parseInt((tryGit(main, ['rev-list', '--count', '--no-merges', `${base}..${branch}`]) ?? '0').trim(), 10) || 0
   const wtStatus = existsSync(dir) ? (tryGit(dir, ['status', '--porcelain']) ?? '') : ''
   const worktreeDirty = !!wtStatus.trim()
-  const committed = (tryGit(main, ['diff', '--name-only', `HEAD..${branch}`]) ?? '')
+  const committed = (tryGit(main, ['diff', '--name-only', `${base}...${branch}`]) ?? '')
     .split('\n')
     .map((s) => s.trim())
     .filter(Boolean)

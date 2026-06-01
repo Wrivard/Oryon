@@ -8,6 +8,7 @@ import { killAllTerminals } from './services/pty-manager'
 import { stopAllDevServers } from './services/dev-server'
 import { closeEditorWatcher } from './ipc/editor.ipc'
 import { initMcpExport } from './services/mcp-export'
+import { reconcileStaleTasks } from './services/orchestrator/task-store'
 import { appSetting } from './ipc/settings.ipc'
 import { createVoiceWidget, destroyVoiceWidget } from './services/voice-widget'
 import { initUpdater } from './services/updater'
@@ -194,6 +195,10 @@ app.whenReady().then(() => {
   // → aucune fenêtre, sans signal (« l'app ne fait rien »). On loggue et on continue : mieux vaut une
   // fenêtre avec un sous-système dégradé qu'une app invisible.
   try {
+    // W2 : repasse les tasks 'in-progress' orphelines (laissées par une session précédente) en 'todo' AVANT
+    // le 1er writeMeta, sinon des terminaux idle s'afficheraient "busy" (busy est dérivé des in-progress).
+    const reconciled = reconcileStaleTasks()
+    if (reconciled) console.log(`[startup] ${reconciled} task(s) in-progress orpheline(s) repassée(s) en 'todo'`)
     registerIpcHandlers()
     initMcpExport() // exporte l'état (terminaux/tasks/mailbox) pour le serveur MCP de debug
     registerMediaPermissions() // autorise le micro (getUserMedia) pour la dictée Voice — sinon « micro indisponible »

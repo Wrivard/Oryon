@@ -6,7 +6,9 @@
 // Le mode interactif par défaut lit l'OAuth subscription (~/.claude/.credentials.json).
 // Le pty-manager retire aussi ANTHROPIC_API_KEY de l'env par sécurité.
 
-import { readFileSync, writeFileSync, renameSync } from 'fs'
+import { app } from 'electron'
+import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs'
+import { createHash } from 'crypto'
 import { homedir } from 'os'
 import { join } from 'path'
 import { WORKER_TERMINAL_SYSTEM } from './orchestrator/roles'
@@ -35,11 +37,35 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "''")}'`
 }
 
+/**
+ * Argument --append-system-prompt SANS coller un argv multi-KB dans le PTY PowerShell (ce qui fait crasher
+ * PSReadLine : System.ArgumentOutOfRangeException — W3). On écrit le prompt (statique) dans un fichier sous
+ * userData (nommé par hash du contenu → stable + dédupliqué) et on renvoie une petite sous-expression
+ * PowerShell qui en relit le contenu à l'évaluation de la ligne → claude reçoit EXACTEMENT le même arg, mais
+ * la ligne tapée fait ~120 caractères. $0 inchangé (aucune var d'auth touchée). Repli : inline si l'I/O échoue.
+ */
+function systemPromptArg(prompt: string): string {
+  try {
+    const hash = createHash('sha1').update(prompt).digest('hex').slice(0, 16)
+    const file = join(app.getPath('userData'), `oryon-roleprompt-${hash}.txt`)
+    if (!existsSync(file)) {
+      const tmp = `${file}.${process.pid}.tmp`
+      writeFileSync(tmp, prompt, 'utf8')
+      renameSync(tmp, file)
+    }
+    // PowerShell évalue $(...) au moment de l'Entrée et substitue le contenu du fichier comme valeur d'arg
+    // (donnée, non ré-interprétée) → quotes/apostrophes/$ du prompt sont sûrs. Seul le CHEMIN est échappé.
+    return `"$(Get-Content -Raw -LiteralPath '${file.replace(/'/g, "''")}')"`
+  } catch {
+    return shellQuote(prompt) // repli : au pire l'ancien comportement (crash PSReadLine cosmétique)
+  }
+}
+
 export function buildClaudeCommand(opts: ClaudeCommandOpts = {}): string {
   let cmd = `claude ${AUTONOMY_FLAG}`
   if (opts.model) cmd += ` --model ${opts.model}`
   if (opts.effort) cmd += ` --effort ${opts.effort}`
-  if (opts.appendSystemPrompt) cmd += ` --append-system-prompt ${shellQuote(opts.appendSystemPrompt)}`
+  if (opts.appendSystemPrompt) cmd += ` --append-system-prompt ${systemPromptArg(opts.appendSystemPrompt)}`
   if (opts.continueSession) cmd += ' --continue'
   return cmd
 }
@@ -58,7 +84,7 @@ export function enforceAgentSpawn(autostart: string): string {
   if (/--model\s+(haiku|sonnet)\b/i.test(cmd)) cmd = cmd.replace(/--model\s+\S+/i, `--model ${AGENT_MODEL}`)
   else if (!/--model\b/.test(cmd)) cmd += ` --model ${AGENT_MODEL}`
   if (!/--effort\b/.test(cmd)) cmd += ' --effort max'
-  if (!/--append-system-prompt\b/.test(cmd)) cmd += ` --append-system-prompt ${shellQuote(WORKER_TERMINAL_SYSTEM)}`
+  if (!/--append-system-prompt\b/.test(cmd)) cmd += ` --append-system-prompt ${systemPromptArg(WORKER_TERMINAL_SYSTEM)}`
   return cmd
 }
 

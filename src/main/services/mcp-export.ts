@@ -13,6 +13,7 @@ import {
   agentReportTask,
   agentApproveTask,
   agentBroadcastCommand,
+  tickWatchdog,
 } from './orchestrator/router'
 
 // Export d'état pour le serveur MCP stdio (process séparé, lit ces fichiers — pas d'accès aux
@@ -75,7 +76,7 @@ function flushLogs(): void {
   }
 }
 
-function processCommand(path: string): void {
+async function processCommand(path: string): Promise<void> {
   if (processedCommands.has(path)) return
   processedCommands.add(path)
   try {
@@ -87,7 +88,7 @@ function processCommand(path: string): void {
     } else if (cmd.type === 'assign-task') {
       agentAssignTask(cmd.workspaceId, cmd.terminal, cmd.instructions, cmd.title ?? undefined)
     } else if (cmd.type === 'report-task') {
-      agentReportTask(cmd.workspaceId, cmd.fromAgent ?? null, cmd.status, cmd.summary ?? '')
+      await agentReportTask(cmd.workspaceId, cmd.fromAgent ?? null, cmd.status, cmd.summary ?? '')
     } else if (cmd.type === 'approve-task') {
       agentApproveTask(cmd.taskId)
     } else if (cmd.type === 'broadcast-command') {
@@ -124,6 +125,7 @@ export function initMcpExport(): void {
   setInterval(() => {
     safeMeta()
     void drainPendingMerges()
+    tickWatchdog() // WC : surface (sans tuer) les workers busy silencieux > 5 min
   }, 2000)
 
   addDataObserver((terminalId, data) => {

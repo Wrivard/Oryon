@@ -76,3 +76,17 @@ export function updateTask(
     .prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = @id`)
     .run(params)
 }
+
+/**
+ * Réconciliation au DÉMARRAGE (W2) : toute task 'in-progress' est orpheline au boot (aucun PTY worker ne
+ * tourne encore ; le terminalBusy in-memory repart vide). On les repasse 'todo' + détache le terminal, sinon
+ * un terminal idle s'affiche "busy" pour toujours (busy est DÉRIVÉ des lignes in-progress, cf. mcp-export
+ * writeMeta). Les 'in-review' sont CONSERVÉES (elles gardent assigned_terminal_id pour le merge à l'approbation).
+ * Retourne le nombre de lignes réconciliées.
+ */
+export function reconcileStaleTasks(): number {
+  const res = getDb()
+    .prepare("UPDATE tasks SET status='todo', assigned_terminal_id=NULL, updated_at=? WHERE status='in-progress'")
+    .run(Date.now())
+  return res.changes
+}

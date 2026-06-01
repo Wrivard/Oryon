@@ -5,6 +5,7 @@ import { recordMailbox } from './mailbox'
 import { getOrCreateProjectId, createTask, listTasks, getTask, updateTask } from './task-store'
 import { isGitRepo, worktreeDir, branchFor, refreshWorktreeToHead, branchEvidence } from '../worktrees'
 import { enqueueMergeBack } from './merge-back'
+import { verifyWorktree } from './green-gate'
 import type { OrchestratorEvent, TaskStatus, Workspace } from '../../../shared/types'
 
 // Exécuteur de flotte. L'orchestration EST pilotée par le terminal orchestrateur dédié (claude opus +
@@ -18,6 +19,8 @@ const INJECT_ENTER_DELAY = 200 // ms : laisser claude consommer le paste avant l
 const terminalBusy = new Map<string, string | null>() // terminalId -> taskId | null
 const terminalLastData = new Map<string, number>() // terminalId -> dernier flux (ts) — pour l'interruption
 const interrupting = new Set<string>() // terminaux en cours d'ESC (non réutilisables)
+const stallNotified = new Set<string>() // terminaux déjà signalés "silencieux" (watchdog WC) — anti-spam
+const STALL_MS = 5 * 60_000 // worker busy sans flux depuis 5 min → surfacé à l'orchestrateur (JAMAIS tué)
 let observerInstalled = false
 
 // ---- helpers ----
@@ -117,6 +120,7 @@ export function initOrchestrator(): void {
   addExitObserver((id) => {
     terminalBusy.delete(id)
     terminalLastData.delete(id)
+    stallNotified.delete(id)
   })
 }
 
@@ -166,22 +170,42 @@ export function agentAssignTask(
   if (!ws) throw new Error(`Workspace ${workspaceId} introuvable`)
   const id = resolveWorker(workspaceId, terminalRef)
   const projectId = getOrCreateProjectId(ws.name, ws.project_path)
-  const task = createTask({
-    workspaceId,
-    projectId,
-    title: (title && title.trim()) || instructions.slice(0, 80),
-    role: 'builder',
-    instructions,
-    dependsOn: [],
-  })
-  updateTask(task.id, { status: 'in-progress', assigned_terminal_id: id })
+  // Réutilise la task OUVERTE de CE terminal si elle existe (re-dispatch : refresh W1, boucle de feedback,
+  // retry après "blocked") au lieu d'en créer une 2e → plus de lignes en double dans le board (W2).
+  const open = [...listTasks(workspaceId)]
+    .reverse()
+    .find((t) => t.assigned_terminal_id === id && (t.status === 'in-progress' || t.status === 'in-review'))
+  let task
+  if (open) {
+    updateTask(open.id, { status: 'in-progress', instructions, assigned_terminal_id: id })
+    task = { ...open, instructions, status: 'in-progress' as TaskStatus, assigned_terminal_id: id }
+  } else {
+    task = createTask({
+      workspaceId,
+      projectId,
+      title: (title && title.trim()) || instructions.slice(0, 80),
+      role: 'builder',
+      instructions,
+      dependsOn: [],
+    })
+    updateTask(task.id, { status: 'in-progress', assigned_terminal_id: id })
+  }
   terminalBusy.set(id, task.id)
-  // Anti stale-fork : amène le worktree du worker à MAIN-HEAD (inclut les tasks déjà mergées). No-op si à jour.
-  if (isGitRepo(ws.project_path)) refreshWorktreeToHead(ws.project_path, terminalName(id))
+  stallNotified.delete(id) // re-dispatch → le watchdog pourra de nouveau signaler ce terminal
+  // Anti stale-fork (W1) : amène le worktree du worker à MAIN-HEAD (inclut les tasks déjà mergées). On AGIT
+  // sur le résultat — un worktree resté périmé (conflit) ou sali ne doit PAS être avalé en silence.
+  const refreshed = isGitRepo(ws.project_path) ? refreshWorktreeToHead(ws.project_path, terminalName(id)) : 'skip'
+  const staleNote =
+    refreshed === 'conflict'
+      ? 'NOTE: ton worktree n’a PAS pu être synchronisé sur main (conflit avec des commits locaux périmés) — fais `git merge main` / résous, ou report_task "blocked" si tu es coincé.'
+      : refreshed === 'dirty'
+        ? 'NOTE: ton worktree a des changements non commités et n’a PAS été synchronisé sur main — réconcilie avant de dépendre de code déjà mergé.'
+        : ''
   const prompt = oneLinePrompt(
     [
       `[task ${task.id}]`,
       instructions,
+      staleNote,
       'You are a FOCUSED IMPLEMENTATION WORKER, not an orchestrator: do ONLY the task above — never orchestrate, never ask the user what to do, never wait for further direction.',
       'Work EXCLUSIVELY inside your current git worktree (a full mirror of the repo). NEVER `cd` to another directory and never edit files outside this worktree — the main project tree and the other agents’ worktrees are OFF-LIMITS.',
       'Touch only the files the task names; make surgical changes; respect repo conventions; never run destructive commands.',
@@ -190,6 +214,18 @@ export function agentAssignTask(
     ].join(' '),
   )
   pasteLine(id, prompt)
+  // Si le worktree est resté périmé, préviens l'orchestrateur (signal actionnable, pas d'échec muet — W1).
+  if (refreshed === 'conflict' || refreshed === 'dirty') {
+    const orchE = orchestratorTerminalId(workspaceId)
+    if (orchE && hasLiveTerminal(orchE)) {
+      pasteLine(
+        orchE,
+        oneLinePrompt(
+          `[oryon] ⚠ worktree de ${terminalName(id)} non synchronisé sur main (${refreshed}) avant dispatch — il pourrait ne pas voir des dépendances déjà mergées. Resynchronise si la task en dépend.`,
+        ),
+      )
+    }
+  }
   emitTasks(workspaceId)
   return { terminal: terminalName(id), taskId: task.id }
 }
@@ -199,12 +235,12 @@ export function agentAssignTask(
  * 'in-review' (ou 'blocked'), et on RÉVEILLE le terminal orchestrateur en lui injectant une notification
  * (un agent interactif ne reçoit rien passivement). L'état task reste durable (panneau Tasks) en repli.
  */
-export function agentReportTask(
+export async function agentReportTask(
   workspaceId: string,
   fromAgent: string | null,
   status: string,
   summary: string,
-): { ok: boolean; taskId?: string } {
+): Promise<{ ok: boolean; taskId?: string }> {
   const ids = terminalIds(workspaceId)
   const termId = fromAgent
     ? ids.find((x) => terminalName(x).toLowerCase() === fromAgent.toLowerCase())
@@ -214,6 +250,16 @@ export function agentReportTask(
     .reverse()
     .find((t) => t.assigned_terminal_id === termId && t.status === 'in-progress')
   const blocked = status.toLowerCase() === 'blocked'
+
+  // Dédoublonnage (W2, belt-and-suspenders) : démote toute AUTRE ligne in-progress du même terminal
+  // (une éventuelle dupe antérieure au fix) pour qu'elle ne traîne pas dans le board.
+  if (termId) {
+    for (const t of listTasks(workspaceId)) {
+      if (t.assigned_terminal_id === termId && t.status === 'in-progress' && t.id !== task?.id) {
+        updateTask(t.id, { status: 'todo', assigned_terminal_id: null })
+      }
+    }
+  }
 
   // PORTE À PREUVES (F4/F8) : on lit l'état git RÉEL de la branche du worker, jamais sa seule prose.
   const ws = getWorkspace(workspaceId)
@@ -251,6 +297,21 @@ export function agentReportTask(
     message: recordMailbox(workspaceId, fromAgent, `${status}${summary ? ' — ' + summary : ''}`),
   })
   emitTasks(workspaceId)
+  // Green-gate ADVISORY au report (W5) : typecheck le WORKTREE du worker (best-effort) pour informer la revue.
+  // Ne bloque JAMAIS (le gate autoritaire reste verifyMain à l'approve, sur le tronc mergé). Seulement si du
+  // vrai travail existe (branche non vide, pas "blocked") ; no-op si le worktree n'a pas de node_modules.
+  let gateNote = ''
+  if (ws && ev && !ev.empty && !blocked && fromAgent && isGitRepo(ws.project_path)) {
+    try {
+      const gate = await verifyWorktree(worktreeDir(ws.project_path, fromAgent), ws.project_path)
+      if (!gate.skipped && !gate.timedOut) {
+        gateNote = ` [typecheck ${gate.green ? '✓ vert' : '✗ ROUGE'}]`
+        if (!gate.green) gateNote += ` — extrait: ${oneLinePrompt(gate.log.slice(-500))}`
+      }
+    } catch {
+      /* best-effort : un échec du gate ne casse jamais le report */
+    }
+  }
   // Réveille l'orchestrateur AVEC l'évidence git machine à côté de la prose du worker (F4/F8) + alerte contamination (F3).
   const orch = orchestratorTerminalId(workspaceId)
   if (orch && hasLiveTerminal(orch)) {
@@ -262,11 +323,44 @@ export function agentReportTask(
       if (ev.mainDirty) evidence += ' ⚠ TRONC PRINCIPAL SALE — contamination possible (un worker a peut-être édité MAIN)'
     }
     const wake = oneLinePrompt(
-      `[oryon] ${fromAgent ?? 'un worker'} a terminé "${task?.title ?? ''}" (${status})${tid}: ${summary}.${evidence}${wt} Vérifie le diff puis approve_task si OK, sinon réassigne avec un feedback précis.`,
+      `[oryon] ${fromAgent ?? 'un worker'} a terminé "${task?.title ?? ''}" (${status})${tid}: ${summary}.${evidence}${gateNote}${wt} Vérifie le diff puis approve_task si OK, sinon réassigne avec un feedback précis.`,
     )
     pasteLine(orch, wake)
   }
   return { ok: true, taskId: task?.id }
+}
+
+/**
+ * Watchdog (WC) : signale à l'orchestrateur tout worker BUSY silencieux depuis > STALL_MS (peut-être bloqué,
+ * en attente d'input, ou en boucle). SURFACE uniquement — JAMAIS de kill/interrupt automatique. Appelé sur le
+ * tick 2 s de mcp-export. Anti-spam via stallNotified (réarmé au prochain dispatch / à la mort du terminal).
+ */
+export function tickWatchdog(): void {
+  const now = Date.now()
+  for (const [tid, busy] of terminalBusy) {
+    if (!busy || stallNotified.has(tid) || interrupting.has(tid) || !hasLiveTerminal(tid)) continue
+    const last = terminalLastData.get(tid)
+    if (last === undefined || now - last <= STALL_MS) continue // pas encore de flux (prompt en vol) → on attend
+    const wsId = (getDb().prepare('SELECT workspace_id FROM terminals WHERE id = ?').pluck().get(tid) as
+      | string
+      | undefined)
+    if (!wsId) continue
+    const orch = orchestratorTerminalId(wsId)
+    if (!orch || !hasLiveTerminal(orch)) continue
+    const name = terminalName(tid)
+    const t = getTask(busy)
+    const ws = getWorkspace(wsId)
+    const ev = ws && isGitRepo(ws.project_path) ? branchEvidence(ws.project_path, name) : null
+    const mins = Math.round((now - last) / 60000)
+    const evidence = ev ? ` [preuve: ${ev.ahead} commit(s), ${ev.filesChanged.length} fichier(s)]` : ''
+    pasteLine(
+      orch,
+      oneLinePrompt(
+        `[oryon watchdog] ${name} silencieux depuis ~${mins} min sur "${t?.title ?? ''}"${evidence}. Peut-être bloqué / en attente d'input / en boucle — inspecte (get_terminal_output ${name}) puis relance ou réassigne. (aucun kill automatique)`,
+      ),
+    )
+    stallNotified.add(tid)
+  }
 }
 
 /**

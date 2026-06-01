@@ -33,21 +33,21 @@ function tscEntry(mainPath: string): string {
 }
 
 /**
- * Vérifie que MAIN typecheck. green:true si tous les tsconfig présents passent.
- * skipped:true si TypeScript/tsconfig absent (projet non-TS) → ne bloque pas le merge.
- * timedOut:true si le typecheck dépasse le budget → l'appelant diffère sans revert.
+ * Lance tsc --noEmit sur `projectDir` avec le BINAIRE TypeScript de `tscRoot` (= MAIN, qui a toujours
+ * node_modules ; un worktree résout @types via la junction node_modules → tronc, cf. provisionWorktreeDeps).
+ * skipped:true si TS/tsconfig absent (best-effort no-op). timedOut:true si budget dépassé.
  */
-export async function verifyMain(mainPath: string): Promise<GreenResult> {
-  const tsc = tscEntry(mainPath)
-  if (!existsSync(tsc)) return { green: true, skipped: true, timedOut: false, log: 'typescript absent du projet — green-gate ignorée' }
-  const present = TSCONFIGS.filter((c) => existsSync(join(mainPath, c)))
+async function runTypecheck(projectDir: string, tscRoot: string): Promise<GreenResult> {
+  const tsc = tscEntry(tscRoot)
+  if (!existsSync(tsc)) return { green: true, skipped: true, timedOut: false, log: 'typescript absent — green-gate ignorée' }
+  const present = TSCONFIGS.filter((c) => existsSync(join(projectDir, c)))
   if (present.length === 0) return { green: true, skipped: true, timedOut: false, log: 'aucun tsconfig — green-gate ignorée' }
 
   const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
   for (const cfg of present) {
     try {
       await exec(process.execPath, [tsc, '--noEmit', '-p', cfg], {
-        cwd: mainPath,
+        cwd: projectDir,
         env,
         maxBuffer: 32 * 1024 * 1024,
         windowsHide: true,
@@ -63,4 +63,21 @@ export async function verifyMain(mainPath: string): Promise<GreenResult> {
     }
   }
   return { green: true, skipped: false, timedOut: false, log: 'typecheck vert' }
+}
+
+/**
+ * Vérifie que MAIN typecheck (binaire ET projet = MAIN). green:true si tous les tsconfig présents passent.
+ * skipped:true si TypeScript/tsconfig absent → ne bloque pas le merge. timedOut:true → l'appelant diffère.
+ */
+export async function verifyMain(mainPath: string): Promise<GreenResult> {
+  return runTypecheck(mainPath, mainPath)
+}
+
+/**
+ * Vérifie qu'un WORKTREE d'agent typecheck (binaire TS du tronc, projet = worktree). Green-gate ADVISORY au
+ * report (W5) : informe la revue, ne bloque pas (le gate autoritaire reste verifyMain à l'approve sur le tronc
+ * mergé). skipped:true si le worktree n'a pas node_modules (junction absente) → no-op best-effort.
+ */
+export async function verifyWorktree(worktreePath: string, mainPath: string): Promise<GreenResult> {
+  return runTypecheck(worktreePath, mainPath)
 }
