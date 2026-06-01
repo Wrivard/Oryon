@@ -196,7 +196,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
       text = applySnippets(text, dicts.snippets)
       text = applyDictionary(text, dicts.reps)
       text = fuzzyBoost(text, mergedVocab, { threshold: snap.threshold })
-      const codeSafe = snap.source !== 'orchestrator'
+      const codeSafe = snap.source === 'terminal' // terminal SEUL = code-safe ; 'system' (WisprFlow) et 'orchestrator' = prose formatée
       if (snap.source === 'orchestrator') text = applyFileTags(text, projectFiles)
       if (codeSafe) {
         text = formatCodeSafe(text)

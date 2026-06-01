@@ -128,6 +128,7 @@ export function VoiceGeneral() {
             <select value={s['voice.target'] ?? 'orchestrator'} onChange={(e) => set('voice.target', e.target.value)} disabled={!loaded} className={SELECT_CLS}>
               <option value="orchestrator">Orchestrateur (traitement IA)</option>
               <option value="terminal">Terminal (texte brut)</option>
+              <option value="system">Système (colle dans l’app au premier plan)</option>
             </select>
           </label>
         </div>

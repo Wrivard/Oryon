@@ -123,6 +123,7 @@ const bridge: BridgeApi = {
     stats: () => ipcRenderer.invoke('voice:stats'),
     format: (text, level) => ipcRenderer.invoke('voice:format', text, level),
     command: (command, selection) => ipcRenderer.invoke('voice:command', command, selection),
+    injectText: (text) => ipcRenderer.invoke('voice:injectText', text),
     onCommandKey: (cb) => {
       ipcRenderer.on('voice:command-key', () => cb())
     },

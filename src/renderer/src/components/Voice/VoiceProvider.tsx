@@ -9,7 +9,7 @@ import type { VoiceState } from '@shared/types'
 // abonné, sinon double-toggle). Route la dictée vers la cible réglée (voice.target) : 'orchestrator' = barre
 // de dictée (review + apprentissage ✨) ; 'terminal' = PTY du terminal focus. Expose toggle/state + la mic.
 
-type VoiceTarget = 'orchestrator' | 'terminal'
+type VoiceTarget = 'orchestrator' | 'terminal' | 'system'
 
 /** API qu'enregistre la barre de dictée orchestrateur pour recevoir le texte et servir de cible command-mode. */
 export interface OrchestratorBarApi {
@@ -63,6 +63,21 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
     if (routedSource === 'orchestrator') {
       if (barRef.current) barRef.current.setText(text)
       else toast.error('Ouvre le panneau Orchestrateur pour recevoir la dictée.', { title: 'Dictée' })
+      return
+    }
+    // Cible système (façon WisprFlow) : colle au curseur de l'app au premier plan via le presse-papier (main).
+    // Pas de repli barre/terminal — l'utilisateur dicte dans une AUTRE app ; un échec (OS non supporté, paste
+    // refusé) remonte en { ok:false, reason } → toast plutôt qu'une perte silencieuse.
+    if (routedSource === 'system') {
+      void window.bridge.voice.injectText(text).then((r) => {
+        if (!r.ok)
+          toast.error(
+            r.reason === 'unsupported-os'
+              ? 'Le collage système n’est disponible que sur Windows.'
+              : 'Le collage dans l’app au premier plan a échoué — garde le champ cible au premier plan et réessaie.',
+            { title: 'Dictée' },
+          )
+      })
       return
     }
     // Cible terminal. focusedTerminalId est un singleton GLOBAL et les PTY survivent au switch de workspace :
