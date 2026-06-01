@@ -49,7 +49,7 @@ export function SettingsModal({
   const reload = async () => {
     setAppSettings(await window.bridge.settings.getApp())
     setConnectors(await window.bridge.settings.listConnectors(projectPath))
-    setSkills(await window.bridge.settings.listSkills())
+    setSkills(await window.bridge.settings.listSkills(projectPath))
   }
 
   useEffect(() => {
@@ -339,11 +339,17 @@ export function SettingsModal({
                         ) : (
                           <div className="space-y-1">
                             {skills.map((s) => (
-                              <div key={s.name} className="rounded-lg border border-border bg-bg-inset px-2.5 py-1.5">
+                              // clé préfixée par le scope : un skill global et un skill projet peuvent porter le même nom.
+                              <div key={`${s.scope}:${s.name}`} className="rounded-lg border border-border bg-bg-inset px-2.5 py-1.5">
                                 <div className="flex items-center gap-2">
                                   <span className="text-[12px] font-medium text-fg">{s.name}</span>
-                                  <span className="shrink-0 rounded bg-bg-panel px-1.5 py-px text-[9px] uppercase tracking-wide text-fg-subtle">
-                                    {s.source}
+                                  <span
+                                    className={cn(
+                                      'shrink-0 rounded px-1.5 py-px text-[9px] uppercase tracking-wide',
+                                      s.scope === 'project' ? 'bg-accent text-on-accent' : 'bg-bg-panel text-fg-subtle',
+                                    )}
+                                  >
+                                    {s.scope === 'project' ? 'projet' : 'global'}
                                   </span>
                                 </div>
                                 {s.description && <p className="mt-0.5 line-clamp-2 text-[11px] text-fg-subtle">{s.description}</p>}

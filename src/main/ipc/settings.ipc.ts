@@ -121,21 +121,29 @@ function parseFrontmatter(md: string): { name?: string; description?: string } {
   }
   return out
 }
-function listSkills(): SkillInfo[] {
-  const dir = join(homedir(), '.claude', 'skills')
+/** Scanne UN dossier de skills (<base>/<skill>/SKILL.md). N'émet une entrée QUE pour les sous-dossiers qui
+ *  contiennent un SKILL.md LISIBLE : sinon on remonterait des dossiers non-skill (ex. un repo de plugin cloné
+ *  sans SKILL.md à sa racine). `source` reste 'user' (cf. SkillInfo) ; `scope` distingue global vs projet. */
+function scanSkillsDir(dir: string, scope: 'user' | 'project'): SkillInfo[] {
   if (!existsSync(dir)) return []
   const out: SkillInfo[] = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
     const skillMd = join(dir, entry.name, 'SKILL.md')
-    let fm: { name?: string; description?: string } = {}
+    let fm: { name?: string; description?: string }
     try {
-      if (existsSync(skillMd)) fm = parseFrontmatter(readFileSync(skillMd, 'utf8'))
+      fm = parseFrontmatter(readFileSync(skillMd, 'utf8'))
     } catch {
-      /* ignore */
+      continue // SKILL.md absent (ENOENT) ou illisible → ce dossier n'est pas un skill : on le saute.
     }
-    out.push({ name: fm.name ?? entry.name, description: fm.description ?? '', source: 'user' })
+    out.push({ name: fm.name ?? entry.name, description: fm.description ?? '', source: 'user', scope })
   }
+  return out
+}
+function listSkills(projectPath?: string | null): SkillInfo[] {
+  // Globaux d'abord (~/.claude/skills), puis ceux du projet ouvert (<projet>/.claude/skills) le cas échéant.
+  const out = scanSkillsDir(join(homedir(), '.claude', 'skills'), 'user')
+  if (projectPath) out.push(...scanSkillsDir(join(projectPath, '.claude', 'skills'), 'project'))
   return out
 }
 
@@ -150,5 +158,5 @@ export function registerSettingsIpc(): void {
   ipcMain.handle('settings:deleteConnector', (_e, id: string): void => {
     getDb().prepare('DELETE FROM mcp_connectors WHERE id = ?').run(id)
   })
-  ipcMain.handle('settings:listSkills', (): SkillInfo[] => listSkills())
+  ipcMain.handle('settings:listSkills', (_e, projectPath?: string | null): SkillInfo[] => listSkills(projectPath))
 }
