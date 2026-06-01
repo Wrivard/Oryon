@@ -4,6 +4,12 @@
 // IMPORTANT : ne JAMAIS écrire sur stdout hors protocole MCP (stdio l'utilise) → logs sur stderr.
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+// Client MCP (pour test_connector : sonder une config de serveur tierce depuis CE serveur). Bundlé en prod
+// par before-pack.cjs (esbuild --bundle suit ces imports).
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { z } from 'zod'
 import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -468,6 +474,109 @@ orchestratorTool(
     const p = join(STATE_DIR, `mcp-${t.name}.log`)
     const log = existsSync(p) ? readFileSync(p, 'utf8') : ''
     return text(log || `(aucun log MCP pour ${t.name} — le serveur n'a pas écrit de marqueur : pas démarré, ou version sans log dédié)`)
+  },
+)
+
+// ---- Installer-via-l'agent : tester + ajouter un connecteur MCP (orchestrateur-only, wizard d'install) ----
+// test_connector ouvre une VRAIE session MCP (initialize + tools/list) vers la config fournie pour la VALIDER
+// avant de l'enregistrer ; exécuté DANS ce serveur (le SDK client est bundlé) → $0 (aucun appel Claude).
+// add_connector enfile l'ajout côté main (DB + régénération des configs).
+const PROBE_TIMEOUT_MS = 15000
+async function probeMcp({ transport: tr, command, args, url, env, headers }) {
+  let client
+  let transport
+  try {
+    if (tr === 'stdio') {
+      if (!command) return { ok: false, error: 'command requis (stdio)' }
+      const childEnv = { ...getDefaultEnvironment(), ...(env || {}) }
+      delete childEnv.ANTHROPIC_API_KEY // hygiène coût $0 : le serveur testé n'hérite pas de la clé API
+      transport = new StdioClientTransport({ command, args: args || [], env: childEnv, stderr: 'ignore' })
+    } else {
+      if (!url) return { ok: false, error: `url requis (${tr})` }
+      const u = new URL(url)
+      const requestInit = headers ? { headers } : undefined
+      transport =
+        tr === 'sse' ? new SSEClientTransport(u, { requestInit }) : new StreamableHTTPClientTransport(u, { requestInit })
+    }
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) }
+  }
+  client = new Client({ name: 'oryon-probe', version: '0.1.0' }, { capabilities: {} })
+  const timeout = new Promise((_, rej) =>
+    setTimeout(() => rej(new Error(`timeout (${PROBE_TIMEOUT_MS / 1000}s) — serveur injoignable ?`)), PROBE_TIMEOUT_MS),
+  )
+  try {
+    await Promise.race([client.connect(transport), timeout])
+    const res = await Promise.race([client.listTools(), timeout])
+    const tools = Array.isArray(res?.tools) ? res.tools.map((t) => ({ name: t.name, description: t.description })) : []
+    return { ok: true, toolCount: tools.length, tools }
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) }
+  } finally {
+    try {
+      await client.close()
+    } catch {
+      /* best-effort */
+    }
+    try {
+      await transport.close()
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
+orchestratorTool(
+  'test_connector',
+  "Teste une config de serveur MCP SANS l'enregistrer : ouvre une session (initialize + tools/list) et renvoie { ok, toolCount, tools[] } ou { ok:false, error }. À utiliser pour VALIDER une config (command/url + secrets) trouvée dans la doc AVANT add_connector. Read-only, aucun effet persistant, $0.",
+  {
+    transport: z.enum(['stdio', 'http', 'sse']),
+    command: z.string().optional().describe('stdio : exécutable (ex. "npx")'),
+    args: z.array(z.string()).optional().describe('stdio : arguments'),
+    url: z.string().optional().describe('http/sse : endpoint'),
+    env: z.record(z.string()).optional().describe("stdio : variables d'env (secrets)"),
+    headers: z.record(z.string()).optional().describe('http/sse : en-têtes (ex. {"Authorization":"Bearer …"})'),
+  },
+  async (input) => text(JSON.stringify(await probeMcp(input), null, 2)),
+)
+
+orchestratorTool(
+  'add_connector',
+  "Ajoute un connecteur MCP pour l'utilisateur (rendu dispo à TOUS les agents du projet). Sert à connecter un serveur MCP que l'utilisateur a demandé, une fois sa config trouvée et VALIDÉE (test_connector). Mets les secrets (token/clé) dans env (stdio) ou headers (http/sse), JAMAIS en clair dans args/url. scope 'app' = global, 'project' = projet courant.",
+  {
+    name: z.string().describe('nom court unique (ex. "supabase", "github")'),
+    transport: z.enum(['stdio', 'http', 'sse']),
+    scope: z.enum(['app', 'project']).optional().describe("'app' (défaut) = global ; 'project' = projet courant"),
+    command: z.string().optional(),
+    args: z.array(z.string()).optional(),
+    url: z.string().optional(),
+    env: z.record(z.string()).optional(),
+    headers: z.record(z.string()).optional(),
+  },
+  async ({ name, transport: tr, scope, command, args, url, env, headers }) => {
+    const workspaceId = currentWorkspaceId()
+    if (!workspaceId) return text(JSON.stringify({ queued: false, error: 'workspace introuvable (Oryon tourne ?)' }))
+    try {
+      const id = queueCommand({
+        type: 'add-connector',
+        workspaceId,
+        connector: {
+          name,
+          transport: tr,
+          scope: scope || 'app',
+          command: command || null,
+          args: args || null,
+          url: url || null,
+          env: env || null,
+          headers: headers || null,
+        },
+      })
+      return text(
+        JSON.stringify({ queued: true, id, name, hint: 'Ajout enfilé côté Oryon. Confirme via Réglages → Connecteurs.' }),
+      )
+    } catch (e) {
+      return text(JSON.stringify({ queued: false, error: String(e) }))
+    }
   },
 )
 

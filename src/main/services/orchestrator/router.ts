@@ -9,7 +9,7 @@ import {
   killTerminal,
 } from '../pty-manager'
 import { ensureClaudeReady, normalizeClaudeAutostart, enforceAgentSpawn } from '../claude-launcher'
-import { buildProjectMcpConfigForPath } from '../../ipc/settings.ipc'
+import { buildProjectMcpConfigForPath, addConnector } from '../../ipc/settings.ipc'
 import { recordMailbox } from './mailbox'
 import { getOrCreateProjectId, createTask, listTasks, getTask, updateTask } from './task-store'
 import { isGitRepo, worktreeDir, branchFor, refreshWorktreeToHead, branchEvidence } from '../worktrees'
@@ -594,4 +594,56 @@ export function agentRestartAgent(workspaceId: string, terminalRef: string): voi
     onExit: (code) => sendToAllWindows(`terminal:exit:${id}`, code),
   })
   tellOrch(`[oryon] ↻ ${row.name} relancé (kill+recreate du PTY). Attends qu'il soit prêt avant de le re-piloter.`)
+}
+
+/**
+ * add_connector (MCP, orchestrateur-only) : ajoute un connecteur MCP demandé par l'orchestrateur (flux
+ * « installer via l'agent »). Persiste via settings.ipc.addConnector (valide la forme + régénère les configs
+ * de tous les projets), puis notifie l'orchestrateur du résultat. scope 'project' → projectPath = cwd du
+ * terminal orchestrateur (= projet principal du workspace).
+ */
+export function agentAddConnector(
+  workspaceId: string,
+  c: {
+    name: string
+    transport: 'stdio' | 'http' | 'sse'
+    scope?: 'app' | 'project'
+    command?: string | null
+    args?: string[] | null
+    url?: string | null
+    env?: Record<string, string> | null
+    headers?: Record<string, string> | null
+  },
+): void {
+  const orchE = orchestratorTerminalId(workspaceId)
+  const tell = (m: string): void => {
+    if (orchE && hasLiveTerminal(orchE)) pasteLine(orchE, oneLinePrompt(m))
+  }
+  if (!c || !c.name) {
+    tell('[oryon] ⚠ add_connector : payload invalide (nom manquant).')
+    return
+  }
+  try {
+    const scope: 'app' | 'project' = c.scope === 'project' ? 'project' : 'app'
+    const projectPath =
+      scope === 'project' && orchE
+        ? ((getDb().prepare('SELECT cwd FROM terminals WHERE id = ?').pluck().get(orchE) as string | undefined) ?? null)
+        : null
+    const saved = addConnector({
+      name: c.name,
+      scope,
+      projectPath,
+      transport: c.transport,
+      command: c.command ?? undefined,
+      args: c.args ?? undefined,
+      url: c.url ?? undefined,
+      env: c.env ?? undefined,
+      headers: c.headers ?? undefined,
+    })
+    tell(
+      `[oryon] ✓ Connecteur MCP « ${saved.name} » ajouté (${saved.scope}) — visible dans Réglages → Connecteurs, effectif au prochain spawn d'agent.`,
+    )
+  } catch (e) {
+    tell(`[oryon] ⚠ add_connector « ${c.name} » a échoué : ${(e as Error).message}`)
+  }
 }

@@ -14,6 +14,7 @@ import {
   agentApproveTask,
   agentBroadcastCommand,
   agentRestartAgent,
+  agentAddConnector,
   tickWatchdog,
 } from './orchestrator/router'
 
@@ -99,6 +100,8 @@ async function processCommand(path: string): Promise<void> {
       agentBroadcastCommand(cmd.workspaceId, cmd.command, cmd.terminal ?? undefined)
     } else if (cmd.type === 'restart-agent') {
       agentRestartAgent(cmd.workspaceId, cmd.terminal)
+    } else if (cmd.type === 'add-connector') {
+      agentAddConnector(cmd.workspaceId, cmd.connector)
     }
     try {
       unlinkSync(path)

@@ -109,7 +109,7 @@ function assertValidConnector(c: { name?: string; transport?: McpTransport; comm
   }
 }
 
-function addConnector(input: McpConnectorInput): McpConnector {
+export function addConnector(input: McpConnectorInput): McpConnector {
   assertValidConnector(input)
   const id = uuid()
   const row = {

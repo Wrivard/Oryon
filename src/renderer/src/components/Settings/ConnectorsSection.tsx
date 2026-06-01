@@ -17,7 +17,7 @@ import type {
 // Tout passe par window.bridge.settings.* ; les valeurs de secrets ne transitent que via connectorSecrets.
 
 type KV = { key: string; value: string }
-type AddMode = 'manual' | 'catalog' | 'import'
+type AddMode = 'manual' | 'catalog' | 'import' | 'agent'
 
 interface Form {
   name: string
@@ -106,6 +106,11 @@ export function ConnectorsSection({ projectPath }: { projectPath: string | null 
   const [importError, setImportError] = useState('')
   const [importSummary, setImportSummary] = useState('')
 
+  // Installer via l'agent : génère un prompt « recherche + connecte » à donner à l'orchestrateur.
+  const [agentQuery, setAgentQuery] = useState('')
+  const [agentPrompt, setAgentPrompt] = useState('')
+  const [agentMsg, setAgentMsg] = useState('')
+
   const load = async () => {
     setConnectors(await window.bridge.settings.listConnectors(projectPath))
   }
@@ -127,6 +132,9 @@ export function ConnectorsSection({ projectPath }: { projectPath: string | null 
     setCandidates(null)
     setImportSummary('')
     setImportError('')
+    setAgentQuery('')
+    setAgentPrompt('')
+    setAgentMsg('')
   }
 
   const openAdd = () => {
@@ -334,6 +342,27 @@ export function ConnectorsSection({ projectPath }: { projectPath: string | null 
       setImportError(msg(e))
     } finally {
       setPending(false)
+    }
+  }
+
+  // Prompt « installer via l'agent » : l'orchestrateur recherche la doc puis connecte via test_connector/add_connector.
+  const buildAgentPrompt = (query: string, scope: McpScope): string =>
+    `Recherche et connecte le serveur MCP « ${query.trim()} » pour moi (scope ${scope}).\n` +
+    `1. Trouve sa documentation officielle (WebSearch/WebFetch).\n` +
+    `2. Détermine sa config exacte : transport (stdio command+args, ou http/sse url) et les secrets requis (variables d'env, ou en-têtes type « Authorization: Bearer … »).\n` +
+    `3. Demande-moi les secrets nécessaires (token, clé API) — ne les invente pas.\n` +
+    `4. VALIDE la config avec l'outil MCP test_connector AVANT d'enregistrer.\n` +
+    `5. Si OK, ajoute-le avec l'outil MCP add_connector (scope: ${scope}). Sinon, explique le blocage.\n` +
+    `Bonnes pratiques : privilégie http/OAuth si dispo, et un accès read-only / scopé au projet quand c'est pertinent.`
+  const generateAgentPrompt = async () => {
+    if (!agentQuery.trim()) return
+    const p = buildAgentPrompt(agentQuery, form.scope)
+    setAgentPrompt(p)
+    try {
+      await window.bridge.app.copyText(p)
+      setAgentMsg("Prompt copié — colle-le dans le terminal de l'orchestrateur (il recherchera puis connectera le MCP).")
+    } catch {
+      setAgentMsg('Prompt généré (copie auto indisponible) — sélectionne et copie le texte ci-dessous.')
     }
   }
 
@@ -654,6 +683,7 @@ export function ConnectorsSection({ projectPath }: { projectPath: string | null 
                 { v: 'manual', label: 'Manuel' },
                 { v: 'catalog', label: 'Catalogue' },
                 { v: 'import', label: 'Importer' },
+                { v: 'agent', label: "Via l'agent" },
               ] as const
             ).map((m) => (
               <button
@@ -769,6 +799,53 @@ export function ConnectorsSection({ projectPath }: { projectPath: string | null 
                   </div>
                 </>
               )}
+            </div>
+          )}
+
+          {mode === 'agent' && (
+            <div className="space-y-2">
+              <p className="text-[11px] text-fg-subtle">
+                Pour un MCP que tu ne sais pas configurer : génère un prompt que l'orchestrateur exécute pour
+                rechercher la doc et le connecter (via les outils test_connector / add_connector). Il te demandera
+                les secrets nécessaires.
+              </p>
+              <input
+                value={agentQuery}
+                onChange={(e) => setAgentQuery(e.target.value)}
+                placeholder="Nom ou URL du MCP (ex. supabase, notion, https://…)"
+                className="w-full rounded-md border border-border bg-bg-panel px-2 py-1 text-[12px] text-fg outline-none focus:border-accent"
+              />
+              <select
+                value={form.scope}
+                onChange={(e) => set({ scope: e.target.value as McpScope })}
+                className="rounded-md border border-border bg-bg-panel px-2 py-1 text-[12px] text-fg outline-none"
+              >
+                <option value="app">App (toujours)</option>
+                <option value="project" disabled={!projectPath}>
+                  Projet
+                </option>
+              </select>
+              {agentPrompt && (
+                <textarea
+                  readOnly
+                  value={agentPrompt}
+                  rows={7}
+                  className="w-full resize-y rounded-md border border-border bg-bg-panel px-2 py-1 font-mono text-[10px] text-fg-subtle outline-none"
+                />
+              )}
+              {agentMsg && <p className="text-[11px] text-accent">{agentMsg}</p>}
+              <div className="flex justify-end gap-2">
+                <button onClick={resetForm} className="rounded px-2 py-1 text-[11px] text-fg-subtle hover:text-fg">
+                  Fermer
+                </button>
+                <button
+                  onClick={() => void generateAgentPrompt()}
+                  disabled={!agentQuery.trim()}
+                  className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-medium text-on-accent transition hover:bg-accent-hover disabled:opacity-40"
+                >
+                  Copier le prompt
+                </button>
+              </div>
             </div>
           )}
 
