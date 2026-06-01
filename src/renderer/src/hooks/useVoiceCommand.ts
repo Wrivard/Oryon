@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { startRecording, transcribe, resolveModelId, type Recorder } from '../lib/voice'
+import { startRecording, transcribe, warmModel, resolveModelId, type Recorder } from '../lib/voice'
 import { tryAcquire, release } from '../lib/voice-lock'
 import { toast } from '../store/toasts'
 
@@ -118,6 +118,35 @@ export function useVoiceCommand(target: CommandTarget) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [state, cancel])
+
+  // Préchauffe le modèle à l'idle : une 1re commande vocale AVANT toute dictée ne paie pas un chargement à
+  // froid sur le chemin critique. loadAsr dédoublonne avec le warm de useVoice (même clé modèle@dtype).
+  useEffect(() => {
+    let cancelled = false
+    void window.bridge.settings.getApp().then((s) => {
+      if (cancelled) return
+      void warmModel(resolveModelId(s['voice.model'] || 'small')).catch(() => {
+        /* l'erreur remontera à la 1re vraie commande avec un message FR */
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Démontage : libère le verrou micro et annule une capture en vol (sinon le verrou module-global resterait
+  // tenu → dictée ET command mode muets ensuite, rel : lock-leak).
+  useEffect(
+    () => () => {
+      if (recRef.current) {
+        runIdRef.current++
+        recRef.current.cancel()
+        recRef.current = null
+      }
+      release('command')
+    },
+    [],
+  )
 
   return { state, slow, cancel, toggle }
 }

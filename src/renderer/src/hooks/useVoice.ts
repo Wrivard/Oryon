@@ -19,6 +19,7 @@ import type { VoiceState } from '@shared/types'
 /** Snapshot des réglages figé au début de la capture (rel-6) : la transcription ne dérive pas si on change un réglage en cours. */
 interface Snapshot {
   model: string
+  source: string
   language: string
   autoStop: boolean
   silenceMs?: number
@@ -50,7 +51,7 @@ function isDownloadStatus(s?: string): boolean {
  * Réagit à la hotkey globale / au widget (canal voice:toggle). `source` = cible d'injection résolue
  * ('orchestrator' = prose + formatting ; autre = terminal code-safe). Préchauffe le modèle à l'idle (speed-1).
  */
-export function useVoice(onText: (text: string) => void, source: string) {
+export function useVoice(onText: (text: string, routedSource: string) => void, source: string) {
   const [state, setState] = useState<VoiceState>('idle')
   const recRef = useRef<Recorder | null>(null)
   const startingRef = useRef(false) // garde synchrone anti double-start pendant l'await
@@ -60,26 +61,37 @@ export function useVoice(onText: (text: string) => void, source: string) {
   const runIdRef = useRef(0) // token : invalide une transcription/format en vol après cancel (rel-7)
   const onTextRef = useRef(onText)
   onTextRef.current = onText
+  const sourceRef = useRef(source) // cible d'injection figée à la capture (rel-6) : pas de dérive si voice.target change en cours
+  sourceRef.current = source
+  const warmedModelRef = useRef<string | null>(null) // dernier modèle préchauffé → re-warm au changement
   const stopRef = useRef<(() => void) | null>(null)
 
-  // Préchauffe le modèle à l'idle (download + init session ORT hors du chemin critique). État 'downloading' pour feedback (speed-1/2).
+  // Préchauffe le modèle à l'idle (download + init session ORT hors du chemin critique) ET re-préchauffe si
+  // l'utilisateur change de modèle dans les réglages (relu au retour de focus). État 'downloading' (speed-1/2).
   useEffect(() => {
     let cancelled = false
-    void window.bridge.settings.getApp().then((s) => {
-      if (cancelled) return
-      const model = resolveModelId(s['voice.model'] || 'small')
-      warmModel(model, 'q8', (p) => {
-        if (!cancelled && isDownloadStatus(p.status)) setState((cur) => (cur === 'idle' ? 'downloading' : cur))
+    const warm = (): void => {
+      void window.bridge.settings.getApp().then((s) => {
+        if (cancelled) return
+        const model = resolveModelId(s['voice.model'] || 'small')
+        if (model === warmedModelRef.current) return // déjà préchauffé ce modèle
+        warmedModelRef.current = model
+        warmModel(model, 'q8', (p) => {
+          if (!cancelled && isDownloadStatus(p.status)) setState((cur) => (cur === 'idle' ? 'downloading' : cur))
+        })
+          .catch(() => {
+            /* l'erreur de chargement remontera à la 1re vraie dictée avec un message FR */
+          })
+          .finally(() => {
+            if (!cancelled) setState((cur) => (cur === 'downloading' ? 'idle' : cur))
+          })
       })
-        .catch(() => {
-          /* l'erreur de chargement remontera à la 1re vraie dictée avec un message FR */
-        })
-        .finally(() => {
-          if (!cancelled) setState((cur) => (cur === 'downloading' ? 'idle' : cur))
-        })
-    })
+    }
+    warm()
+    window.addEventListener('focus', warm)
     return () => {
       cancelled = true
+      window.removeEventListener('focus', warm)
     }
   }, [])
 
@@ -94,6 +106,7 @@ export function useVoice(onText: (text: string) => void, source: string) {
       const s = await window.bridge.settings.getApp()
       const snap: Snapshot = {
         model: resolveModelId(s['voice.model'] || 'small'),
+        source: sourceRef.current,
         language: s['voice.language'] ?? 'french',
         autoStop: (s['voice.autoStopOnSilence'] ?? '1') !== '0',
         silenceMs: num(s['voice.silenceMs']),
@@ -158,6 +171,7 @@ export function useVoice(onText: (text: string) => void, source: string) {
       }
       const snap = snapRef.current ?? {
         model: resolveModelId('small'),
+        source: sourceRef.current,
         language: 'french',
         autoStop: true,
         formatting: 'light',
@@ -180,8 +194,8 @@ export function useVoice(onText: (text: string) => void, source: string) {
       text = applySnippets(text, dicts.snippets)
       text = applyDictionary(text, dicts.reps)
       text = fuzzyBoost(text, mergedVocab, { threshold: snap.threshold })
-      const codeSafe = source !== 'orchestrator'
-      if (source === 'orchestrator') text = applyFileTags(text, projectFiles)
+      const codeSafe = snap.source !== 'orchestrator'
+      if (snap.source === 'orchestrator') text = applyFileTags(text, projectFiles)
       if (codeSafe) {
         text = formatCodeSafe(text)
       } else if (snap.formatting !== 'none' && text.trim()) {
@@ -196,12 +210,12 @@ export function useVoice(onText: (text: string) => void, source: string) {
         }
       }
       if (text && runId === runIdRef.current) {
-        onTextRef.current(text)
+        onTextRef.current(text, snap.source)
         void window.bridge.voice.addHistory({
           text,
           durationMs,
           wordCount: text.split(/\s+/).filter(Boolean).length,
-          source,
+          source: snap.source,
         })
       }
     } catch (e) {
@@ -210,7 +224,8 @@ export function useVoice(onText: (text: string) => void, source: string) {
       release('dictation')
       setState('idle')
     }
-  }, [source])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- cible figée via snap.source ; aucune dépendance réactive
+  }, [])
   stopRef.current = stop
 
   /** Annule la dictée en cours : invalide le run (le résultat en vol ne sera pas injecté) et réinitialise (rel-7). */
@@ -224,10 +239,13 @@ export function useVoice(onText: (text: string) => void, source: string) {
   }, [])
 
   const toggle = useCallback(() => {
-    if (state === 'processing') return // ignore les toggles pendant la transcription (utiliser ESC pour annuler)
+    if (state === 'processing') {
+      cancel() // toggle pendant la transcription = annulation (widget/hotkey n'ont pas le focus DOM pour Échap)
+      return
+    }
     if (recRef.current) void stop()
     else void start()
-  }, [start, stop, state])
+  }, [start, stop, state, cancel])
   const toggleRef = useRef(toggle)
   toggleRef.current = toggle
 
@@ -252,6 +270,20 @@ export function useVoice(onText: (text: string) => void, source: string) {
   useEffect(() => {
     window.bridge.voice.reportState(state)
   }, [state])
+
+  // Démontage : libère le verrou micro et annule une capture en vol (sinon le verrou module-global resterait
+  // tenu → dictée ET command mode muets ensuite, rel : lock-leak).
+  useEffect(
+    () => () => {
+      if (recRef.current) {
+        runIdRef.current++
+        recRef.current.cancel()
+        recRef.current = null
+      }
+      release('dictation')
+    },
+    [],
+  )
 
   return { state, toggle, cancel }
 }

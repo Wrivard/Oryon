@@ -57,6 +57,8 @@ export function VoiceHotkeys() {
     try {
       await window.bridge.settings.setApp(key, v)
       setS((prev) => ({ ...prev, [key]: v }))
+      // Applique le nouveau raccourci à chaud (ré-enregistrement des globalShortcut côté main) — sans redémarrage.
+      void window.bridge.voice.reregisterHotkeys()
     } catch {
       toast.error("Échec de l'enregistrement.")
     }

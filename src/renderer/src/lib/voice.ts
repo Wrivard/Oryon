@@ -119,6 +119,8 @@ export async function transcribe(
     const msg = (e as Error)?.message ?? ''
     // Échec de création de session ORT (y.c. « MatMulNBits / required scale » des modèles quantifiés) → replis.
     if (!/create a session|ORT_FAIL|failed to load|MatMulNBits|required scale/i.test(msg)) throw e
+    // Bascule vers un modèle de secours (téléchargement possible) → signale-le pour le feedback 'downloading'.
+    opts.onProgress?.({ status: 'initiate', file: 'modèle de secours' })
     asrCache.delete(`${opts.model}@q8`)
     // Repli 1 : whisper-base en q8 (plus léger). Repli 2 : whisper-base en fp32 (NON quantifié → le plus sûr).
     try {

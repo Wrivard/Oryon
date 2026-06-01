@@ -532,5 +532,10 @@ export interface BridgeApi {
     offState: () => void
     /** Affiche/cache le widget flottant (Settings). */
     setWidget: (visible: boolean) => Promise<void>
+    /** Ré-enregistre les hotkeys globales depuis les réglages courants (sans redémarrage). */
+    reregisterHotkeys: () => Promise<void>
+    /** Conflit de raccourci global (accélérateur déjà pris par une autre appli) : main → renderer. */
+    onHotkeyConflict: (cb: (info: { accel: string; mode: string }) => void) => void
+    offHotkeyConflict: () => void
   }
 }

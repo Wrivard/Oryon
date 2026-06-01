@@ -108,6 +108,11 @@ const bridge: BridgeApi = {
     },
     offState: () => ipcRenderer.removeAllListeners('voice:state'),
     setWidget: (visible) => ipcRenderer.invoke('voice:setWidget', visible),
+    reregisterHotkeys: () => ipcRenderer.invoke('voice:reregisterHotkeys'),
+    onHotkeyConflict: (cb) => {
+      ipcRenderer.on('voice:hotkeyConflict', (_e: IpcRendererEvent, info) => cb(info))
+    },
+    offHotkeyConflict: () => ipcRenderer.removeAllListeners('voice:hotkeyConflict'),
   },
   update: {
     check: () => ipcRenderer.invoke('update:check'),

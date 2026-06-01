@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useVoice } from '../../hooks/useVoice'
 import { useVoiceCommand, type CommandTarget } from '../../hooks/useVoiceCommand'
 import { useAppStore } from '../../store'
+import { toast } from '../../store/toasts'
 import type { VoiceState } from '@shared/types'
 
 // Monte le pipeline Voice UNE SEULE fois au niveau racine (le preload utilise removeAllListeners → un seul
@@ -19,12 +20,14 @@ export interface OrchestratorBarApi {
 interface VoiceContextValue {
   registerOrchestratorBar: (api: OrchestratorBarApi | null) => void
   toggle: () => void
+  cancel: () => void
   voiceState: VoiceState
 }
 
 const VoiceContext = createContext<VoiceContextValue>({
   registerOrchestratorBar: () => {},
   toggle: () => {},
+  cancel: () => {},
   voiceState: 'idle',
 })
 
@@ -49,9 +52,11 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
     barRef.current = api
   }, [])
 
-  // Routage de la dictée. orchestrator → barre (l'utilisateur relit/édite puis envoie). terminal → PTY focus.
-  const handleText = useCallback((text: string) => {
-    if (targetRef.current === 'orchestrator' && barRef.current) {
+  // Routage de la dictée selon la cible FIGÉE au début de la capture (routedSource, fourni par useVoice) — pas
+  // targetRef.current (live), sinon un changement de voice.target en cours de dictée re-router­ait à tort.
+  // orchestrator → barre (l'utilisateur relit/édite puis envoie) ; terminal → PTY focus.
+  const handleText = useCallback((text: string, routedSource: string) => {
+    if (routedSource === 'orchestrator' && barRef.current) {
       barRef.current.setText(text)
       return
     }
@@ -60,7 +65,20 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
     else if (barRef.current) barRef.current.setText(text) // repli : aucun terminal focus → barre orchestrateur
   }, [])
 
-  const { state, toggle } = useVoice(handleText, target)
+  const { state, toggle, cancel } = useVoice(handleText, target)
+
+  // Conflit de raccourci global (main → renderer) : la hotkey demandée est déjà prise par une autre appli →
+  // échec silencieux côté OS. On le signale (cf. registerVoiceHotkey dans main/index.ts).
+  useEffect(() => {
+    window.bridge.voice.onHotkeyConflict((info) => {
+      const which = info.mode === 'command' ? 'mode commande' : 'dictée'
+      toast.error(
+        `Raccourci « ${info.accel} » déjà pris par une autre application — choisissez-en un autre dans Réglages › Voix (${which}).`,
+        { title: 'Raccourci vocal' },
+      )
+    })
+    return () => window.bridge.voice.offHotkeyConflict()
+  }, [])
 
   // Command mode : la cible est la barre orchestrateur (sélection/insertion) ; no-op gracieux si absente.
   const commandTarget = useMemo<CommandTarget>(
@@ -73,8 +91,8 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
   useVoiceCommand(commandTarget)
 
   const value = useMemo<VoiceContextValue>(
-    () => ({ registerOrchestratorBar, toggle, voiceState: state }),
-    [registerOrchestratorBar, toggle, state],
+    () => ({ registerOrchestratorBar, toggle, cancel, voiceState: state }),
+    [registerOrchestratorBar, toggle, cancel, state],
   )
 
   return <VoiceContext.Provider value={value}>{children}</VoiceContext.Provider>
