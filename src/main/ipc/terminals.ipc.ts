@@ -2,6 +2,7 @@ import { ipcMain } from 'electron'
 import type { CreateTerminalInput } from '../../shared/types'
 import { createTerminal, writeTerminal, resizeTerminal, killTerminal } from '../services/pty-manager'
 import { ensureClaudeReady, normalizeClaudeAutostart, enforceAgentSpawn } from '../services/claude-launcher'
+import { hasClaudeSession } from '../services/claude-session'
 import { buildProjectMcpConfigForPath } from './settings.ipc'
 
 export function registerTerminalsIpc() {
@@ -26,6 +27,11 @@ export function registerTerminalsIpc() {
       // Enforcement au spawn : modèle le plus puissant pour TOUS les agents (non-contournable, F1) +
       // identité worker durable injectée à tout claude sans --append-system-prompt (F2/F3/F5/F6).
       autostart = enforceAgentSpawn(autostart)
+      // Reprise de session au redémarrage : si une conversation claude existe DÉJÀ pour ce worktree,
+      // on rattache `--continue` pour reprendre au lieu de repartir à neuf. Worktree neuf (1er spawn /
+      // nouveau workspace / split) → pas de session → pas de --continue → démarrage neuf. On n'ajoute
+      // donc JAMAIS --continue sans session existante (pas d'erreur "no conversation"). Idempotent.
+      if (hasClaudeSession(opts.cwd) && !/--continue\b/.test(autostart)) autostart += ' --continue'
     }
     createTerminal({
       id: opts.id,
