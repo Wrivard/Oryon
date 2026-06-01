@@ -1,4 +1,4 @@
-import { ipcMain, app, safeStorage } from 'electron'
+import { ipcMain, app, safeStorage, BrowserWindow } from 'electron'
 import { v4 as uuid } from 'uuid'
 import { writeFileSync, renameSync } from 'fs'
 import { join } from 'path'
@@ -317,7 +317,15 @@ function regenerateAllConfigs(): void {
 
 export function registerSettingsIpc(): void {
   ipcMain.handle('settings:getApp', (): Record<string, string> => getAppSettings())
-  ipcMain.handle('settings:setApp', (_e, key: string, value: string): void => setAppSetting(key, value))
+  ipcMain.handle('settings:setApp', (_e, key: string, value: string): void => {
+    setAppSetting(key, value)
+    // Propagation live aux renderers : un réglage changé dans la modale in-window ne déclenche AUCUN event
+    // 'focus', donc un consommateur qui le cache (ex. VoiceProvider → voice.target) resterait périmé et
+    // router­ait la dictée vers l'ANCIENNE cible. On notifie pour appliquer le changement immédiatement.
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.webContents.send('settings:appChanged', { key, value })
+    }
+  })
   ipcMain.handle('settings:listConnectors', (_e, projectPath?: string | null): McpConnector[] => listConnectors(projectPath))
   ipcMain.handle('settings:addConnector', (_e, input: McpConnectorInput): McpConnector => addConnector(input))
   ipcMain.handle('settings:updateConnector', (_e, input: McpConnectorUpdate): McpConnector | null => updateConnector(input))
