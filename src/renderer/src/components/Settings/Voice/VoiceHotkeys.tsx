@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Keyboard, Info, RotateCcw } from 'lucide-react'
+import { Keyboard, Info, Pencil } from 'lucide-react'
 import { cn } from '../../../lib/cn'
+import { toast } from '../../../store/toasts'
 import { SectionHeader } from './_parts'
 
 const ROWS = [
@@ -53,41 +54,64 @@ export function VoiceHotkeys() {
   }, [])
 
   const set = async (key: string, v: string) => {
-    await window.bridge.settings.setApp(key, v)
-    setS((prev) => ({ ...prev, [key]: v }))
+    try {
+      await window.bridge.settings.setApp(key, v)
+      setS((prev) => ({ ...prev, [key]: v }))
+    } catch {
+      toast.error("Échec de l'enregistrement.")
+    }
   }
 
   const handleRecord = (rowKey: string) => {
     if (recording === rowKey) return
-    setRecording(rowKey)
     setError(null)
+    setRecording(rowKey)
+  }
+
+  // Capture clavier active UNIQUEMENT pendant l'enregistrement d'un raccourci. Effet symétrique
+  // (clé = recording) : attache à l'entrée, détache à la sortie ET au démontage — plus de listener
+  // global fuité (qui avalait les frappes ~10 s) ni de timer orphelin. Escape annule ; le timeout
+  // de 10 s reste un garde-fou.
+  useEffect(() => {
+    if (!recording) return
+    const rowKey = recording
+
+    const cleanup = () => {
+      clearTimeout(timer)
+      window.removeEventListener('keydown', handler)
+      setRecording(null)
+    }
 
     const handler = (e: KeyboardEvent) => {
       e.preventDefault()
       e.stopPropagation()
 
       const accel = normalizeAccelerator(e as any)
-      if (!accel) return
+      if (accel === 'Escape') {
+        cleanup() // annulation explicite
+        return
+      }
+      if (!accel) return // modificateur seul → continue d'écouter
 
       const otherKey = rowKey === 'voice.hotkey.toggle' ? 'voice.hotkey.command' : 'voice.hotkey.toggle'
       if (accel === (s[otherKey] ?? '')) {
         setError(`Collision : « ${accel} » est déjà utilisé pour ${otherKey === 'voice.hotkey.toggle' ? 'Dictée' : 'Mode commande'}`)
-        setTimeout(() => setRecording(null), 2000)
+        cleanup()
         return
       }
 
       void set(rowKey, accel)
-      setRecording(null)
+      cleanup()
     }
 
-    const cleanup = () => {
-      window.removeEventListener('keydown', handler)
-      setRecording(null)
-    }
-
+    const timer = setTimeout(cleanup, 10000)
     window.addEventListener('keydown', handler)
-    setTimeout(cleanup, 10000)
-  }
+    return () => {
+      clearTimeout(timer)
+      window.removeEventListener('keydown', handler)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recording])
 
   return (
     <section>
@@ -106,9 +130,11 @@ export function VoiceHotkeys() {
               <button
                 onClick={() => handleRecord(h.key)}
                 disabled={recording !== null && recording !== h.key}
+                aria-label={`Modifier le raccourci : ${h.label}`}
+                title={`Modifier le raccourci : ${h.label}`}
                 className={cn('flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] transition', recording === h.key ? 'bg-accent-soft text-accent' : 'border border-border text-fg-muted hover:text-fg disabled:opacity-40')}
               >
-                <RotateCcw size={11} />
+                <Pencil size={11} />
               </button>
             </div>
           </div>
