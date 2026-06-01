@@ -144,7 +144,7 @@ export function VoiceHotkeys() {
       </div>
       {error && <div className="mt-2 rounded-md bg-danger-soft px-3 py-2 text-[11px] text-danger">{error}</div>}
       <p className="mt-2 flex items-center gap-1.5 text-[11px] text-fg-subtle">
-        <Info size={12} /> Les raccourcis s'appliquent au redémarrage.
+        <Info size={12} /> Les raccourcis s'appliquent immédiatement.
       </p>
     </section>
   )
