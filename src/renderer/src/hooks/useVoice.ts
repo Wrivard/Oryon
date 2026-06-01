@@ -203,7 +203,10 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
       } else if (snap.formatting !== 'none' && text.trim()) {
         const french = snap.language === 'french'
         const light = formatLight(text, { french })
-        if (snap.formatting === 'light' || snap.privacy) {
+        if (snap.formatting === 'light' || snap.privacy || snap.source !== 'orchestrator') {
+          // light/privacy OU cible système/terminal : formatage LOCAL uniquement — on n'attend JAMAIS le CLI Claude
+          // sur le chemin de collage (c'est la latence perçue « parole → collage »). Le CLI medium/high reste
+          // réservé à la barre orchestrateur (surface de relecture, où l'attente d'1-3 s est acceptable).
           text = light
         } else {
           const cli = await window.bridge.voice.format(text, snap.formatting === 'high' ? 'high' : 'medium')

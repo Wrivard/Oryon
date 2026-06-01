@@ -3,6 +3,7 @@ import { Mic, Wand2, PictureInPicture2, ShieldCheck, Zap, SlidersHorizontal } fr
 import { cn } from '../../../lib/cn'
 import { toast } from '../../../store/toasts'
 import { SectionHeader, SettingRow, Toggle } from './_parts'
+import { getAsrDevice } from '../../../lib/voice'
 
 type Fmt = 'none' | 'light' | 'medium' | 'high'
 
@@ -51,11 +52,14 @@ export function VoiceGeneral() {
   // `loaded` : false jusqu'à ce que getApp réponde. On désactive les contrôles d'ici là pour qu'aucun
   // onChange ne parte contre des valeurs par défaut vides (ce qui écraserait les vrais réglages).
   const [loaded, setLoaded] = useState(false)
+  // Backend ASR effectif (diagnostic vitesse) : WebGPU = rapide ; WASM = CPU mono-thread, nettement plus lent.
+  const [asrDevice, setAsrDevice] = useState<'webgpu' | 'wasm' | null>(null)
   useEffect(() => {
     void window.bridge.settings.getApp().then((v) => {
       setS(v)
       setLoaded(true)
     })
+    void getAsrDevice().then(setAsrDevice)
   }, [])
 
   const set = async (key: string, v: string) => {
@@ -82,7 +86,7 @@ export function VoiceGeneral() {
   // Réglages hot-path (lus par useVoice au snapshot de capture). Encodages alignés sur useVoice.ts :
   // autoStop = valeur !== '0' (défaut on), silenceMs = ms brut, boostThreshold = flottant 0–1.
   const autoStopOn = (s['voice.autoStopOnSilence'] ?? '1') !== '0'
-  const silenceMs = numOr(s['voice.silenceMs'], 1400)
+  const silenceMs = numOr(s['voice.silenceMs'], 800)
   const boostThreshold = numOr(s['voice.boostThreshold'], 0.82)
 
   return (
@@ -117,6 +121,16 @@ export function VoiceGeneral() {
           </label>
         </div>
         <p className="mt-2 text-[11px] text-fg-subtle">Small + français recommandé pour le québécois.</p>
+        <p className="mt-1 flex items-center gap-1.5 text-[11px]">
+          <span className="text-fg-subtle">Accélération :</span>
+          {asrDevice === 'webgpu' ? (
+            <span className="text-accent">⚡ WebGPU (rapide)</span>
+          ) : asrDevice === 'wasm' ? (
+            <span className="text-fg-muted">⚠ WASM — CPU mono-thread, transcription nettement plus lente (pas de WebGPU sur cette machine)</span>
+          ) : (
+            <span className="text-fg-subtle">…</span>
+          )}
+        </p>
       </section>
 
       {/* 1.5 — Mode de dictée */}
