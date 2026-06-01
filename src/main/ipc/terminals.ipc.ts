@@ -20,7 +20,9 @@ export function registerTerminalsIpc() {
       // absent (projet non-git, cwd partagé) → repli sur cwd.
       const mcpAnchor = opts.mainProjectPath ?? opts.cwd
       const mcpFile = buildProjectMcpConfigForPath(mcpAnchor)
-      if (mcpFile && !/--mcp-config/.test(autostart)) autostart += ` --mcp-config '${mcpFile.replace(/'/g, "''")}'`
+      // --strict-mcp-config : ne charge QUE ce fichier, ignore tout .mcp.json auto-découvert dans le
+      // cwd/worktree → état MCP déterministe, un seul serveur `oryon` exposé. Aligné sur cli.ts:64.
+      if (mcpFile && !/--mcp-config/.test(autostart)) autostart += ` --strict-mcp-config --mcp-config '${mcpFile.replace(/'/g, "''")}'`
       // Enforcement au spawn : modèle le plus puissant pour TOUS les agents (non-contournable, F1) +
       // identité worker durable injectée à tout claude sans --append-system-prompt (F2/F3/F5/F6).
       autostart = enforceAgentSpawn(autostart)

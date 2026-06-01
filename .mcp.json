@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "oryon": {
-      "command": "node",
-      "args": ["C:/Users/Kolyxe/Desktop/ide/src/mcp/server.mjs"]
-    }
-  }
-}
