@@ -90,6 +90,9 @@ export function voiceCliOneShot(systemPrompt: string, userInput: string, opts?: 
         }
         finish(text.trim())
       })
+      // Écrire dans le stdin d'un claude déjà mort émet 'error' (EPIPE) sur le flux : sans listener, Node
+      // relance l'erreur et peut tuer le main. On l'absorbe — l'échec est déjà géré par 'error'/'close'/timeout.
+      proc.stdin.on('error', () => {})
       proc.stdin.write(userInput)
       proc.stdin.end()
     } catch {
