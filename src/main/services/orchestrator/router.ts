@@ -573,7 +573,9 @@ export function agentRestartAgent(workspaceId: string, terminalRef: string): voi
     ensureClaudeReady(shellCwd)
     autostart = normalizeClaudeAutostart(autostart)
     const mcpFile = buildProjectMcpConfigForPath(row.cwd)
-    if (mcpFile && !/--mcp-config/.test(autostart)) autostart += ` --mcp-config '${mcpFile.replace(/'/g, "''")}'`
+    // --strict-mcp-config : ne charger QUE le fichier injecté (ignore tout .mcp.json auto-découvert) — aligné
+    // sur terminals.ipc.ts pour qu'un agent RELANCÉ ait exactement le même état MCP qu'au spawn initial.
+    if (mcpFile && !/--mcp-config/.test(autostart)) autostart += ` --strict-mcp-config --mcp-config '${mcpFile.replace(/'/g, "''")}'`
     autostart = enforceAgentSpawn(autostart)
   }
   const env: Record<string, string> = { ORYON_AGENT_NAME: row.name, ORYON_WORKSPACE_ID: workspaceId }

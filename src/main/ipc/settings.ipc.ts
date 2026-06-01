@@ -3,6 +3,8 @@ import { v4 as uuid } from 'uuid'
 import { writeFileSync, renameSync } from 'fs'
 import { join } from 'path'
 import { getDb } from '../db'
+import { MCP_CATALOG } from '../services/mcp-catalog'
+import { testConnector, detectImportCandidates } from '../services/mcp-probe'
 import type {
   McpConnector,
   McpConnectorInput,
@@ -10,6 +12,10 @@ import type {
   McpConnectorSecrets,
   McpScope,
   McpTransport,
+  McpCatalogEntry,
+  McpImportCandidate,
+  McpImportResult,
+  McpTestResult,
 } from '../../shared/types'
 
 // ---- app settings (clé/valeur) ----
@@ -90,7 +96,21 @@ function listConnectors(projectPath?: string | null): McpConnector[] {
   return rows.map(rowToConnector)
 }
 
+/** Validation de forme (a4) : refuse un nom vide / réservé, et exige command (stdio) ou url (http/sse). Évite
+ *  les connecteurs « morts » (affichés activés mais jamais injectés car ignorés à la génération). */
+function assertValidConnector(c: { name?: string; transport?: McpTransport; command?: string | null; url?: string | null }): void {
+  const name = (c.name ?? '').trim()
+  if (!name) throw new Error('Le nom du connecteur est requis.')
+  if (name === 'oryon') throw new Error('« oryon » est réservé au serveur interne d\'Oryon — choisis un autre nom.')
+  if (c.transport === 'stdio') {
+    if (!c.command || !String(c.command).trim()) throw new Error('Un connecteur stdio requiert une commande.')
+  } else if (!c.url || !String(c.url).trim()) {
+    throw new Error(`Un connecteur ${c.transport} requiert une URL.`)
+  }
+}
+
 function addConnector(input: McpConnectorInput): McpConnector {
+  assertValidConnector(input)
   const id = uuid()
   const row = {
     id,
@@ -119,8 +139,17 @@ function addConnector(input: McpConnectorInput): McpConnector {
 
 /** Édition d'un connecteur : champ absent = inchangé ; env/headers à null = vidés. Régénère les configs. */
 function updateConnector(input: McpConnectorUpdate): McpConnector | null {
-  const exists = getDb().prepare('SELECT 1 FROM mcp_connectors WHERE id = ?').get(input.id)
-  if (!exists) return null
+  const cur = getDb().prepare('SELECT name, transport, command, url FROM mcp_connectors WHERE id = ?').get(input.id) as
+    | { name: string; transport: McpTransport; command: string | null; url: string | null }
+    | undefined
+  if (!cur) return null
+  // Valide la forme APRÈS application du patch (champ absent du patch = valeur courante).
+  assertValidConnector({
+    name: input.name ?? cur.name,
+    transport: input.transport ?? cur.transport,
+    command: input.command !== undefined ? input.command : cur.command,
+    url: input.url !== undefined ? input.url : cur.url,
+  })
   const sets: string[] = []
   const params: Record<string, unknown> = { id: input.id }
   if (input.name !== undefined) { sets.push('name = @name'); params.name = input.name }
@@ -144,6 +173,45 @@ function connectorSecrets(id: string): McpConnectorSecrets {
     | { env: unknown; headers: unknown }
     | undefined
   return { env: decryptSecrets(row?.env), headers: decryptSecrets(row?.headers) }
+}
+
+/** Importe des candidats détectés dans un scope donné. Saute ceux déjà présents (même name+scope) ou de forme
+ *  invalide (rejetés par addConnector, ex. stdio sans command dans la config source). */
+function importConnectors(candidates: McpImportCandidate[], scope: McpScope, projectPath?: string | null): McpImportResult {
+  const installed: string[] = []
+  const skipped: string[] = []
+  const projectId = scope === 'project' ? resolveProjectId(projectPath) : null
+  for (const cand of candidates) {
+    const name = cand?.name?.trim()
+    if (!name || name === 'oryon') {
+      skipped.push(cand?.name ?? '(sans nom)')
+      continue
+    }
+    const dupe = getDb()
+      .prepare('SELECT 1 FROM mcp_connectors WHERE name = @name AND scope = @scope AND project_id IS @pid')
+      .get({ name, scope, pid: projectId })
+    if (dupe) {
+      skipped.push(name)
+      continue
+    }
+    try {
+      addConnector({
+        name,
+        scope,
+        projectPath: scope === 'project' ? projectPath : null,
+        transport: cand.transport,
+        command: cand.command,
+        args: cand.args,
+        url: cand.url,
+        env: cand.env,
+        headers: cand.headers,
+      })
+      installed.push(name)
+    } catch {
+      skipped.push(name)
+    }
+  }
+  return { installed, skipped }
 }
 
 /**
@@ -231,6 +299,14 @@ export function registerSettingsIpc(): void {
   ipcMain.handle('settings:addConnector', (_e, input: McpConnectorInput): McpConnector => addConnector(input))
   ipcMain.handle('settings:updateConnector', (_e, input: McpConnectorUpdate): McpConnector | null => updateConnector(input))
   ipcMain.handle('settings:connectorSecrets', (_e, id: string): McpConnectorSecrets => connectorSecrets(id))
+  ipcMain.handle('settings:testConnector', (_e, input: McpConnectorInput): Promise<McpTestResult> => testConnector(input))
+  ipcMain.handle('settings:listMcpCatalog', (): McpCatalogEntry[] => MCP_CATALOG)
+  ipcMain.handle('settings:importMcpCandidates', (): McpImportCandidate[] => detectImportCandidates(app.getPath('appData')))
+  ipcMain.handle(
+    'settings:importConnectors',
+    (_e, candidates: McpImportCandidate[], scope: McpScope, projectPath?: string | null): McpImportResult =>
+      importConnectors(candidates, scope, projectPath),
+  )
   ipcMain.handle('settings:toggleConnector', (_e, id: string, enabled: boolean): void => {
     getDb().prepare('UPDATE mcp_connectors SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id)
     regenerateAllConfigs()
