@@ -112,7 +112,10 @@ export function buildProjectMcpConfigForPath(projectPath: string): string | null
 
 // ---- skills (lecture seule) ----
 function parseFrontmatter(md: string): { name?: string; description?: string } {
-  const m = md.match(/^---\s*([\s\S]*?)\s*---/)
+  // Robustesse Windows : retire un BOM UTF-8 + normalise CRLF→LF, et tolère un espace/ligne vide avant le `---`
+  // (sinon le frontmatter entier est ignoré, ou des champs sautent, sur des SKILL.md édités sous Windows).
+  const src = md.replace(/^﻿/, '').replace(/\r\n/g, '\n')
+  const m = src.match(/^\s*---\s*([\s\S]*?)\s*---/)
   if (!m) return {}
   const out: { name?: string; description?: string } = {}
   for (const line of m[1].split('\n')) {
@@ -128,7 +131,7 @@ function scanSkillsDir(dir: string, scope: 'user' | 'project'): SkillInfo[] {
   if (!existsSync(dir)) return []
   const out: SkillInfo[] = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue // accepte aussi les skills symlink/junction (isDirectory() est faux pour un reparse-point)
     const skillMd = join(dir, entry.name, 'SKILL.md')
     let fm: { name?: string; description?: string }
     try {
@@ -142,8 +145,13 @@ function scanSkillsDir(dir: string, scope: 'user' | 'project'): SkillInfo[] {
 }
 function listSkills(projectPath?: string | null): SkillInfo[] {
   // Globaux d'abord (~/.claude/skills), puis ceux du projet ouvert (<projet>/.claude/skills) le cas échéant.
-  const out = scanSkillsDir(join(homedir(), '.claude', 'skills'), 'user')
-  if (projectPath) out.push(...scanSkillsDir(join(projectPath, '.claude', 'skills'), 'project'))
+  const userDir = join(homedir(), '.claude', 'skills')
+  const out = scanSkillsDir(userDir, 'user')
+  // Évite les doublons si le projet ouvert EST le home (projectPath === homedir → même dossier scanné 2×).
+  if (projectPath) {
+    const projDir = join(projectPath, '.claude', 'skills')
+    if (projDir !== userDir) out.push(...scanSkillsDir(projDir, 'project'))
+  }
   return out
 }
 
