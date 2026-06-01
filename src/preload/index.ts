@@ -58,6 +58,12 @@ const bridge: BridgeApi = {
       ipcRenderer.on('browser:navigate', (_e: IpcRendererEvent, data: { workspaceId: string; url: string }) => cb(data))
     },
     offNavigate: () => ipcRenderer.removeAllListeners('browser:navigate'),
+    reportConsole: (data) => ipcRenderer.send('browser:console', data),
+    onCapture: (cb) => {
+      ipcRenderer.on('browser:capture', (_e: IpcRendererEvent, data: { workspaceId: string; reqId: string }) => cb(data))
+    },
+    offCapture: () => ipcRenderer.removeAllListeners('browser:capture'),
+    sendCaptureResult: (reqId, png, error) => ipcRenderer.send('browser:capture-result', { reqId, png, error }),
   },
   orchestrator: {
     listTasks: (workspaceId) => ipcRenderer.invoke('orchestrator:listTasks', workspaceId),

@@ -7,7 +7,7 @@ import { getDb } from '../db'
 import { stripAnsi } from './orchestrator/mailbox'
 import { drainPendingMerges } from './orchestrator/merge-back'
 import { sweepArchive } from './archive'
-import { navigateBrowser } from '../ipc/browser.ipc'
+import { navigateBrowser, requestBrowserScreenshot } from '../ipc/browser.ipc'
 import {
   agentMailbox,
   setTaskStatus,
@@ -106,6 +106,8 @@ async function processCommand(path: string): Promise<void> {
       agentAddConnector(cmd.workspaceId, cmd.connector)
     } else if (cmd.type === 'browser-open') {
       navigateBrowser(cmd.workspaceId, cmd.url)
+    } else if (cmd.type === 'browser-screenshot') {
+      requestBrowserScreenshot(cmd.workspaceId, cmd.reqId)
     }
     try {
       unlinkSync(path)

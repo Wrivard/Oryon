@@ -30,7 +30,13 @@ export function BrowserPanel({ workspaceId }: { workspaceId: string }) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const onConsole = (e: any) => {
       const msg: string = e?.message ?? ''
-      if (!msg.startsWith(INSPECT_SENTINEL)) return
+      if (!msg.startsWith(INSPECT_SENTINEL)) {
+        // Forward au ring console du workspace (outil MCP browser_console, pour debug).
+        const lvl =
+          typeof e?.level === 'number' ? (['log', 'info', 'warn', 'error'][e.level] ?? 'log') : e?.level || 'log'
+        window.bridge.browser.reportConsole({ workspaceId, level: String(lvl), message: msg, line: e?.line, source: e?.sourceId })
+        return
+      }
       let data: { fileName?: string; lineNumber?: number; none?: boolean }
       try {
         data = JSON.parse(msg.slice(INSPECT_SENTINEL.length))
@@ -96,6 +102,25 @@ export function BrowserPanel({ workspaceId }: { workspaceId: string }) {
     const u = browserOpenRequest.url.trim()
     if (u) setUrl(/^https?:\/\//.test(u) ? u : `http://${u}`)
   }, [browserOpenRequest?.nonce, workspaceId])
+
+  // browser_screenshot (MCP) : le main demande une capture → on capture la webview et renvoie le PNG.
+  useEffect(() => {
+    window.bridge.browser.onCapture(async ({ workspaceId: wsId, reqId }) => {
+      if (wsId !== workspaceId) return
+      const w = webviewRef.current
+      try {
+        if (!w || !url) {
+          window.bridge.browser.sendCaptureResult(reqId, new Uint8Array(), 'aucun site ouvert')
+          return
+        }
+        const image = await w.capturePage()
+        window.bridge.browser.sendCaptureResult(reqId, image.toPNG())
+      } catch (err) {
+        window.bridge.browser.sendCaptureResult(reqId, new Uint8Array(), String(err))
+      }
+    })
+    return () => window.bridge.browser.offCapture()
+  }, [workspaceId, url])
 
   // Arrêt du dev server à l'unmount (changement de workspace) → pas de process orphelin.
   useEffect(() => {

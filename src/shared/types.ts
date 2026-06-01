@@ -545,6 +545,12 @@ export interface BridgeApi {
     /** Demande de navigation du panneau Browser poussée par le main (commande MCP open_browser). */
     onNavigate: (cb: (data: { workspaceId: string; url: string }) => void) => void
     offNavigate: () => void
+    /** Console de la webview → main (ring lu par l'outil MCP browser_console). */
+    reportConsole: (data: { workspaceId: string; level: string; message: string; line?: number; source?: string }) => void
+    /** Capture à la demande (outil MCP browser_screenshot) : main demande, le renderer capture + renvoie le PNG. */
+    onCapture: (cb: (data: { workspaceId: string; reqId: string }) => void) => void
+    offCapture: () => void
+    sendCaptureResult: (reqId: string, png: Uint8Array, error?: string) => void
   }
   orchestrator: {
     listTasks: (workspaceId: string) => Promise<Task[]>

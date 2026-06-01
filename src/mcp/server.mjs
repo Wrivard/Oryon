@@ -83,6 +83,17 @@ function readTermLog(id) {
 function text(t) {
   return { content: [{ type: 'text', text: t }] }
 }
+function img(base64) {
+  return { content: [{ type: 'image', data: base64, mimeType: 'image/png' }] }
+}
+function readBrowserConsole(workspaceId) {
+  const p = join(STATE_DIR, `browser-console-${workspaceId}.log`)
+  try {
+    return existsSync(p) ? readFileSync(p, 'utf8') : ''
+  } catch {
+    return ''
+  }
+}
 // Scope au workspace courant (WORKSPACE_ID). Sans env (anciens terminaux), ne filtre pas (compat).
 function scopedTerminals(meta) {
   const list = meta.terminals ?? []
@@ -355,6 +366,53 @@ orchestratorTool(
     if (!workspaceId) return text(JSON.stringify({ ok: false, error: 'Workspace introuvable' }))
     const id = queueCommand({ type: 'browser-open', workspaceId, url })
     return text(JSON.stringify({ ok: true, id, workspaceId, url }))
+  },
+)
+
+orchestratorTool(
+  'browser_console',
+  "Renvoie les logs récents de la console du navigateur (panneau Browser in-app) du workspace — log/info/warn/error de la page ouverte, pour déboguer un site qu'on développe ici. Vide tant qu'aucun site n'est ouvert (cf. open_browser).",
+  {},
+  async () => {
+    const workspaceId = currentWorkspaceId()
+    if (!workspaceId) return text('Workspace introuvable.')
+    const out = readBrowserConsole(workspaceId)
+    return text(out || '(console vide — ouvre un site avec open_browser puis recharge/interagis)')
+  },
+)
+
+orchestratorTool(
+  'browser_screenshot',
+  "Capture le panneau Browser in-app (site actuellement affiché) et renvoie l'image, pour VOIR le rendu et proposer des améliorations visuelles. Nécessite un site ouvert (open_browser) dans le workspace actif.",
+  {},
+  async () => {
+    const workspaceId = currentWorkspaceId()
+    if (!workspaceId) return text('Workspace introuvable.')
+    const reqId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+    queueCommand({ type: 'browser-screenshot', workspaceId, reqId })
+    const shot = join(STATE_DIR, 'screenshots', `${reqId}.png`)
+    const err = join(STATE_DIR, 'screenshots', `${reqId}.err`)
+    // Request-response : le renderer capture la webview (webview.capturePage) → le main écrit le PNG. Poll ~12s.
+    for (let i = 0; i < 60; i++) {
+      if (existsSync(shot)) {
+        try {
+          return img(readFileSync(shot).toString('base64'))
+        } catch {
+          /* fichier pas encore complet → retente */
+        }
+      }
+      if (existsSync(err)) {
+        let m = 'échec'
+        try {
+          m = readFileSync(err, 'utf8')
+        } catch {
+          /* ignore */
+        }
+        return text(`Screenshot impossible : ${m} (un site est-il ouvert dans le panneau Browser ?)`)
+      }
+      await new Promise((r) => setTimeout(r, 200))
+    }
+    return text('Screenshot : délai dépassé (le panneau Browser a-t-il un site ouvert ? lance open_browser, attends le chargement, réessaie).')
   },
 )
 
