@@ -147,12 +147,71 @@ export interface McpConnectorInput {
   args?: string[]
   url?: string
 }
-/** Skill disponible (lecture seule, affichage dans Settings). */
+/** Scope d'un skill : global (~/.claude/skills) ou propre au projet ouvert (<projet>/.claude/skills). */
+export type SkillScope = 'user' | 'project'
+
+/** Skill installé, tel qu'affiché ET géré dans Settings (créer / importer / éditer / supprimer). */
 export interface SkillInfo {
   name: string
   description: string
   source: string // 'user' | 'plugin:<name>'
-  scope: 'user' | 'project' // user = skill global (~/.claude/skills), project = skill du projet (<projet>/.claude/skills)
+  scope: SkillScope
+  /** Chemin absolu du DOSSIER du skill (<base>/<name>). Sert au confirm de suppression + repérage. Optionnel
+   *  pour compat (le scanner backend le peuple toujours ; un ancien appelant peut l'ignorer). */
+  path?: string
+}
+
+/** Référence stable d'un skill pour read/update/delete (le couple name+scope identifie le dossier). */
+export interface SkillRef {
+  name: string
+  scope: SkillScope
+  /** Requis pour scope 'project' : chemin du projet ouvert (résout <projet>/.claude/skills). */
+  projectPath?: string | null
+}
+
+/** Contenu éditable d'un skill (frontmatter + corps), retourné par skills.read. */
+export interface SkillDetail {
+  name: string
+  description: string
+  body: string // markdown APRÈS le bloc frontmatter
+  scope: SkillScope
+  path: string // chemin absolu du SKILL.md
+}
+
+/** Création d'un skill depuis zéro → écrit <base>/<name>/SKILL.md. */
+export interface SkillCreateInput {
+  name: string
+  description: string
+  body: string
+  scope: SkillScope
+  projectPath?: string | null
+}
+
+/** Import d'un skill depuis un dossier local contenant un SKILL.md (copie récursive). */
+export interface SkillImportFolderInput {
+  sourcePath: string
+  scope: SkillScope
+  projectPath?: string | null
+}
+
+/** Import d'un (ou plusieurs) skill(s) depuis une URL git (clone + normalisation layout plugin). */
+export interface SkillImportGitInput {
+  url: string
+  scope: SkillScope
+  projectPath?: string | null
+}
+
+/** Édition d'un skill existant : description + corps (le nom/dossier ne change pas). */
+export interface SkillUpdateInput {
+  ref: SkillRef
+  description: string
+  body: string
+}
+
+/** Résultat d'un import : un dossier/repo peut contenir plusieurs skills (layout plugin). */
+export interface SkillImportResult {
+  installed: string[] // noms installés
+  skipped: string[] // noms ignorés (déjà présents, ou dossier sans SKILL.md)
 }
 
 // ---- Voice (dictée on-device) ----
@@ -493,8 +552,24 @@ export interface BridgeApi {
     addConnector: (input: McpConnectorInput) => Promise<McpConnector>
     toggleConnector: (id: string, enabled: boolean) => Promise<void>
     deleteConnector: (id: string) => Promise<void>
-    /** Skills disponibles (lecture seule) : globaux (~/.claude) + ceux du projet ouvert si `projectPath` fourni. */
-    listSkills: (projectPath?: string | null) => Promise<SkillInfo[]>
+  }
+  /** Skills Claude Code : globaux (~/.claude/skills) + ceux du projet ouvert. Gérables de bout en bout
+   *  (créer depuis zéro / importer un dossier / importer depuis git / éditer / supprimer). */
+  skills: {
+    /** Liste : globaux d'abord, puis ceux du projet si `projectPath` fourni. */
+    list: (projectPath?: string | null) => Promise<SkillInfo[]>
+    /** Contenu éditable (frontmatter + corps) d'un skill identifié par name+scope. */
+    read: (ref: SkillRef) => Promise<SkillDetail>
+    /** Crée un skill depuis zéro (écrit <base>/<name>/SKILL.md). */
+    create: (input: SkillCreateInput) => Promise<SkillInfo>
+    /** Importe un skill depuis un dossier local contenant un SKILL.md (copie récursive). */
+    importFolder: (input: SkillImportFolderInput) => Promise<SkillImportResult>
+    /** Importe depuis une URL git (gère le layout plugin `.claude-plugin` / `skills/` imbriqué). */
+    importGit: (input: SkillImportGitInput) => Promise<SkillImportResult>
+    /** Met à jour description + corps d'un skill existant. */
+    update: (input: SkillUpdateInput) => Promise<SkillInfo>
+    /** Supprime un skill. SÛR vis-à-vis des junctions/symlinks : ne recurse JAMAIS à travers un reparse-point. */
+    delete: (ref: SkillRef) => Promise<void>
   }
   voice: {
     listReplacements: () => Promise<VoiceReplacement[]>

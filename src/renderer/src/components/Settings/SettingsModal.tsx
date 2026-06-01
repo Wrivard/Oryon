@@ -49,7 +49,7 @@ export function SettingsModal({
   const reload = async () => {
     setAppSettings(await window.bridge.settings.getApp())
     setConnectors(await window.bridge.settings.listConnectors(projectPath))
-    setSkills(await window.bridge.settings.listSkills(projectPath))
+    setSkills(await window.bridge.skills.list(projectPath))
   }
 
   useEffect(() => {
