@@ -6,6 +6,7 @@ import { addDataObserver } from './pty-manager'
 import { getDb } from '../db'
 import { stripAnsi } from './orchestrator/mailbox'
 import { drainPendingMerges } from './orchestrator/merge-back'
+import { sweepArchive } from './archive'
 import {
   agentMailbox,
   setTaskStatus,
@@ -130,11 +131,21 @@ export function initMcpExport(): void {
     }
   }
   safeMeta()
+  // Archivage des transcripts de conversation : 1er sweep ~30 s après le boot, puis throttle 2 min. Gzip en
+  // STREAMING → pas de jank du process main ; incrémental (dédup) ; $0 (FS only). Cf. services/archive.ts.
+  let lastArchiveSweep = 0
+  const maybeArchive = (): void => {
+    if (Date.now() - lastArchiveSweep < 120_000) return
+    lastArchiveSweep = Date.now()
+    void sweepArchive()
+  }
+  setTimeout(maybeArchive, 30_000)
   // Tick 2s : sync de l'état + rejeu des merges reportés (F7) dès que le tronc principal redevient propre.
   setInterval(() => {
     safeMeta()
     void drainPendingMerges()
     tickWatchdog() // WC : surface (sans tuer) les workers busy silencieux > 5 min
+    maybeArchive()
   }, 2000)
 
   addDataObserver((terminalId, data) => {

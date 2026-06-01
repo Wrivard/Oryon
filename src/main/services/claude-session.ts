@@ -1,24 +1,28 @@
-// Détecte si une conversation Claude Code existe DÉJÀ pour un dossier donné, afin de décider au spawn
-// s'il faut reprendre (`--continue`) plutôt que démarrer une session neuve. Lecture FS seulement : ne
-// lance JAMAIS `claude` ni aucun process (coût $0 préservé, aucune var d'auth touchée).
+// Localise les transcripts du CLI claude pour un dossier donné. Lecture FS seulement : ne lance JAMAIS
+// `claude` ni aucun process (coût $0 préservé, aucune var d'auth touchée). Sert F2 (décision de reprise au
+// spawn) ET l'archivage des conversations (services/archive.ts).
 
 import { readdirSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
 /**
- * Vrai ssi le CLI claude a déjà au moins un transcript pour ce dossier. Claude stocke les conversations
- * dans `~/.claude/projects/<ENC>/*.jsonl`, où ENC = le chemin absolu avec chaque '\\', '/', ':' ou '.'
- * remplacé par '-' (casse et reste du chemin inchangés — vérifié empiriquement sur les vrais dossiers).
- *
- * DÉFENSIF : toute erreur (dossier absent, accès refusé…) → false = démarrage neuf. Ne throw JAMAIS pour
- * ne pas bloquer le spawn du terminal.
+ * Dossier où le CLI claude stocke les transcripts d'un cwd : `~/.claude/projects/<ENC>/`, où ENC = le chemin
+ * absolu avec chaque '\\', '/', ':' ou '.' remplacé par '-' (casse + reste du chemin inchangés — vérifié
+ * empiriquement sur les vrais dossiers). SOURCE UNIQUE de l'encodage (partagée hasClaudeSession + archive).
+ */
+export function claudeProjectDir(cwd: string): string {
+  return join(homedir(), '.claude', 'projects', cwd.replace(/[\\/:.]/g, '-'))
+}
+
+/**
+ * Vrai ssi le CLI claude a déjà au moins un transcript (`*.jsonl`) pour ce dossier.
+ * DÉFENSIF : toute erreur (dossier absent, accès refusé…) → false = démarrage neuf. Ne throw JAMAIS pour ne
+ * pas bloquer le spawn du terminal.
  */
 export function hasClaudeSession(cwd: string): boolean {
   try {
-    const enc = cwd.replace(/[\\/:.]/g, '-')
-    const dir = join(homedir(), '.claude', 'projects', enc)
-    return readdirSync(dir).some((f) => f.endsWith('.jsonl'))
+    return readdirSync(claudeProjectDir(cwd)).some((f) => f.endsWith('.jsonl'))
   } catch {
     return false
   }

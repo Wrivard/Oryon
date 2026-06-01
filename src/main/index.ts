@@ -5,6 +5,7 @@ import { existsSync, writeFileSync, rmSync, readFileSync } from 'fs'
 import { initDb, closeDb } from './db'
 import { registerIpcHandlers } from './ipc'
 import { killAllTerminals } from './services/pty-manager'
+import { sweepArchiveSync } from './services/archive'
 import { stopAllDevServers } from './services/dev-server'
 import { closeEditorWatcher } from './ipc/editor.ipc'
 import { initMcpExport } from './services/mcp-export'
@@ -358,6 +359,7 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   destroyVoiceWidget()
+  sweepArchiveSync() // capture finale des transcripts (delta depuis le dernier sweep) AVANT de tuer les agents + fermer la DB
   killAllTerminals()
   stopAllDevServers()
   closeEditorWatcher()
