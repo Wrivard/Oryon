@@ -152,6 +152,7 @@ export interface SkillInfo {
   name: string
   description: string
   source: string // 'user' | 'plugin:<name>'
+  scope: 'user' | 'project' // user = skill global (~/.claude/skills), project = skill du projet (<projet>/.claude/skills)
 }
 
 // ---- Voice (dictée on-device) ----
@@ -492,8 +493,8 @@ export interface BridgeApi {
     addConnector: (input: McpConnectorInput) => Promise<McpConnector>
     toggleConnector: (id: string, enabled: boolean) => Promise<void>
     deleteConnector: (id: string) => Promise<void>
-    /** Skills disponibles (lecture seule). */
-    listSkills: () => Promise<SkillInfo[]>
+    /** Skills disponibles (lecture seule) : globaux (~/.claude) + ceux du projet ouvert si `projectPath` fourni. */
+    listSkills: (projectPath?: string | null) => Promise<SkillInfo[]>
   }
   voice: {
     listReplacements: () => Promise<VoiceReplacement[]>

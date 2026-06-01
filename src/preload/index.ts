@@ -73,7 +73,7 @@ const bridge: BridgeApi = {
     addConnector: (input) => ipcRenderer.invoke('settings:addConnector', input),
     toggleConnector: (id, enabled) => ipcRenderer.invoke('settings:toggleConnector', id, enabled),
     deleteConnector: (id) => ipcRenderer.invoke('settings:deleteConnector', id),
-    listSkills: () => ipcRenderer.invoke('settings:listSkills'),
+    listSkills: (projectPath) => ipcRenderer.invoke('settings:listSkills', projectPath),
   },
   voice: {
     listReplacements: () => ipcRenderer.invoke('voice:listReplacements'),
