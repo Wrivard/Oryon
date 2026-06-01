@@ -35,6 +35,7 @@ export const useVoiceContext = (): VoiceContextValue => useContext(VoiceContext)
 
 export function VoiceProvider({ children }: { children: ReactNode }): JSX.Element {
   const barRef = useRef<OrchestratorBarApi | null>(null)
+  const commandBarRef = useRef<OrchestratorBarApi | null>(null) // barre ÉPINGLÉE à l'ouverture d'une commande vocale
   const [target, setTarget] = useState<VoiceTarget>('orchestrator')
 
   // Cible d'injection (réglage voice.target). Chargée une fois, puis maintenue LIVE via settings:appChanged :
@@ -98,11 +99,29 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
     return () => window.bridge.voice.offHotkeyConflict()
   }, [])
 
-  // Command mode : la cible est la barre orchestrateur (sélection/insertion) ; no-op gracieux si absente.
+  // Command mode : la cible est la barre orchestrateur (sélection/insertion). Même classe de bug que la dictée
+  // (cf. handleText) : on FIGE l'identité de la barre à la capture et on VALIDE à l'application. barRef.current
+  // est live et change au switch de workspace — sans épinglage, le résultat transformé atterrirait dans la barre
+  // d'un AUTRE workspace.
   const commandTarget = useMemo<CommandTarget>(
     () => ({
-      getSelection: () => barRef.current?.commandTarget.getSelection() ?? null,
-      applyResult: (result, sel) => barRef.current?.commandTarget.applyResult(result, sel),
+      getSelection: () => {
+        // getSelection n'est appelé qu'à l'OUVERTURE de la commande (useVoiceCommand.start) : on épingle ici la
+        // barre cible courante, comme routedSource fige la cible de dictée. no-op gracieux si absente.
+        const bar = barRef.current
+        commandBarRef.current = bar
+        return bar?.commandTarget.getSelection() ?? null
+      },
+      applyResult: (result, sel) => {
+        // VALIDE que la barre épinglée est TOUJOURS la barre active (pas de switch de workspace ni de démontage
+        // entre-temps). Sinon : pas d'application + toast, plutôt qu'une perte silencieuse dans un autre workspace.
+        const bar = commandBarRef.current
+        if (!bar || bar !== barRef.current) {
+          toast.error('Tu as changé de cible pendant la commande — résultat non appliqué.', { title: 'Command mode' })
+          return
+        }
+        bar.commandTarget.applyResult(result, sel)
+      },
     }),
     [],
   )

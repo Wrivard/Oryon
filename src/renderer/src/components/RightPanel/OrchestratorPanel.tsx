@@ -3,6 +3,7 @@ import { Mic, Loader2, Download, Send } from 'lucide-react'
 import { Terminal } from '../TerminalGrid/Terminal'
 import { useVoiceContext, type OrchestratorBarApi } from '../Voice/VoiceProvider'
 import { cn } from '../../lib/cn'
+import { toast } from '../../store/toasts'
 import type { Terminal as TermRow } from '@shared/types'
 
 // Onglet Orchestrator : monte le terminal orchestrateur DÉDIÉ du workspace (9e terminal, opus + ultracode).
@@ -68,6 +69,17 @@ function OrchestratorDictationBar({ termId, active }: { termId: string; active: 
           return { value: el.value, start: el.selectionStart, end: el.selectionEnd }
         },
         applyResult: (result, sel) => {
+          // La sélection (valeur + bornes) a été FIGÉE à l'ouverture de la commande. Si l'utilisateur a édité
+          // la barre pendant l'enregistrement/le traitement, réécrire depuis ce snapshot périmé écraserait ses
+          // éditions (perte silencieuse). On RELIT la valeur live : on n'applique que si elle est inchangée,
+          // sinon toast — pas d'écrasement.
+          const el = taRef.current
+          if (!el || el.value !== sel.value) {
+            toast.error('La barre a été modifiée pendant la commande — résultat non appliqué, réessaie.', {
+              title: 'Command mode',
+            })
+            return
+          }
           setValue(sel.value.slice(0, sel.start) + result + sel.value.slice(sel.end))
           requestAnimationFrame(() => taRef.current?.focus())
         },
