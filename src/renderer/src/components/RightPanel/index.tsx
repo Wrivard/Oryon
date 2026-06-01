@@ -34,11 +34,17 @@ export default function RightPanel() {
   const workspace = useAppStore((s) => s.workspaces.find((w) => w.id === activeWorkspaceId))
   const openWorkspaceIds = useAppStore((s) => s.openWorkspaceIds)
   const openFileNonce = useAppStore((s) => s.openFileRequest?.nonce)
+  const browserNavNonce = useAppStore((s) => s.browserOpenRequest?.nonce)
 
   // Inspect→code (ou toute demande d'ouverture) : bascule sur l'onglet Editor.
   useEffect(() => {
     if (openFileNonce != null) setActive('editor')
   }, [openFileNonce])
+
+  // open_browser (MCP) : bascule sur l'onglet Browser.
+  useEffect(() => {
+    if (browserNavNonce != null) setActive('browser')
+  }, [browserNavNonce])
 
   return (
     <div className="flex h-full flex-col bg-bg-panel">

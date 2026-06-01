@@ -58,6 +58,14 @@ function AppContent() {
     return () => window.bridge.orchestrator.offEvent()
   }, [])
 
+  // open_browser (MCP) → ouvre l'URL dans le panneau Browser (ramène le workspace + bascule l'onglet).
+  useEffect(() => {
+    window.bridge.browser.onNavigate(({ workspaceId, url }) => {
+      useAppStore.getState().requestOpenBrowser(workspaceId, url)
+    })
+    return () => window.bridge.browser.offNavigate()
+  }, [])
+
   // Sync auto-update : état poussé par le main → store (toast + page Réglages).
   useEffect(() => {
     void window.bridge.update.getState().then((st) => useUpdateStore.getState().apply(st))

@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { BrowserWindow, ipcMain } from 'electron'
 import { getDb } from '../db'
 import { startDevServer, stopDevServer, getDevPort } from '../services/dev-server'
 import type { Workspace, DevServerResult } from '../../shared/types'
@@ -36,4 +36,11 @@ export function registerBrowserIpc() {
   ipcMain.handle('browser:stopDevServer', (_e, workspaceId: string): void => {
     stopDevServer(workspaceId)
   })
+}
+
+/** Pousse une demande de navigation du panneau Browser au renderer (depuis la commande MCP open_browser). */
+export function navigateBrowser(workspaceId: string, url: string): void {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.webContents.send('browser:navigate', { workspaceId, url })
+  }
 }

@@ -542,6 +542,9 @@ export interface BridgeApi {
     stopDevServer: (workspaceId: string) => Promise<void>
     onDevLog: (cb: (line: string) => void) => void
     offDevLog: () => void
+    /** Demande de navigation du panneau Browser poussée par le main (commande MCP open_browser). */
+    onNavigate: (cb: (data: { workspaceId: string; url: string }) => void) => void
+    offNavigate: () => void
   }
   orchestrator: {
     listTasks: (workspaceId: string) => Promise<Task[]>

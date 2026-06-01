@@ -54,6 +54,10 @@ const bridge: BridgeApi = {
       ipcRenderer.on('browser:dev-log', (_e: IpcRendererEvent, line: string) => cb(line))
     },
     offDevLog: () => ipcRenderer.removeAllListeners('browser:dev-log'),
+    onNavigate: (cb) => {
+      ipcRenderer.on('browser:navigate', (_e: IpcRendererEvent, data: { workspaceId: string; url: string }) => cb(data))
+    },
+    offNavigate: () => ipcRenderer.removeAllListeners('browser:navigate'),
   },
   orchestrator: {
     listTasks: (workspaceId) => ipcRenderer.invoke('orchestrator:listTasks', workspaceId),

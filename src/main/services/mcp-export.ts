@@ -7,6 +7,7 @@ import { getDb } from '../db'
 import { stripAnsi } from './orchestrator/mailbox'
 import { drainPendingMerges } from './orchestrator/merge-back'
 import { sweepArchive } from './archive'
+import { navigateBrowser } from '../ipc/browser.ipc'
 import {
   agentMailbox,
   setTaskStatus,
@@ -103,6 +104,8 @@ async function processCommand(path: string): Promise<void> {
       agentRestartAgent(cmd.workspaceId, cmd.terminal)
     } else if (cmd.type === 'add-connector') {
       agentAddConnector(cmd.workspaceId, cmd.connector)
+    } else if (cmd.type === 'browser-open') {
+      navigateBrowser(cmd.workspaceId, cmd.url)
     }
     try {
       unlinkSync(path)

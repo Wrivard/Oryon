@@ -33,6 +33,10 @@ interface AppStore {
   openFileRequest: { path: string; line?: number; nonce: number } | null
   requestOpenFile: (path: string, line?: number) => void
 
+  /** Demande d'ouverture d'une URL dans le panneau Browser (commande MCP open_browser). nonce = re-déclenche. */
+  browserOpenRequest: { workspaceId: string; url: string; nonce: number } | null
+  requestOpenBrowser: (workspaceId: string, url: string) => void
+
   setWorkspaces: (ws: Workspace[]) => void
   setActiveWorkspace: (id: string | null) => void
   /** Marque un workspace comme ouvert (monté en arrière-plan). Idempotent ; jamais retiré au switch. */
@@ -64,6 +68,7 @@ export const useAppStore = create<AppStore>((set) => ({
   projectVocab: [],
   projectFiles: [],
   openFileRequest: null,
+  browserOpenRequest: null,
 
   setTasks: (tasks) => set({ tasks }),
   setMailbox: (mailbox) => set({ mailbox }),
@@ -71,6 +76,14 @@ export const useAppStore = create<AppStore>((set) => ({
   setProjectContext: (projectVocab, projectFiles) => set({ projectVocab, projectFiles }),
   requestOpenFile: (path, line) =>
     set((s) => ({ openFileRequest: { path, line, nonce: (s.openFileRequest?.nonce ?? 0) + 1 } })),
+  // open_browser (MCP) : ramène le workspace au premier plan + arme la requête (RightPanel bascule sur
+  // l'onglet Browser, BrowserPanel navigue le webview). Même schéma que openFileRequest (inspect→code).
+  requestOpenBrowser: (workspaceId, url) =>
+    set((s) => ({
+      activeWorkspaceId: workspaceId,
+      maximizedTerminalId: null,
+      browserOpenRequest: { workspaceId, url, nonce: (s.browserOpenRequest?.nonce ?? 0) + 1 },
+    })),
 
   setWorkspaces: (workspaces) => set({ workspaces }),
   setActiveWorkspace: (activeWorkspaceId) => set({ activeWorkspaceId, maximizedTerminalId: null }),

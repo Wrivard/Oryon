@@ -345,6 +345,20 @@ function queueCommand(cmd) {
 }
 
 orchestratorTool(
+  'open_browser',
+  "Ouvre une URL dans le panneau Browser d'Oryon (preview in-app) : ramène le workspace au premier plan, bascule sur l'onglet Browser et y navigue le webview. Pour afficher un site qu'on développe ici (ex. http://localhost:5173, après avoir lancé le dev server dans un terminal).",
+  {
+    url: z.string().describe('URL à ouvrir (http(s):// ; un host nu type localhost:5173 est préfixé http://)'),
+  },
+  async ({ url }) => {
+    const workspaceId = currentWorkspaceId()
+    if (!workspaceId) return text(JSON.stringify({ ok: false, error: 'Workspace introuvable' }))
+    const id = queueCommand({ type: 'browser-open', workspaceId, url })
+    return text(JSON.stringify({ ok: true, id, workspaceId, url }))
+  },
+)
+
+orchestratorTool(
   'assign_task',
   "Donne une sous-task à UN worker (par name « Nell » ou position « #2 »). Le worker la fait dans son worktree git puis signale la fin (report_task). Émets plusieurs assign_task pour paralléliser. Le taskId arrive dans la notification de fin (ou via list_tasks).",
   {

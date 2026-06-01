@@ -89,6 +89,14 @@ export function BrowserPanel({ workspaceId }: { workspaceId: string }) {
     return () => window.bridge.browser.offDevLog()
   }, [])
 
+  // open_browser (MCP) : une demande pour CE workspace navigue le webview vers l'URL (normalisée http://).
+  const browserOpenRequest = useAppStore((s) => s.browserOpenRequest)
+  useEffect(() => {
+    if (!browserOpenRequest || browserOpenRequest.workspaceId !== workspaceId) return
+    const u = browserOpenRequest.url.trim()
+    if (u) setUrl(/^https?:\/\//.test(u) ? u : `http://${u}`)
+  }, [browserOpenRequest?.nonce, workspaceId])
+
   // Arrêt du dev server à l'unmount (changement de workspace) → pas de process orphelin.
   useEffect(() => {
     return () => {
