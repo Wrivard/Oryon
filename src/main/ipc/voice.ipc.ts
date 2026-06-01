@@ -2,6 +2,7 @@ import { ipcMain, BrowserWindow } from 'electron'
 import { v4 as uuid } from 'uuid'
 import { getDb } from '../db'
 import { createVoiceWidget, destroyVoiceWidget, sendVoiceState, isVoiceWidget } from '../services/voice-widget'
+import { injectText } from '../services/text-injection'
 import { learnFromEdit } from '../services/orchestrator/learn'
 import { voiceCliOneShot } from '../services/orchestrator/cli'
 import { formatSystem, COMMAND_SYSTEM } from '../services/orchestrator/roles'
@@ -193,6 +194,11 @@ export function registerVoiceIpc(): void {
     if (!command.trim() || (appSetting('voice.privacy') ?? '0') === '1') return ''
     return voiceCliOneShot(COMMAND_SYSTEM, JSON.stringify({ command, selection: selection ?? '' }))
   })
+  // Cible 'system' (voice.target, façon WisprFlow) : colle la transcription au curseur de l'app au premier plan
+  // (presse-papier + Ctrl+V, Windows seulement). Ne lève jamais — renvoie { ok, reason } au renderer pour le toast.
+  ipcMain.handle('voice:injectText', (_e, text: string): Promise<{ ok: boolean; reason?: string }> =>
+    injectText(str(text)),
+  )
   ipcMain.handle('voice:toggleVocabStar', (_e, id: string, starred: boolean): void => {
     getDb().prepare('UPDATE voice_vocab SET starred = ? WHERE id = ?').run(starred ? 1 : 0, id)
   })

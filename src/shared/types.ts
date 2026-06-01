@@ -687,6 +687,9 @@ export interface BridgeApi {
     format: (text: string, level: 'medium' | 'high') => Promise<string>
     /** Command mode (INC9) : transforme la sélection / génère inline via CLI $0 ; '' si privacy/échec. */
     command: (command: string, selection: string) => Promise<string>
+    /** Cible 'system' (voice.target, façon WisprFlow) : colle au curseur de l'app au premier plan (Windows, presse-papier + Ctrl+V). */
+    injectText: (text: string) => Promise<{ ok: boolean; reason?: string }>
+
     /** Hotkey dédiée du command mode (main → renderer). */
     onCommandKey: (cb: () => void) => void
     offCommandKey: () => void
