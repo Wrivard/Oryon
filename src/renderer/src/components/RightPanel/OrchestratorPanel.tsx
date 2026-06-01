@@ -39,19 +39,22 @@ export function OrchestratorPanel({ workspaceId, active }: { workspaceId: string
           </div>
         )}
       </div>
-      {term && <OrchestratorDictationBar termId={term.id} />}
+      {term && <OrchestratorDictationBar termId={term.id} active={active} />}
     </div>
   )
 }
 
-function OrchestratorDictationBar({ termId }: { termId: string }) {
+function OrchestratorDictationBar({ termId, active }: { termId: string; active: boolean }) {
   const { registerOrchestratorBar, toggle, voiceState } = useVoiceContext()
   const [value, setValue] = useState('')
   const injectedRef = useRef('') // texte dicté de référence pour l'apprentissage ✨ (diff injecté vs édité)
   const taRef = useRef<HTMLTextAreaElement>(null)
 
-  // Enregistre cette barre comme cible orchestrateur (réception de la dictée + cible command-mode).
+  // Enregistre cette barre comme cible orchestrateur (dictée + command-mode) UNIQUEMENT quand elle est
+  // visible : plusieurs orchestrateurs sont montés en parallèle (un par workspace ouvert), un seul doit
+  // capter la dictée. Au switch, l'ancien se désenregistre (cleanup), le nouveau s'enregistre.
   useEffect(() => {
+    if (!active) return
     const api: OrchestratorBarApi = {
       setText: (text) => {
         injectedRef.current = text
@@ -72,7 +75,7 @@ function OrchestratorDictationBar({ termId }: { termId: string }) {
     }
     registerOrchestratorBar(api)
     return () => registerOrchestratorBar(null)
-  }, [registerOrchestratorBar])
+  }, [active, registerOrchestratorBar])
 
   const send = () => {
     const text = value.trim()

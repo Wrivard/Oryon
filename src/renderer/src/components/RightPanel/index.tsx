@@ -32,6 +32,7 @@ export default function RightPanel() {
   const [active, setActive] = useState('orchestrator')
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
   const workspace = useAppStore((s) => s.workspaces.find((w) => w.id === activeWorkspaceId))
+  const openWorkspaceIds = useAppStore((s) => s.openWorkspaceIds)
   const openFileNonce = useAppStore((s) => s.openFileRequest?.nonce)
 
   // Inspect→code (ou toute demande d'ouverture) : bascule sur l'onglet Editor.
@@ -91,11 +92,18 @@ export default function RightPanel() {
               <SourcePanel key={workspace.id} projectPath={workspace.project_path} active={active === 'source'} />
             </div>
 
-            {/* Orchestrator reste MONTÉ au toggle d'onglets : le terminal (session claude) ne doit JAMAIS
-                redémarrer quand on revient dessus. focused={actif} le refocus à l'affichage sans le remonter. */}
-            <div className={cn('absolute inset-0', active === 'orchestrator' ? 'block' : 'hidden')}>
-              <OrchestratorPanel key={workspace.id} workspaceId={workspace.id} active={active === 'orchestrator'} />
-            </div>
+            {/* Orchestrateurs : UN panneau par workspace OUVERT, tous MONTÉS (même cachés) → chaque swarm de
+                fond garde son terminal orchestrateur vivant et continue de piloter. Seul l'orchestrateur du
+                workspace actif (onglet Orchestrator sélectionné) est visible ; les autres en display:none.
+                key={wsId} (PAS workspace.id) → ils ne remontent JAMAIS au switch (session claude préservée). */}
+            {openWorkspaceIds.map((wsId) => {
+              const visible = active === 'orchestrator' && wsId === activeWorkspaceId
+              return (
+                <div key={wsId} className={cn('absolute inset-0', visible ? 'block' : 'hidden')}>
+                  <OrchestratorPanel workspaceId={wsId} active={visible} />
+                </div>
+              )
+            })}
 
             {active === 'memory' && (
               <div className="absolute inset-0">

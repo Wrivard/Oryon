@@ -14,7 +14,7 @@ interface Props {
 }
 
 export default function WorkspaceRail({ onCollapse }: Props) {
-  const { workspaces, activeWorkspaceId, terminalCounts, setWorkspaces, setActiveWorkspace, setTerminalCounts } =
+  const { workspaces, activeWorkspaceId, terminalCounts, workspaceActivity, setWorkspaces, setActiveWorkspace, setTerminalCounts } =
     useAppStore()
   const { theme } = useTheme()
   const [modalOpen, setModalOpen] = useState(false)
@@ -82,6 +82,7 @@ export default function WorkspaceRail({ onCollapse }: Props) {
               const active = activeWorkspaceId === ws.id
               const dot = ws.color ?? theme.terminalTabColors[i % theme.terminalTabColors.length]
               const count = terminalCounts[ws.id]
+              const busy = !!workspaceActivity[ws.id] // swarm en cours (tâches in-progress/in-review) → halo pulsant
               return (
                 <motion.button
                   key={ws.id}
@@ -94,7 +95,18 @@ export default function WorkspaceRail({ onCollapse }: Props) {
                   )}
                 >
                   {active && <span className="absolute inset-y-1 left-0 w-0.5 rounded-full bg-accent" />}
-                  <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: dot }} />
+                  <span
+                    className="relative flex h-2 w-2 shrink-0 items-center justify-center"
+                    title={busy ? 'Swarm en cours' : undefined}
+                  >
+                    {busy && (
+                      <span
+                        className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-75"
+                        style={{ background: dot }}
+                      />
+                    )}
+                    <span className="relative h-2 w-2 rounded-full" style={{ background: dot }} />
+                  </span>
                   <span
                     className={cn(
                       'flex-1 truncate text-[13px]',

@@ -39,12 +39,21 @@ function AppContent() {
     if (saved) setRightWidth(Math.max(22, Math.min(58, parseFloat(saved))))
   }, [activeWorkspaceId])
 
-  // Sync orchestrateur : événements live (tasks/mailbox) filtrés sur le workspace actif.
+  // Sync orchestrateur : events live (tasks/mailbox). On met à jour la pastille d'activité de TOUS les
+  // workspaces (un swarm de fond qui progresse fait clignoter le rail), mais on n'alimente le board affiché
+  // (tasks/mailbox) que pour le workspace actif.
   useEffect(() => {
     window.bridge.orchestrator.onEvent((e) => {
-      if (e.workspaceId !== useAppStore.getState().activeWorkspaceId) return
-      if (e.type === 'tasks') useAppStore.getState().setTasks(e.tasks)
-      else useAppStore.getState().addMailbox(e.message)
+      const st = useAppStore.getState()
+      if (e.type === 'tasks') {
+        st.setWorkspaceActivity(
+          e.workspaceId,
+          e.tasks.some((t) => t.status === 'in-progress' || t.status === 'in-review'),
+        )
+        if (e.workspaceId === st.activeWorkspaceId) st.setTasks(e.tasks)
+      } else if (e.workspaceId === st.activeWorkspaceId) {
+        st.addMailbox(e.message)
+      }
     })
     return () => window.bridge.orchestrator.offEvent()
   }, [])
@@ -75,13 +84,9 @@ function AppContent() {
     if (activeWorkspaceId) openWorkspace(activeWorkspaceId)
   }, [activeWorkspaceId, openWorkspace])
 
-  // En quittant un workspace, on stoppe son swarm (sinon tasks in-progress orphelines + état global pointant ailleurs).
-  useEffect(() => {
-    const wid = activeWorkspaceId
-    return () => {
-      if (wid) void window.bridge.orchestrator.stop(wid)
-    }
-  }, [activeWorkspaceId])
+  // On ne stoppe PLUS le swarm en quittant un workspace : les swarms tournent EN PARALLÈLE (orchestrateur +
+  // workers restent vivants en arrière-plan, leurs grilles/panneaux restent montés). Le backend est partitionné
+  // par workspace et le board se recharge au retour. Le seul arrêt subsiste au quit de l'app (killAllTerminals).
 
   const onSplitterDown = (e: React.MouseEvent) => {
     e.preventDefault()

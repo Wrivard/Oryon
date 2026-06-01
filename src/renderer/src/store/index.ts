@@ -14,6 +14,8 @@ interface AppStore {
   maximizedTerminalId: string | null
   /** workspaceId -> nombre de terminaux (badges du rail). */
   terminalCounts: Record<string, number>
+  /** workspaceId -> swarm avec du travail en cours (tâches in-progress/in-review) → pastille d'activité du rail. */
+  workspaceActivity: Record<string, boolean>
 
   /** Orchestrateur (workspace actif). */
   tasks: Task[]
@@ -43,6 +45,8 @@ interface AppStore {
   toggleMaximize: (id: string) => void
   setTerminalCounts: (c: Record<string, number>) => void
   bumpCount: (workspaceId: string, delta: number) => void
+  /** Active/éteint la pastille d'activité d'un workspace (swarm de fond). No-op si inchangé. */
+  setWorkspaceActivity: (id: string, active: boolean) => void
 }
 
 export const useAppStore = create<AppStore>((set) => ({
@@ -54,6 +58,7 @@ export const useAppStore = create<AppStore>((set) => ({
   focusedTerminalId: null,
   maximizedTerminalId: null,
   terminalCounts: {},
+  workspaceActivity: {},
   tasks: [],
   mailbox: [],
   projectVocab: [],
@@ -112,4 +117,6 @@ export const useAppStore = create<AppStore>((set) => ({
     set((s) => ({
       terminalCounts: { ...s.terminalCounts, [wid]: Math.max(0, (s.terminalCounts[wid] ?? 0) + delta) },
     })),
+  setWorkspaceActivity: (id, active) =>
+    set((s) => (s.workspaceActivity[id] === active ? {} : { workspaceActivity: { ...s.workspaceActivity, [id]: active } })),
 }))
