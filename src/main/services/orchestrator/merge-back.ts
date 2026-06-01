@@ -74,7 +74,7 @@ async function integrate(job: MergeBackJob): Promise<void> {
     //    d'ABANDONNER le job (F7 : un tronc sale stranglait tout le travail approuvé), on le met EN ATTENTE :
     //    drainPendingMerges() (tick mcp-export 2s) le rejoue dès que MAIN redevient propre. Branche conservée.
     if (!(await isClean(mainPath))) {
-      pending.set(branch, job)
+      pending.set(pendingKey(job), job)
       job.onConflict(
         `#${task} : projet principal sale — intégration de \`${branch}\` REPORTÉE (auto-retry dès que MAIN sera propre ; branche conservée).`,
       )
@@ -174,6 +174,10 @@ let chain: Promise<void> = Promise.resolve()
 
 // Jobs REPORTÉS faute de MAIN propre (F7), rejoués par drainPendingMerges quand le tronc redevient propre.
 const pending = new Map<string, MergeBackJob>()
+// Clé composite (repo + branche). Plusieurs workspaces partagent le même pool de noms d'agents → la même
+// branche `oryon/agent-<nom>` existe dans des repos distincts ; une clé par branche seule collisionnerait
+// (un merge reporté en écraserait un autre, silencieusement perdu). mainPath (racine du projet) sépare les repos.
+const pendingKey = (j: MergeBackJob): string => `${j.mainPath} ${j.branch}`
 
 /** Rejoue les merges en attente dès que MAIN est propre (appelé périodiquement par mcp-export, tick 2s). */
 export async function drainPendingMerges(): Promise<void> {
@@ -182,7 +186,7 @@ export async function drainPendingMerges(): Promise<void> {
   pending.clear()
   for (const j of jobs) {
     if (await isClean(j.mainPath)) void enqueueMergeBack(j)
-    else pending.set(j.branch, j) // toujours sale → reste en attente
+    else pending.set(pendingKey(j), j) // toujours sale → reste en attente
   }
 }
 
