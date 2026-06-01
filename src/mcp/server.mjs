@@ -310,14 +310,15 @@ server.tool(
   "Donne une sous-task à UN worker (par name « Nell » ou position « #2 »). Le worker la fait dans son worktree git puis signale la fin (report_task). Émets plusieurs assign_task pour paralléliser. Le taskId arrive dans la notification de fin (ou via list_tasks).",
   {
     terminal: z.string().describe('name (ex. "Nell") ou position (ex. "#2") du worker'),
-    instructions: z.string().describe('instruction concrète et auto-suffisante (1-3 phrases)'),
+    instructions: z.string().describe('contrat auto-suffisant : objectif + fichiers IN/OUT-scope + definition-of-done. Cap 3-5 items couplés / fichiers disjoints, sinon SPLIT en plusieurs assign.'),
     title: z.string().optional().describe('titre court (sinon dérivé des instructions)'),
+    files: z.array(z.string()).optional().describe('fichiers (relatifs) que ce worker va éditer → réservés (claim) ; un assign dont les fichiers chevauchent une task active est REFUSÉ.'),
   },
-  async ({ terminal, instructions, title }) => {
+  async ({ terminal, instructions, title, files }) => {
     const workspaceId = currentWorkspaceId()
     if (!workspaceId) return text(JSON.stringify({ queued: false, error: 'workspace introuvable (Oryon tourne ?)' }))
     try {
-      const id = queueCommand({ type: 'assign-task', workspaceId, terminal, instructions, title: title ?? null })
+      const id = queueCommand({ type: 'assign-task', workspaceId, terminal, instructions, title: title ?? null, files: files ?? null })
       return text(JSON.stringify({ queued: true, id, terminal }))
     } catch (e) {
       return text(JSON.stringify({ queued: false, error: String(e) }))
@@ -346,13 +347,15 @@ server.tool(
     status: z.enum(['done', 'blocked']).describe('done = terminé ; blocked = impossible de continuer'),
     summary: z.string().describe('résumé d\'une ligne de ce que tu as changé (tes propres mots)'),
     fromAgent: z.string().optional().describe('ton nom d\'agent (auto = ORYON_AGENT_NAME)'),
+    files_changed: z.array(z.string()).optional().describe('chemins relatifs que tu as touchés (cross-check vs git ; ne remplace PAS le commit)'),
+    committed: z.boolean().optional().describe('true si tu as bien commité ton travail dans TA branche'),
   },
-  async ({ status, summary, fromAgent }) => {
+  async ({ status, summary, fromAgent, files_changed, committed }) => {
     const from = fromAgent ?? DEFAULT_AUTHOR ?? 'unknown'
     const workspaceId = currentWorkspaceId()
     if (!workspaceId) return text(JSON.stringify({ queued: false, error: 'workspace introuvable' }))
     try {
-      const id = queueCommand({ type: 'report-task', workspaceId, fromAgent: from, status, summary })
+      const id = queueCommand({ type: 'report-task', workspaceId, fromAgent: from, status, summary, filesChanged: files_changed ?? null, committed: committed ?? null })
       return text(JSON.stringify({ queued: true, id, status }))
     } catch (e) {
       return text(JSON.stringify({ queued: false, error: String(e) }))

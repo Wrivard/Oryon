@@ -6,6 +6,7 @@ import { getOrCreateProjectId, createTask, listTasks, getTask, updateTask } from
 import { isGitRepo, worktreeDir, branchFor, refreshWorktreeToHead, branchEvidence } from '../worktrees'
 import { enqueueMergeBack } from './merge-back'
 import { verifyWorktree } from './green-gate'
+import { readClaims, claimFile, releaseClaimsByAgent } from '../../../shared/memory-core.mjs'
 import type { OrchestratorEvent, TaskStatus, Workspace } from '../../../shared/types'
 
 // Exécuteur de flotte. L'orchestration EST pilotée par le terminal orchestrateur dédié (claude opus +
@@ -129,7 +130,14 @@ export function setTaskStatus(taskId: string, status: TaskStatus): void {
   const t = getTask(taskId)
   if (!t) return
   updateTask(taskId, { status })
-  if (status === 'complete' || status === 'cancelled' || status === 'todo') freeTerminalForTask(taskId)
+  if (status === 'complete' || status === 'cancelled' || status === 'todo') {
+    freeTerminalForTask(taskId)
+    // W6(b) : libère les claims de l'agent quand sa task quitte l'état actif (sinon claim fantôme).
+    if (t.assigned_terminal_id && t.workspace_id) {
+      const ws = getWorkspace(t.workspace_id)
+      if (ws && isGitRepo(ws.project_path)) void releaseClaimsByAgent(ws.project_path, terminalName(t.assigned_terminal_id))
+    }
+  }
   if (t.workspace_id) emitTasks(t.workspace_id)
 }
 
@@ -160,16 +168,61 @@ export function agentMailbox(workspaceId: string, fromAgent: string | null, body
  * rafraîchit le worktree du worker à MAIN-HEAD, puis injecte le prompt. Le worker signalera la fin via
  * report_task. Renvoie le terminal résolu + l'id de task (que l'orchestrateur approuvera ensuite).
  */
-export function agentAssignTask(
+export async function agentAssignTask(
   workspaceId: string,
   terminalRef: string,
   instructions: string,
   title?: string,
-): { terminal: string; taskId: string } {
+  files?: string[],
+): Promise<{ terminal: string; taskId: string }> {
   const ws = getWorkspace(workspaceId)
   if (!ws) throw new Error(`Workspace ${workspaceId} introuvable`)
   const id = resolveWorker(workspaceId, terminalRef)
   const projectId = getOrCreateProjectId(ws.name, ws.project_path)
+
+  // W6(b) : refuse un dispatch dont les fichiers chevauchent ceux RÉSERVÉS (claims) par une AUTRE task active.
+  // Indirection file-de-commandes : impossible de renvoyer l'erreur au caller MCP → on réveille l'orchestrateur
+  // (même pattern que la porte-à-preuves) et on N'envoie PAS la task. PAS de throw (sinon retry en boucle).
+  if (files && files.length) {
+    const me = terminalName(id).toLowerCase()
+    const norm = (f: string): string => f.replace(/\\/g, '/').replace(/^\/+/, '').toLowerCase()
+    const activeOthers = new Set(
+      listTasks(workspaceId)
+        .filter((t) => (t.status === 'in-progress' || t.status === 'in-review') && t.assigned_terminal_id)
+        .map((t) => terminalName(t.assigned_terminal_id as string).toLowerCase())
+        .filter((n) => n !== me),
+    )
+    let claimsMap: Record<string, { agent: string; uuid: string; ts: number }> = {}
+    try {
+      claimsMap = await readClaims(ws.project_path)
+    } catch {
+      /* pas de claims.json → aucun conflit */
+    }
+    const conflicts: string[] = []
+    for (const f of files) {
+      const nf = norm(f)
+      for (const [cf, c] of Object.entries(claimsMap)) {
+        const nc = norm(cf)
+        const overlap = nf === nc || nf.startsWith(`${nc}/`) || nc.startsWith(`${nf}/`) // préfixe-aware (répertoires)
+        if (overlap && c && c.agent && c.agent.toLowerCase() !== me && activeOthers.has(c.agent.toLowerCase())) {
+          conflicts.push(`${f} (réservé par ${c.agent})`)
+          break
+        }
+      }
+    }
+    if (conflicts.length) {
+      const orchE = orchestratorTerminalId(workspaceId)
+      if (orchE && hasLiveTerminal(orchE)) {
+        pasteLine(
+          orchE,
+          oneLinePrompt(
+            `[oryon] ⚠ assign à ${terminalName(id)} REFUSÉ (W6) : fichier(s) déjà réservé(s) par une task active — ${conflicts.join(', ')}. Attends son approve_task, ou donne des fichiers disjoints.`,
+          ),
+        )
+      }
+      return { terminal: terminalName(id), taskId: '' } // pas de dispatch
+    }
+  }
   // Réutilise la task OUVERTE de CE terminal si elle existe (re-dispatch : refresh W1, boucle de feedback,
   // retry après "blocked") au lieu d'en créer une 2e → plus de lignes en double dans le board (W2).
   const open = [...listTasks(workspaceId)]
@@ -192,6 +245,16 @@ export function agentAssignTask(
   }
   terminalBusy.set(id, task.id)
   stallNotified.delete(id) // re-dispatch → le watchdog pourra de nouveau signaler ce terminal
+  // W6(b) : réserve les fichiers de l'assigné pour que le prochain assign parallèle voie le chevauchement.
+  if (files && files.length) {
+    for (const f of files) {
+      try {
+        await claimFile(ws.project_path, f, terminalName(id))
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
   // Anti stale-fork (W1) : amène le worktree du worker à MAIN-HEAD (inclut les tasks déjà mergées). On AGIT
   // sur le résultat — un worktree resté périmé (conflit) ou sali ne doit PAS être avalé en silence.
   const refreshed = isGitRepo(ws.project_path) ? refreshWorktreeToHead(ws.project_path, terminalName(id)) : 'skip'
@@ -240,6 +303,7 @@ export async function agentReportTask(
   fromAgent: string | null,
   status: string,
   summary: string,
+  claimed?: { filesChanged: string[] | null; committed: boolean | null },
 ): Promise<{ ok: boolean; taskId?: string }> {
   const ids = terminalIds(workspaceId)
   const termId = fromAgent
@@ -312,6 +376,17 @@ export async function agentReportTask(
       /* best-effort : un échec du gate ne casse jamais le report */
     }
   }
+  // WC : recoupe la prose du worker (claimed, optionnel) avec la preuve git — git gagne. Purement additif.
+  let mismatch = ''
+  if (claimed && ev) {
+    if (claimed.committed === true && ev.ahead === 0) mismatch += ' ⚠ worker dit "committé" mais 0 commit authored'
+    if (claimed.filesChanged && claimed.filesChanged.length) {
+      const n = (f: string): string => f.replace(/\\/g, '/').toLowerCase()
+      const evset = new Set(ev.filesChanged.map(n))
+      const missing = claimed.filesChanged.filter((f) => !evset.has(n(f)))
+      if (missing.length) mismatch += ` ⚠ fichiers réclamés absents du diff: ${missing.slice(0, 8).join(', ')}`
+    }
+  }
   // Réveille l'orchestrateur AVEC l'évidence git machine à côté de la prose du worker (F4/F8) + alerte contamination (F3).
   const orch = orchestratorTerminalId(workspaceId)
   if (orch && hasLiveTerminal(orch)) {
@@ -323,7 +398,7 @@ export async function agentReportTask(
       if (ev.mainDirty) evidence += ' ⚠ TRONC PRINCIPAL SALE — contamination possible (un worker a peut-être édité MAIN)'
     }
     const wake = oneLinePrompt(
-      `[oryon] ${fromAgent ?? 'un worker'} a terminé "${task?.title ?? ''}" (${status})${tid}: ${summary}.${evidence}${gateNote}${wt} Vérifie le diff puis approve_task si OK, sinon réassigne avec un feedback précis.`,
+      `[oryon] ${fromAgent ?? 'un worker'} a terminé "${task?.title ?? ''}" (${status})${tid}: ${summary}.${evidence}${gateNote}${mismatch}${wt} Vérifie le diff puis approve_task si OK, sinon réassigne avec un feedback précis.`,
     )
     pasteLine(orch, wake)
   }
@@ -387,6 +462,7 @@ export function agentApproveTask(taskId: string): { ok: boolean; message: string
         task: t.title ?? 'task',
         onDone: (m) => {
           updateTask(taskId, { status: 'complete' })
+          void releaseClaimsByAgent(ws.project_path, agent) // W6(b) : la task est mergée → libère ses claims
           emitTasks(wsId)
           agentMailbox(wsId, 'système', m)
         },

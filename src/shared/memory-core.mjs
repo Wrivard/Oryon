@@ -393,3 +393,22 @@ export async function releaseClaim(projectDir, filepath) {
 
   return { released: true }
 }
+
+/** Relâche TOUS les claims d'un agent (à la complétion/annulation de sa task). Idempotent. Renvoie le nb supprimé. */
+export async function releaseClaimsByAgent(projectDir, agentName) {
+  const path = claimsPath(projectDir)
+  const claims = await readClaims(projectDir)
+  let released = 0
+  for (const [f, c] of Object.entries(claims)) {
+    if (c && c.agent === agentName) {
+      delete claims[f]
+      released++
+    }
+  }
+  if (released > 0) {
+    const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${++tmpSeq}`
+    await fs.writeFile(tmp, JSON.stringify(claims, null, 2), 'utf8')
+    await renameRetry(tmp, path)
+  }
+  return { released }
+}

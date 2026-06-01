@@ -69,3 +69,19 @@ export function suggestConnections(
 ): Promise<{ name: string; title: string; sharedLinks: number; score: number }[]>
 export function renameMemory(projectDir: string, oldName: string, newName: string): Promise<{ name: string }>
 export function findProjectDir(startCwd: string): Promise<string>
+
+// ---- Claims (réservation de fichiers par agent, coordination anti-conflit) ----
+export interface FileClaim {
+  agent: string
+  uuid: string
+  ts: number
+}
+export function readClaims(projectDir: string): Promise<Record<string, FileClaim>>
+export function claimFile(
+  projectDir: string,
+  filepath: string,
+  agentName: string,
+  opts?: { uuid?: string },
+): Promise<{ conflict: boolean; owner?: string; uuid: string }>
+export function releaseClaim(projectDir: string, filepath: string): Promise<{ released: boolean }>
+export function releaseClaimsByAgent(projectDir: string, agentName: string): Promise<{ released: number }>
