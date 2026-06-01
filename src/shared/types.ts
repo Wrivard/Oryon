@@ -619,6 +619,9 @@ export interface BridgeApi {
     /** Réglages app-global (clé/valeur). */
     getApp: () => Promise<Record<string, string>>
     setApp: (key: string, value: string) => Promise<void>
+    /** Réglage app-global modifié (main → renderer) : applique un changement live sans attendre un focus fenêtre. */
+    onAppChanged: (cb: (p: { key: string; value: string }) => void) => void
+    offAppChanged: () => void
     /** Connecteurs MCP visibles pour un projet (par chemin) : scope 'app' + scope 'project' de ce projet. */
     listConnectors: (projectPath?: string | null) => Promise<McpConnector[]>
     addConnector: (input: McpConnectorInput) => Promise<McpConnector>
@@ -700,6 +703,8 @@ export interface BridgeApi {
     setWidget: (visible: boolean) => Promise<void>
     /** Ré-enregistre les hotkeys globales depuis les réglages courants (sans redémarrage). */
     reregisterHotkeys: () => Promise<void>
+    /** Conflits de hotkey détectés au DERNIER enregistrement (pull au montage : l'event boot est émis avant que le renderer ne soit abonné). */
+    getHotkeyConflicts: () => Promise<{ accel: string; mode: string }[]>
     /** Conflit de raccourci global (accélérateur déjà pris par une autre appli) : main → renderer. */
     onHotkeyConflict: (cb: (info: { accel: string; mode: string }) => void) => void
     offHotkeyConflict: () => void
