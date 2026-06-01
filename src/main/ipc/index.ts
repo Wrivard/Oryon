@@ -6,6 +6,7 @@ import { registerBrowserIpc } from './browser.ipc'
 import { registerOrchestratorIpc } from './orchestrator.ipc'
 import { registerSourceIpc } from './source.ipc'
 import { registerSettingsIpc } from './settings.ipc'
+import { registerSkillsIpc } from './skills.ipc'
 import { registerVoiceIpc } from './voice.ipc'
 import { registerMemoryIpc } from './memory.ipc'
 import { registerUpdaterIpc } from './updater.ipc'
@@ -21,6 +22,7 @@ export function registerIpcHandlers() {
   registerOrchestratorIpc()
   registerSourceIpc()
   registerSettingsIpc()
+  registerSkillsIpc()
   registerVoiceIpc()
   registerMemoryIpc()
   registerUpdaterIpc()

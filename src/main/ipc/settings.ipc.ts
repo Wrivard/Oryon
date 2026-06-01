@@ -1,10 +1,9 @@
 import { ipcMain, app } from 'electron'
 import { v4 as uuid } from 'uuid'
-import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs'
+import { writeFileSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
 import { getDb } from '../db'
-import type { McpConnector, McpConnectorInput, SkillInfo } from '../../shared/types'
+import type { McpConnector, McpConnectorInput } from '../../shared/types'
 
 // ---- app settings (clé/valeur) ----
 function getAppSettings(): Record<string, string> {
@@ -110,51 +109,6 @@ export function buildProjectMcpConfigForPath(projectPath: string): string | null
   return file
 }
 
-// ---- skills (lecture seule) ----
-function parseFrontmatter(md: string): { name?: string; description?: string } {
-  // Robustesse Windows : retire un BOM UTF-8 + normalise CRLF→LF, et tolère un espace/ligne vide avant le `---`
-  // (sinon le frontmatter entier est ignoré, ou des champs sautent, sur des SKILL.md édités sous Windows).
-  const src = md.replace(/^﻿/, '').replace(/\r\n/g, '\n')
-  const m = src.match(/^\s*---\s*([\s\S]*?)\s*---/)
-  if (!m) return {}
-  const out: { name?: string; description?: string } = {}
-  for (const line of m[1].split('\n')) {
-    const kv = line.match(/^(name|description)\s*:\s*(.+)$/)
-    if (kv) out[kv[1] as 'name' | 'description'] = kv[2].trim().replace(/^["']|["']$/g, '')
-  }
-  return out
-}
-/** Scanne UN dossier de skills (<base>/<skill>/SKILL.md). N'émet une entrée QUE pour les sous-dossiers qui
- *  contiennent un SKILL.md LISIBLE : sinon on remonterait des dossiers non-skill (ex. un repo de plugin cloné
- *  sans SKILL.md à sa racine). `source` reste 'user' (cf. SkillInfo) ; `scope` distingue global vs projet. */
-function scanSkillsDir(dir: string, scope: 'user' | 'project'): SkillInfo[] {
-  if (!existsSync(dir)) return []
-  const out: SkillInfo[] = []
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue // accepte aussi les skills symlink/junction (isDirectory() est faux pour un reparse-point)
-    const skillMd = join(dir, entry.name, 'SKILL.md')
-    let fm: { name?: string; description?: string }
-    try {
-      fm = parseFrontmatter(readFileSync(skillMd, 'utf8'))
-    } catch {
-      continue // SKILL.md absent (ENOENT) ou illisible → ce dossier n'est pas un skill : on le saute.
-    }
-    out.push({ name: fm.name ?? entry.name, description: fm.description ?? '', source: 'user', scope })
-  }
-  return out
-}
-function listSkills(projectPath?: string | null): SkillInfo[] {
-  // Globaux d'abord (~/.claude/skills), puis ceux du projet ouvert (<projet>/.claude/skills) le cas échéant.
-  const userDir = join(homedir(), '.claude', 'skills')
-  const out = scanSkillsDir(userDir, 'user')
-  // Évite les doublons si le projet ouvert EST le home (projectPath === homedir → même dossier scanné 2×).
-  if (projectPath) {
-    const projDir = join(projectPath, '.claude', 'skills')
-    if (projDir !== userDir) out.push(...scanSkillsDir(projDir, 'project'))
-  }
-  return out
-}
-
 export function registerSettingsIpc(): void {
   ipcMain.handle('settings:getApp', (): Record<string, string> => getAppSettings())
   ipcMain.handle('settings:setApp', (_e, key: string, value: string): void => setAppSetting(key, value))
@@ -166,5 +120,4 @@ export function registerSettingsIpc(): void {
   ipcMain.handle('settings:deleteConnector', (_e, id: string): void => {
     getDb().prepare('DELETE FROM mcp_connectors WHERE id = ?').run(id)
   })
-  ipcMain.handle('settings:listSkills', (_e, projectPath?: string | null): SkillInfo[] => listSkills(projectPath))
 }
