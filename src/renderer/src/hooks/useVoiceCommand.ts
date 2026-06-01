@@ -25,6 +25,7 @@ export function useVoiceCommand(target: CommandTarget) {
   const startingRef = useRef(false) // garde synchrone anti double-start (cf. useVoice)
   const runIdRef = useRef(0) // token : invalide un résultat command en vol après ESC/cancel (rel-2)
   const selRef = useRef<{ value: string; start: number; end: number } | null>(null)
+  const slowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null) // L3 : timer du hint « plus long… » — annulable depuis cancel()/démontage
   const targetRef = useRef(target)
   targetRef.current = target
 
@@ -57,6 +58,7 @@ export function useVoiceCommand(target: CommandTarget) {
 
   const cancel = useCallback(() => {
     runIdRef.current++ // tout résultat en vol devient stale → non appliqué (rel-2)
+    if (slowTimerRef.current) { clearTimeout(slowTimerRef.current); slowTimerRef.current = null } // L3 : annule le hint « plus long… » avant setState idle
     recRef.current?.cancel()
     recRef.current = null
     release('command')
@@ -69,7 +71,7 @@ export function useVoiceCommand(target: CommandTarget) {
     recRef.current = null
     const runId = ++runIdRef.current // token de ce run
     setState('processing')
-    const slowTimer = setTimeout(() => setSlow(true), 3000)
+    slowTimerRef.current = setTimeout(() => setSlow(true), 3000)
     try {
       const pcm = await rec.stop()
       const settings = await window.bridge.settings.getApp()
@@ -88,7 +90,7 @@ export function useVoiceCommand(target: CommandTarget) {
     } catch (e) {
       toast.error((e as Error).message, { title: 'Commande vocale échouée' })
     } finally {
-      clearTimeout(slowTimer)
+      if (slowTimerRef.current) { clearTimeout(slowTimerRef.current); slowTimerRef.current = null }
       release('command')
       finish()
     }
@@ -138,8 +140,9 @@ export function useVoiceCommand(target: CommandTarget) {
   // tenu → dictée ET command mode muets ensuite, rel : lock-leak).
   useEffect(
     () => () => {
+      runIdRef.current++ // L2 : invalide toute commande en vol même en phase 'processing' (recRef déjà null)
+      if (slowTimerRef.current) clearTimeout(slowTimerRef.current) // pas de setSlow après démontage
       if (recRef.current) {
-        runIdRef.current++
         recRef.current.cancel()
         recRef.current = null
       }

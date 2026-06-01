@@ -283,8 +283,8 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
   // tenu → dictée ET command mode muets ensuite, rel : lock-leak).
   useEffect(
     () => () => {
+      runIdRef.current++ // L2 : invalide TOUTE op en vol (transcription/format), même en 'processing' où recRef est déjà null
       if (recRef.current) {
-        runIdRef.current++
         recRef.current.cancel()
         recRef.current = null
       }

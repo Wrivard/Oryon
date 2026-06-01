@@ -15,6 +15,19 @@ import type {
   VoiceStats,
 } from '../../shared/types'
 
+// Coalescence leading-edge 250 ms du toggle de dictée, PARTAGÉE par la hotkey globale (main/index.ts) et le
+// widget (voice:requestToggle) — deux voice:toggle rapprochés ne doivent pas démarrer-puis-arrêter aussitôt une
+// capture (C-7). Module-scoped pour survivre à un ré-enregistrement à chaud des hotkeys. Exclut le widget, qui
+// ne doit jamais recevoir de toggle.
+let lastVoiceToggle = 0
+export function emitVoiceToggle(): void {
+  const now = Date.now()
+  if (now - lastVoiceToggle < 250) return
+  lastVoiceToggle = now
+  for (const w of BrowserWindow.getAllWindows())
+    if (!w.isDestroyed() && !isVoiceWidget(w)) w.webContents.send('voice:toggle')
+}
+
 // Coercition défensive des arguments IPC non fiables (renderer/preload) — pas de lib de schéma.
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 const num = (v: unknown): number => (Number.isFinite(v as number) ? Number(v) : 0)
@@ -187,11 +200,9 @@ export function registerVoiceIpc(): void {
     getDb().prepare('DELETE FROM voice_vocab WHERE id = ?').run(id)
   })
 
-  // Widget → toggle : rediffuse à toutes les fenêtres SAUF le widget (qui ne doit jamais déclencher d'enregistrement).
-  ipcMain.on('voice:requestToggle', () => {
-    for (const w of BrowserWindow.getAllWindows())
-      if (!w.isDestroyed() && !isVoiceWidget(w)) w.webContents.send('voice:toggle')
-  })
+  // Widget → toggle : passe par le MÊME coalesceur 250 ms que la hotkey (C-7) — sinon un double-clic widget et
+  // une hotkey rapprochés démarreraient-puis-arrêteraient aussitôt une capture. emitVoiceToggle exclut le widget.
+  ipcMain.on('voice:requestToggle', () => emitVoiceToggle())
   // Fenêtre principale → état courant → widget.
   ipcMain.on('voice:stateChanged', (_e, state: VoiceState) => sendVoiceState(state))
   // Settings : afficher/cacher le widget flottant.
