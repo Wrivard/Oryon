@@ -35,9 +35,8 @@ export const useVoiceContext = (): VoiceContextValue => useContext(VoiceContext)
 
 export function VoiceProvider({ children }: { children: ReactNode }): JSX.Element {
   const barRef = useRef<OrchestratorBarApi | null>(null)
+  const commandBarRef = useRef<OrchestratorBarApi | null>(null) // barre ÉPINGLÉE à l'ouverture d'une commande vocale
   const [target, setTarget] = useState<VoiceTarget>('orchestrator')
-  const targetRef = useRef<VoiceTarget>(target)
-  targetRef.current = target
 
   // Cible d'injection (réglage voice.target). Chargée une fois, puis maintenue LIVE via settings:appChanged :
   // un changement fait dans la modale in-window n'émet AUCUN event 'focus', donc sans ça la dictée router­ait
@@ -55,7 +54,7 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
   }, [])
 
   // Routage de la dictée selon la cible FIGÉE au début de la capture (routedSource, fourni par useVoice) — pas
-  // targetRef.current (live), sinon un changement de voice.target en cours de dictée re-router­ait à tort.
+  // l'état `target` live, sinon un changement de voice.target en cours de dictée re-router­ait à tort.
   // orchestrator → barre (l'utilisateur relit/édite puis envoie) ; terminal → PTY focus.
   const handleText = useCallback((text: string, routedSource: string) => {
     // Cible orchestrateur : va TOUJOURS à la barre — JAMAIS de repli terminal. Si la barre n'est pas montée
@@ -66,9 +65,20 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
       else toast.error('Ouvre le panneau Orchestrateur pour recevoir la dictée.', { title: 'Dictée' })
       return
     }
-    const fid = useAppStore.getState().focusedTerminalId
-    if (fid) window.bridge.terminals.write(fid, text)
-    else if (barRef.current) barRef.current.setText(text) // repli : aucun terminal focus → barre orchestrateur
+    // Cible terminal. focusedTerminalId est un singleton GLOBAL et les PTY survivent au switch de workspace :
+    // on n'écrit donc que si le terminal focus est vivant — PTY non exité (sinon write = no-op muet, C-2) — ET
+    // appartient au workspace ACTIF (sinon la dictée partirait dans un AUTRE projet, C-3). Repli barre + toast.
+    const st = useAppStore.getState()
+    const fid = st.focusedTerminalId
+    const ws = st.activeWorkspaceId
+    const live =
+      fid != null &&
+      ws != null &&
+      st.statuses[fid] !== 'exited' &&
+      (st.terminalsByWorkspace[ws] ?? []).some((t) => t.id === fid)
+    if (fid && live) window.bridge.terminals.write(fid, text)
+    else if (barRef.current) barRef.current.setText(text) // repli : terminal absent/mort/autre workspace → barre
+    else toast.error('Aucun terminal actif pour recevoir la dictée.', { title: 'Dictée' })
   }, [])
 
   const { state, toggle, cancel } = useVoice(handleText, target)
@@ -89,11 +99,29 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
     return () => window.bridge.voice.offHotkeyConflict()
   }, [])
 
-  // Command mode : la cible est la barre orchestrateur (sélection/insertion) ; no-op gracieux si absente.
+  // Command mode : la cible est la barre orchestrateur (sélection/insertion). Même classe de bug que la dictée
+  // (cf. handleText) : on FIGE l'identité de la barre à la capture et on VALIDE à l'application. barRef.current
+  // est live et change au switch de workspace — sans épinglage, le résultat transformé atterrirait dans la barre
+  // d'un AUTRE workspace.
   const commandTarget = useMemo<CommandTarget>(
     () => ({
-      getSelection: () => barRef.current?.commandTarget.getSelection() ?? null,
-      applyResult: (result, sel) => barRef.current?.commandTarget.applyResult(result, sel),
+      getSelection: () => {
+        // getSelection n'est appelé qu'à l'OUVERTURE de la commande (useVoiceCommand.start) : on épingle ici la
+        // barre cible courante, comme routedSource fige la cible de dictée. no-op gracieux si absente.
+        const bar = barRef.current
+        commandBarRef.current = bar
+        return bar?.commandTarget.getSelection() ?? null
+      },
+      applyResult: (result, sel) => {
+        // VALIDE que la barre épinglée est TOUJOURS la barre active (pas de switch de workspace ni de démontage
+        // entre-temps). Sinon : pas d'application + toast, plutôt qu'une perte silencieuse dans un autre workspace.
+        const bar = commandBarRef.current
+        if (!bar || bar !== barRef.current) {
+          toast.error('Tu as changé de cible pendant la commande — résultat non appliqué.', { title: 'Command mode' })
+          return
+        }
+        bar.commandTarget.applyResult(result, sel)
+      },
     }),
     [],
   )
