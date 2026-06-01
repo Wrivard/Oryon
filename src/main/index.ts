@@ -1,5 +1,5 @@
-import { app, BrowserWindow, shell, globalShortcut, session, protocol } from 'electron'
-import { join, extname } from 'path'
+import { app, BrowserWindow, shell, globalShortcut, session, protocol, ipcMain } from 'electron'
+import { join, extname, resolve, sep } from 'path'
 import { readFile } from 'fs/promises'
 import { existsSync, writeFileSync, rmSync, readFileSync } from 'fs'
 import { initDb, closeDb } from './db'
@@ -213,8 +213,15 @@ app.whenReady().then(() => {
   }
   protocol.handle('app', async (req) => {
     const rel = decodeURIComponent(new URL(req.url).pathname).replace(/^\/+/, '') || 'index.html'
+    // Anti-traversée : on confine le chemin résolu sous rendererRoot. resolve() normalise les '..' en chemin
+    // absolu ; on exige ensuite que le résultat soit la racine elle-même ou un descendant (préfixe + séparateur).
+    const full = resolve(rendererRoot, rel)
+    const rootPrefix = rendererRoot.endsWith(sep) ? rendererRoot : rendererRoot + sep
+    if (full !== rendererRoot && !full.startsWith(rootPrefix)) {
+      return new Response('Not found', { status: 404, headers: { 'content-type': 'text/plain' } })
+    }
     try {
-      const data = await readFile(join(rendererRoot, rel))
+      const data = await readFile(full)
       const type = MIME[extname(rel).toLowerCase()] ?? 'application/octet-stream'
       return new Response(new Uint8Array(data), { headers: { 'content-type': type } })
     } catch (err) {
@@ -222,8 +229,32 @@ app.whenReady().then(() => {
       return new Response('Not found', { status: 404, headers: { 'content-type': 'text/plain' } })
     }
   })
+
+  // ── Content-Security-Policy ─────────────────────────────────────────────────────────────────────────
+  // Verrouille le renderer. PROD (app://) : politique stricte — scripts/ressources de PREMIÈRE PARTIE
+  // uniquement, + les poids du modèle Whisper depuis le hub Hugging Face (cf. lib/voice.ts → @huggingface/
+  // transformers, allowLocalModels=false). 'wasm-unsafe-eval' est exigé par ONNX Runtime (compilation WASM) ;
+  // object-src 'none' tue les plugins. DEV (ELECTRON_RENDERER_URL) : on desserre le strict nécessaire au
+  // serveur Vite — origine HTTP+WS dans connect-src (HMR) et 'unsafe-inline' dans script-src (préambule inline
+  // injecté par @vitejs/plugin-react pour React Fast Refresh, sinon le renderer dev refuse de charger). La
+  // surface PROD reste verrouillée (aucun script inline dans le build, hormis le polyfill modulepreload inerte).
+  const devUrl = isDev ? process.env['ELECTRON_RENDERER_URL'] : undefined
+  const devOrigin = devUrl ? new URL(devUrl).origin : ''
+  const scriptSrc = devOrigin ? "script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'" : "script-src 'self' 'wasm-unsafe-eval'"
+  const connectExtra = devOrigin ? ` ${devOrigin} ${devOrigin.replace(/^http/, 'ws')}` : ''
+  const csp =
+    "default-src 'self'; " +
+    `${scriptSrc}; ` +
+    `connect-src 'self' https://huggingface.co https://cdn-lfs.huggingface.co https://*.hf.co${connectExtra}; ` +
+    "img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'"
+  session.defaultSession.webRequest.onHeadersReceived((details, cb) =>
+    cb({ responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [csp] } }),
+  )
+
   createWindow()
   registerVoiceHotkey()
+  // Ré-enregistrement à chaud des hotkeys après un changement de réglage (le renderer appelle via le preload).
+  ipcMain.handle('voice:reregisterHotkeys', () => registerVoiceHotkey())
   if (appSetting('voice.showWidget') !== '0') createVoiceWidget() // widget flottant (activé par défaut)
   void initUpdater() // auto-update brandé (canaux stable/dev) — no-op hors build packagé
 
@@ -234,16 +265,48 @@ app.whenReady().then(() => {
 
 /**
  * Autorise les permissions média (micro) pour getUserMedia dans le renderer sandboxé. Sans ça, Chromium
- * rejette getUserMedia → « Micro indisponible ». On n'autorise QUE l'audio (jamais la caméra/géoloc/etc.).
+ * rejette getUserMedia → « Micro indisponible ». On n'autorise QUE l'audio (jamais la caméra/géoloc/etc.) ET
+ * seulement depuis l'origine de PREMIÈRE PARTIE (app://oryon en prod, le serveur Vite en dev) — une iframe
+ * tierce ou une redirection ne peut pas réclamer le micro.
  */
 function registerMediaPermissions(): void {
   const ALLOWED = new Set(['media', 'audioCapture'])
-  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(ALLOWED.has(permission)))
-  session.defaultSession.setPermissionCheckHandler((_wc, permission) => ALLOWED.has(permission))
+  // URL.origin renvoie "null" pour le schéma custom app:// (non standard côté Node, même déclaré privilégié
+  // pour Chromium) → on reconstruit l'origine en protocole+hôte pour une comparaison fiable dev ET prod.
+  const originOf = (s: string): string => { const u = new URL(s); return `${u.protocol}//${u.host}` }
+  const allowedOrigin = isDev && process.env['ELECTRON_RENDERER_URL'] ? originOf(process.env['ELECTRON_RENDERER_URL']) : 'app://oryon'
+  const isFirstParty = (urlOrOrigin?: string | null): boolean => {
+    if (!urlOrOrigin) return false
+    try { return originOf(urlOrOrigin) === allowedOrigin } catch { return false }
+  }
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb, details) =>
+    cb(ALLOWED.has(permission) && isFirstParty(details.requestingUrl)),
+  )
+  session.defaultSession.setPermissionCheckHandler((_wc, permission, requestingOrigin) =>
+    ALLOWED.has(permission) && isFirstParty(requestingOrigin),
+  )
 }
 
-/** Hotkeys globales de dictée (toggle) et de command mode → notifient le renderer. Défauts configurables. */
-function registerVoiceHotkey(): void {
+// État module : accélérateurs réellement enregistrés (pour ré-enregistrement à chaud) et horodatage de
+// coalescence — module-scoped pour survivre à un ré-enregistrement (sinon le debounce se réarmerait à zéro).
+let registeredAccels: string[] = []
+let lastToggle = 0
+
+/**
+ * Hotkeys globales de dictée (toggle) et de command mode → notifient le renderer. Défauts configurables.
+ * RE-RUNNABLE : libère d'abord les accélérateurs précédemment posés par CETTE fonction, puis ré-enregistre à
+ * partir des réglages COURANTS — appelable à chaud (cf. ipcMain 'voice:reregisterHotkeys') sans redémarrage.
+ * globalShortcut.register renvoie false (SANS throw) si l'accélérateur est déjà pris : on le détecte et on
+ * notifie le renderer (voice:hotkeyConflict) au lieu d'avaler l'échec en silence. Le try/catch couvre, lui,
+ * le cas de l'accélérateur MALFORMÉ (qui, lui, throw).
+ */
+export function registerVoiceHotkey(): void {
+  // Libère uniquement ce que CETTE fonction avait posé (surtout pas unregisterAll, qui tuerait d'autres hotkeys).
+  for (const accel of registeredAccels) {
+    try { globalShortcut.unregister(accel) } catch { /* ignore */ }
+  }
+  registeredAccels = []
+
   const broadcast = (channel: string): void => {
     for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send(channel)
   }
@@ -251,7 +314,6 @@ function registerVoiceHotkey(): void {
   const commandAccel = appSetting('voice.hotkey.command') || 'CommandOrControl+Shift+.'
   // Coalescence leading-edge : deux voice:toggle rapprochés (hotkey + widget, ou rebond) ne doivent pas
   // démarrer-puis-arrêter aussitôt une capture.
-  let lastToggle = 0
   const sendToggle = (): void => {
     const now = Date.now()
     if (now - lastToggle < 250) return
@@ -259,12 +321,26 @@ function registerVoiceHotkey(): void {
     broadcast('voice:toggle')
   }
   try {
-    globalShortcut.register(toggleAccel, sendToggle)
+    const okToggle = globalShortcut.register(toggleAccel, sendToggle)
+    if (!okToggle || !globalShortcut.isRegistered(toggleAccel)) {
+      console.warn('Voice hotkey conflict:', toggleAccel)
+      BrowserWindow.getAllWindows()[0]?.webContents.send('voice:hotkeyConflict', { accel: toggleAccel, mode: 'toggle' })
+    } else {
+      registeredAccels.push(toggleAccel)
+    }
   } catch (e) {
     console.error('[voice] enregistrement hotkey dictée échoué :', (e as Error).message)
   }
   try {
-    if (commandAccel && commandAccel !== toggleAccel) globalShortcut.register(commandAccel, () => broadcast('voice:command-key'))
+    if (commandAccel && commandAccel !== toggleAccel) {
+      const okCommand = globalShortcut.register(commandAccel, () => broadcast('voice:command-key'))
+      if (!okCommand || !globalShortcut.isRegistered(commandAccel)) {
+        console.warn('Voice hotkey conflict:', commandAccel)
+        BrowserWindow.getAllWindows()[0]?.webContents.send('voice:hotkeyConflict', { accel: commandAccel, mode: 'command' })
+      } else {
+        registeredAccels.push(commandAccel)
+      }
+    }
   } catch (e) {
     console.error('[voice] enregistrement hotkey command mode échoué :', (e as Error).message)
   }

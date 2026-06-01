@@ -1,7 +1,7 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { v4 as uuid } from 'uuid'
 import { getDb } from '../db'
-import { createVoiceWidget, destroyVoiceWidget, sendVoiceState } from '../services/voice-widget'
+import { createVoiceWidget, destroyVoiceWidget, sendVoiceState, isVoiceWidget } from '../services/voice-widget'
 import { learnFromEdit } from '../services/orchestrator/learn'
 import { voiceCliOneShot } from '../services/orchestrator/cli'
 import { formatSystem, COMMAND_SYSTEM } from '../services/orchestrator/roles'
@@ -15,6 +15,10 @@ import type {
   VoiceStats,
 } from '../../shared/types'
 
+// Coercition défensive des arguments IPC non fiables (renderer/preload) — pas de lib de schéma.
+const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+const num = (v: unknown): number => (Number.isFinite(v as number) ? Number(v) : 0)
+
 function listReplacements(): VoiceReplacement[] {
   return getDb()
     .prepare('SELECT * FROM voice_replacements ORDER BY created_at DESC')
@@ -23,10 +27,10 @@ function listReplacements(): VoiceReplacement[] {
 
 // Exporté : l'auto-add (learn.ts, INC4) ajoute des remplacements appris (source='auto') côté main.
 export function addReplacement(spoken: string, replacement: string, source = 'manual'): VoiceReplacement {
-  const row: VoiceReplacement = { id: uuid(), spoken, replacement, source, created_at: Date.now() }
+  const row: VoiceReplacement = { id: uuid(), spoken: str(spoken), replacement: str(replacement), source, created_at: Date.now() }
   const db = getDb()
   // upsert sur la clé spoken (index unique NOCASE migration 007) : on remplace l'éventuelle règle existante.
-  db.prepare('DELETE FROM voice_replacements WHERE spoken = ? COLLATE NOCASE').run(spoken)
+  db.prepare('DELETE FROM voice_replacements WHERE spoken = ? COLLATE NOCASE').run(row.spoken)
   db.prepare(
     'INSERT INTO voice_replacements (id, spoken, replacement, source, created_at) VALUES (@id, @spoken, @replacement, @source, @created_at)',
   ).run(row)
@@ -49,10 +53,10 @@ function listVocab(): VoiceVocab[] {
 
 // Exporté : l'auto-add (learn.ts, INC4) ajoute des termes appris (source='auto') côté main.
 export function addVocab(term: string, starred = false, source = 'manual'): VoiceVocab {
-  const row: VoiceVocab = { id: uuid(), term, starred, source, created_at: Date.now() }
+  const row: VoiceVocab = { id: uuid(), term: str(term), starred, source: str(source) || 'manual', created_at: Date.now() }
   const db = getDb()
   // Upsert NOCASE : supprime l'éventuelle variante de casse (index NOCASE migration 009) puis réinsère.
-  db.prepare('DELETE FROM voice_vocab WHERE term = ? COLLATE NOCASE').run(term)
+  db.prepare('DELETE FROM voice_vocab WHERE term = ? COLLATE NOCASE').run(row.term)
   db.prepare(
     'INSERT INTO voice_vocab (id, term, starred, source, created_at) VALUES (@id, @term, @s, @source, @created_at)',
   ).run({ ...row, s: starred ? 1 : 0 })
@@ -63,9 +67,9 @@ function listSnippets(): VoiceSnippet[] {
   return getDb().prepare('SELECT * FROM voice_snippets ORDER BY created_at DESC').all() as VoiceSnippet[]
 }
 function addSnippet(trigger: string, expansion: string): VoiceSnippet {
-  const row: VoiceSnippet = { id: uuid(), trigger, expansion, created_at: Date.now() }
+  const row: VoiceSnippet = { id: uuid(), trigger: str(trigger), expansion: str(expansion), created_at: Date.now() }
   const db = getDb()
-  db.prepare('DELETE FROM voice_snippets WHERE trigger = ? COLLATE NOCASE').run(trigger)
+  db.prepare('DELETE FROM voice_snippets WHERE trigger = ? COLLATE NOCASE').run(row.trigger)
   db.prepare(
     'INSERT INTO voice_snippets (id, trigger, expansion, created_at) VALUES (@id, @trigger, @expansion, @created_at)',
   ).run(row)
@@ -120,14 +124,24 @@ export function registerVoiceIpc(): void {
   ipcMain.handle(
     'voice:addHistory',
     (_e, item: { text: string; durationMs: number; wordCount: number; source: string }): void => {
-      getDb()
-        .prepare(
-          'INSERT INTO voice_history (id, text, duration_ms, word_count, source, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-        )
-        .run(uuid(), item.text, item.durationMs, item.wordCount, item.source, Date.now())
+      if (!item || typeof item.text !== 'string') return
+      const db = getDb()
+      db.prepare(
+        'INSERT INTO voice_history (id, text, duration_ms, word_count, source, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run(uuid(), str(item.text), num(item.durationMs), num(item.wordCount), str(item.source) || 'unknown', Date.now())
+      // Borne de rétention : ne conserve que les 2000 dictées les plus récentes (pas de migration).
+      db.prepare(
+        'DELETE FROM voice_history WHERE id NOT IN (SELECT id FROM voice_history ORDER BY created_at DESC LIMIT 2000)',
+      ).run()
     },
   )
   ipcMain.handle('voice:listHistory', (_e, limit?: number): VoiceHistoryItem[] => listHistory(limit))
+  // Privacy : efface tout l'historique de dictée et le journal de corrections (câblage UI ultérieur).
+  ipcMain.handle('voice:clearHistory', (): void => {
+    const db = getDb()
+    db.prepare('DELETE FROM voice_history').run()
+    db.prepare('DELETE FROM voice_corrections_log').run()
+  })
   ipcMain.handle('voice:listVocab', (): VoiceVocab[] => listVocab())
   ipcMain.handle('voice:addVocab', (_e, term: string, starred?: boolean, source?: string): VoiceVocab =>
     addVocab(term, starred, source),
@@ -160,9 +174,10 @@ export function registerVoiceIpc(): void {
     getDb().prepare('DELETE FROM voice_vocab WHERE id = ?').run(id)
   })
 
-  // Widget → toggle : rediffuse à toutes les fenêtres (la principale, via useVoice, démarre/arrête).
+  // Widget → toggle : rediffuse à toutes les fenêtres SAUF le widget (qui ne doit jamais déclencher d'enregistrement).
   ipcMain.on('voice:requestToggle', () => {
-    for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send('voice:toggle')
+    for (const w of BrowserWindow.getAllWindows())
+      if (!w.isDestroyed() && !isVoiceWidget(w)) w.webContents.send('voice:toggle')
   })
   // Fenêtre principale → état courant → widget.
   ipcMain.on('voice:stateChanged', (_e, state: VoiceState) => sendVoiceState(state))
