@@ -5,6 +5,7 @@ import chokidar from 'chokidar'
 import { addDataObserver } from './pty-manager'
 import { getDb } from '../db'
 import { stripAnsi } from './orchestrator/mailbox'
+import { drainPendingMerges } from './orchestrator/merge-back'
 import {
   agentMailbox,
   setTaskStatus,
@@ -119,7 +120,11 @@ export function initMcpExport(): void {
     }
   }
   safeMeta()
-  setInterval(safeMeta, 2000)
+  // Tick 2s : sync de l'état + rejeu des merges reportés (F7) dès que le tronc principal redevient propre.
+  setInterval(() => {
+    safeMeta()
+    void drainPendingMerges()
+  }, 2000)
 
   addDataObserver((terminalId, data) => {
     buffers.set(terminalId, ((buffers.get(terminalId) ?? '') + stripAnsi(data)).slice(-MAX_PER_TERM))

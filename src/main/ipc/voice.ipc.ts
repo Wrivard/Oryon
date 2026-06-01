@@ -50,12 +50,12 @@ function listVocab(): VoiceVocab[] {
 // Exporté : l'auto-add (learn.ts, INC4) ajoute des termes appris (source='auto') côté main.
 export function addVocab(term: string, starred = false, source = 'manual'): VoiceVocab {
   const row: VoiceVocab = { id: uuid(), term, starred, source, created_at: Date.now() }
-  getDb()
-    .prepare(
-      `INSERT INTO voice_vocab (id, term, starred, source, created_at) VALUES (@id, @term, @s, @source, @created_at)
-       ON CONFLICT(term) DO UPDATE SET starred = @s, source = @source`,
-    )
-    .run({ ...row, s: starred ? 1 : 0 })
+  const db = getDb()
+  // Upsert NOCASE : supprime l'éventuelle variante de casse (index NOCASE migration 009) puis réinsère.
+  db.prepare('DELETE FROM voice_vocab WHERE term = ? COLLATE NOCASE').run(term)
+  db.prepare(
+    'INSERT INTO voice_vocab (id, term, starred, source, created_at) VALUES (@id, @term, @s, @source, @created_at)',
+  ).run({ ...row, s: starred ? 1 : 0 })
   return row
 }
 

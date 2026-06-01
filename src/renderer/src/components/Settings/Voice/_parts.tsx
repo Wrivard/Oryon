@@ -57,6 +57,8 @@ export function Toggle({
       onClick={onClick}
       disabled={disabled}
       title={title}
+      role="switch"
+      aria-checked={on}
       className={cn(
         'h-3.5 w-6 shrink-0 rounded-full p-0.5 transition-colors',
         on ? 'bg-accent' : 'bg-bg-elevated',
@@ -110,15 +112,12 @@ export function StatCard({
   accent?: boolean
   onClick?: () => void
 }) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={!onClick}
-      className={cn(
-        'rounded-lg border border-border bg-bg-inset p-4 text-left',
-        onClick && 'transition-colors hover:border-border-strong',
-      )}
-    >
+  const cls = cn(
+    'rounded-lg border border-border bg-bg-inset p-4 text-left',
+    onClick && 'transition-colors hover:border-border-strong',
+  )
+  const content = (
+    <>
       <div className="flex items-center gap-2 text-fg-subtle">
         <Icon size={13} />
         <span className="text-[10px] uppercase tracking-wide">{label}</span>
@@ -127,6 +126,13 @@ export function StatCard({
         {value}
       </div>
       {sub && <div className="mt-0.5 text-[11px] text-fg-subtle">{sub}</div>}
+    </>
+  )
+  return onClick ? (
+    <button onClick={onClick} className={cls}>
+      {content}
     </button>
+  ) : (
+    <div className={cls}>{content}</div>
   )
 }

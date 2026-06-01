@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { startRecording, transcribe, type Recorder } from '../lib/voice'
+import { startRecording, transcribe, resolveModelId, type Recorder } from '../lib/voice'
 import { tryAcquire, release } from '../lib/voice-lock'
 import { toast } from '../store/toasts'
 
@@ -23,6 +23,7 @@ export function useVoiceCommand(target: CommandTarget) {
   const [slow, setSlow] = useState(false)
   const recRef = useRef<Recorder | null>(null)
   const startingRef = useRef(false) // garde synchrone anti double-start (cf. useVoice)
+  const runIdRef = useRef(0) // token : invalide un résultat command en vol après ESC/cancel (rel-2)
   const selRef = useRef<{ value: string; start: number; end: number } | null>(null)
   const targetRef = useRef(target)
   targetRef.current = target
@@ -55,6 +56,7 @@ export function useVoiceCommand(target: CommandTarget) {
   }, [])
 
   const cancel = useCallback(() => {
+    runIdRef.current++ // tout résultat en vol devient stale → non appliqué (rel-2)
     recRef.current?.cancel()
     recRef.current = null
     release('command')
@@ -65,18 +67,21 @@ export function useVoiceCommand(target: CommandTarget) {
     const rec = recRef.current
     if (!rec) return
     recRef.current = null
+    const runId = ++runIdRef.current // token de ce run
     setState('processing')
     const slowTimer = setTimeout(() => setSlow(true), 3000)
     try {
       const pcm = await rec.stop()
       const settings = await window.bridge.settings.getApp()
-      const model = 'Xenova/whisper-' + (settings['voice.model'] || 'small')
+      const model = resolveModelId(settings['voice.model'] || 'small')
       const language = settings['voice.language'] ?? 'french'
       const command = await transcribe(pcm, { model, language })
+      if (runId !== runIdRef.current) return // annulé (ESC) pendant la transcription
       const sel = selRef.current
       if (command.trim() && sel) {
         const selText = sel.value.slice(sel.start, sel.end)
         const result = await window.bridge.voice.command(command, selText)
+        if (runId !== runIdRef.current) return // annulé pendant l'appel command (ESC) → ne PAS écraser la sélection (rel-2)
         if (result) targetRef.current.applyResult(result, sel)
         else if ((settings['voice.privacy'] ?? '0') === '1') toast.info('Command mode désactivé en mode tout-local.')
       }

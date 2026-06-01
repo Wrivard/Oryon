@@ -1,8 +1,8 @@
 import { ipcMain } from 'electron'
 import type { CreateTerminalInput } from '../../shared/types'
 import { createTerminal, writeTerminal, resizeTerminal, killTerminal } from '../services/pty-manager'
-import { ensureClaudeReady, normalizeClaudeAutostart } from '../services/claude-launcher'
-import { buildProjectMcpConfigForPath, appSetting } from './settings.ipc'
+import { ensureClaudeReady, normalizeClaudeAutostart, enforceAgentSpawn } from '../services/claude-launcher'
+import { buildProjectMcpConfigForPath } from './settings.ipc'
 
 export function registerTerminalsIpc() {
   // Spawn d'un PTY ; le flux d'octets est poussé sur des canaux dédiés par id.
@@ -21,9 +21,9 @@ export function registerTerminalsIpc() {
       const mcpAnchor = opts.mainProjectPath ?? opts.cwd
       const mcpFile = buildProjectMcpConfigForPath(mcpAnchor)
       if (mcpFile && !/--mcp-config/.test(autostart)) autostart += ` --mcp-config '${mcpFile.replace(/'/g, "''")}'`
-      // Modèle agent par défaut (réglage app-global), si défini et non déjà présent.
-      const model = appSetting('agentModel')
-      if (model && !/--model\b/.test(autostart)) autostart += ` --model ${model}`
+      // Enforcement au spawn : modèle le plus puissant pour TOUS les agents (non-contournable, F1) +
+      // identité worker durable injectée à tout claude sans --append-system-prompt (F2/F3/F5/F6).
+      autostart = enforceAgentSpawn(autostart)
     }
     createTerminal({
       id: opts.id,

@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron'
 import { v4 as uuid } from 'uuid'
 import { getDb } from '../db'
-import { buildClaudeCommand } from '../services/claude-launcher'
+import { buildClaudeCommand, AGENT_MODEL } from '../services/claude-launcher'
 import { ORCHESTRATOR_TERMINAL_SYSTEM } from '../services/orchestrator/roles'
 import { killTerminal } from '../services/pty-manager'
 import { isGitRepo, ensureWorktree, pruneMergedWorktrees } from '../services/worktrees'
@@ -40,7 +40,7 @@ function buildOrchestratorTerminal(workspaceId: string, projectPath: string): Te
     cwd: projectPath,
     // `max` = plus haut niveau d'effort accepté par le CLI claude (low|medium|high|max).
     autostart_cmd: buildClaudeCommand({
-      model: 'opus',
+      model: AGENT_MODEL,
       effort: 'max',
       appendSystemPrompt: ORCHESTRATOR_TERMINAL_SYSTEM,
     }),

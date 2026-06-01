@@ -5,9 +5,9 @@ import logoUrl from './assets/app-logo.png'
 import WorkspaceRail from './components/WorkspaceRail'
 import TerminalGrid from './components/TerminalGrid'
 import RightPanel from './components/RightPanel'
-import { VoiceProvider } from './components/Voice/VoiceProvider'
 import { IconButton } from './components/ui/IconButton'
 import { SettingsModal } from './components/Settings/SettingsModal'
+import { VoiceProvider } from './components/Voice/VoiceProvider'
 import { Toaster } from './components/ui/Toaster'
 import { UpdateToast } from './components/Update/UpdateToast'
 import { useAppStore } from './store'
@@ -97,7 +97,7 @@ function AppContent() {
   }
 
   return (
-    <div className="flex h-full flex-col bg-bg text-fg overflow-hidden">
+    <div className="flex h-full flex-col bg-bg text-fg">
       {/* Top bar */}
       <motion.header
         initial={{ opacity: 0 }}

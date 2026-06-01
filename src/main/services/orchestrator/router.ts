@@ -3,7 +3,7 @@ import { getDb } from '../../db'
 import { addDataObserver, addExitObserver, writeTerminal, hasLiveTerminal } from '../pty-manager'
 import { recordMailbox } from './mailbox'
 import { getOrCreateProjectId, createTask, listTasks, getTask, updateTask } from './task-store'
-import { isGitRepo, worktreeDir, branchFor, refreshWorktreeToHead } from '../worktrees'
+import { isGitRepo, worktreeDir, branchFor, refreshWorktreeToHead, branchEvidence } from '../worktrees'
 import { enqueueMergeBack } from './merge-back'
 import type { OrchestratorEvent, TaskStatus, Workspace } from '../../../shared/types'
 
@@ -182,10 +182,11 @@ export function agentAssignTask(
     [
       `[task ${task.id}]`,
       instructions,
-      'Work in your current git worktree (a full mirror of the repo).',
-      'Use the Oryon Memory MCP tools (search_memories FIRST to reuse context, append_memory to record key decisions).',
-      'Make surgical changes only; respect repo conventions; never run destructive commands.',
-      'When the task is GENUINELY finished, call the MCP tool report_task with status "done" (or "blocked" if you truly cannot proceed) and a real one-line summary of what you changed.',
+      'You are a FOCUSED IMPLEMENTATION WORKER, not an orchestrator: do ONLY the task above — never orchestrate, never ask the user what to do, never wait for further direction.',
+      'Work EXCLUSIVELY inside your current git worktree (a full mirror of the repo). NEVER `cd` to another directory and never edit files outside this worktree — the main project tree and the other agents’ worktrees are OFF-LIMITS.',
+      'Touch only the files the task names; make surgical changes; respect repo conventions; never run destructive commands.',
+      'Do NOT read shared/session memory (it is orchestrator context, not your task). Use search_memories ONLY if the task explicitly asks you to.',
+      'When the task is GENUINELY finished: commit your changes to your branch, confirm with `git status`/`git diff` that the work is actually present, then call report_task with status "done" (or "blocked" if you truly cannot proceed) and a truthful one-line summary. NEVER report "done" unless the committed diff really contains the changes.',
     ].join(' '),
   )
   pasteLine(id, prompt)
@@ -213,6 +214,35 @@ export function agentReportTask(
     .reverse()
     .find((t) => t.assigned_terminal_id === termId && t.status === 'in-progress')
   const blocked = status.toLowerCase() === 'blocked'
+
+  // PORTE À PREUVES (F4/F8) : on lit l'état git RÉEL de la branche du worker, jamais sa seule prose.
+  const ws = getWorkspace(workspaceId)
+  const ev = ws && fromAgent && isGitRepo(ws.project_path) ? branchEvidence(ws.project_path, fromAgent) : null
+
+  // Un "done" sur une branche VIDE (0 commit + worktree propre = aucun travail) est REJETÉ : task gardée
+  // in-progress, worker renvoyé committer, et orchestrateur prévenu (jamais d'acceptation muette du rapport).
+  if (!blocked && task && fromAgent && ev && ev.empty) {
+    if (termId && hasLiveTerminal(termId)) {
+      pasteLine(
+        termId,
+        oneLinePrompt(
+          `[oryon evidence-gate] Rapport "done" REJETÉ : ta branche ${branchFor(fromAgent)} est à 0 commit d'avance et ton worktree est propre — AUCUN travail trouvé. Si tu as fait le travail, COMMITE-le dans CE worktree (jamais ailleurs) puis re-appelle report_task ; sinon report_task status:"blocked" avec la raison.`,
+        ),
+      )
+    }
+    emitTasks(workspaceId)
+    const orchE = orchestratorTerminalId(workspaceId)
+    if (orchE && hasLiveTerminal(orchE)) {
+      pasteLine(
+        orchE,
+        oneLinePrompt(
+          `[oryon] ⚠ ${fromAgent} a rapporté "done" mais sa branche est VIDE (0 commit, worktree propre)${ev.mainDirty ? ' ET le tronc principal est SALE (contamination probable — il a peut-être édité MAIN au lieu de son worktree)' : ''}. Rapport rejeté, worker invité à committer. Inspecte (get_terminal_output ${fromAgent}) ou réassigne.`,
+        ),
+      )
+    }
+    return { ok: true, taskId: task.id }
+  }
+
   if (task) updateTask(task.id, { status: blocked ? 'blocked' : 'in-review' }) // garde assigned_terminal_id → merge à l'approbation
   if (termId) terminalBusy.set(termId, null)
   broadcast({
@@ -221,13 +251,18 @@ export function agentReportTask(
     message: recordMailbox(workspaceId, fromAgent, `${status}${summary ? ' — ' + summary : ''}`),
   })
   emitTasks(workspaceId)
-  // Réveille l'orchestrateur.
+  // Réveille l'orchestrateur AVEC l'évidence git machine à côté de la prose du worker (F4/F8) + alerte contamination (F3).
   const orch = orchestratorTerminalId(workspaceId)
   if (orch && hasLiveTerminal(orch)) {
     const wt = fromAgent ? ` Inspecte: git -C .oryon/agents/${fromAgent.toLowerCase()} diff.` : ''
     const tid = task ? ` [taskId=${task.id}]` : ''
+    let evidence = ''
+    if (ev) {
+      evidence = ` [preuve: ${ev.ahead} commit(s), ${ev.filesChanged.length} fichier(s)${ev.worktreeDirty ? ', worktree non commité' : ''}${ev.empty ? ' ⚠ BRANCHE VIDE' : ''}]`
+      if (ev.mainDirty) evidence += ' ⚠ TRONC PRINCIPAL SALE — contamination possible (un worker a peut-être édité MAIN)'
+    }
     const wake = oneLinePrompt(
-      `[oryon] ${fromAgent ?? 'un worker'} a terminé "${task?.title ?? ''}" (${status})${tid}: ${summary}.${wt} Puis approve_task si OK, sinon réassigne avec un feedback précis.`,
+      `[oryon] ${fromAgent ?? 'un worker'} a terminé "${task?.title ?? ''}" (${status})${tid}: ${summary}.${evidence}${wt} Vérifie le diff puis approve_task si OK, sinon réassigne avec un feedback précis.`,
     )
     pasteLine(orch, wake)
   }
@@ -242,25 +277,44 @@ export function agentReportTask(
 export function agentApproveTask(taskId: string): { ok: boolean; message: string } {
   const t = getTask(taskId)
   if (!t) return { ok: false, message: `task ${taskId} introuvable` }
-  updateTask(taskId, { status: 'complete' })
   const wsId = t.workspace_id
   if (wsId) {
     const ws = getWorkspace(wsId)
     if (ws && isGitRepo(ws.project_path) && t.assigned_terminal_id) {
       const agent = terminalName(t.assigned_terminal_id)
+      // État HONNÊTE (F7/F8) : on NE passe PAS 'complete' tout de suite — uniquement quand le merge ATTERRIT
+      // (onDone). Sur conflit/defer, la task RETOURNE en 'in-review' pour que l'orchestrateur la reprenne
+      // (le message système onConflict explique la raison). Évite l'illusion 'complete' sur branche non mergée.
       void enqueueMergeBack({
         mainPath: ws.project_path,
         worktree: worktreeDir(ws.project_path, agent),
         branch: branchFor(agent),
         agent,
         task: t.title ?? 'task',
-        onDone: (m) => agentMailbox(wsId, 'système', m),
-        onConflict: (m) => agentMailbox(wsId, 'système', m),
+        onDone: (m) => {
+          updateTask(taskId, { status: 'complete' })
+          emitTasks(wsId)
+          agentMailbox(wsId, 'système', m)
+        },
+        onConflict: (m) => {
+          updateTask(taskId, { status: 'in-review' })
+          emitTasks(wsId)
+          agentMailbox(wsId, 'système', m)
+        },
       })
+      emitTasks(wsId)
+      return {
+        ok: true,
+        message: `task « ${t.title ?? taskId} » approuvée → merge-back enfilé (statut 'complete' seulement après merge réussi)`,
+      }
     }
+    // Pas de git / pas de worktree → complétion directe.
+    updateTask(taskId, { status: 'complete' })
     emitTasks(wsId)
+  } else {
+    updateTask(taskId, { status: 'complete' })
   }
-  return { ok: true, message: `task « ${t.title ?? taskId} » approuvée → merge-back enfilé` }
+  return { ok: true, message: `task « ${t.title ?? taskId} » approuvée` }
 }
 
 /**

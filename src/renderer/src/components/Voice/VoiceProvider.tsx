@@ -1,84 +1,81 @@
-import { useCallback, useEffect, useRef, useState, createContext, useContext } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useVoice } from '../../hooks/useVoice'
 import { useVoiceCommand, type CommandTarget } from '../../hooks/useVoiceCommand'
-import { warmModel } from '../../lib/voice'
 import { useAppStore } from '../../store'
-import { toast } from '../../store/toasts'
+import type { VoiceState } from '@shared/types'
 
-interface VoiceProviderProps {
-  children: React.ReactNode
+// Monte le pipeline Voice UNE SEULE fois au niveau racine (le preload utilise removeAllListeners → un seul
+// abonné, sinon double-toggle). Route la dictée vers la cible réglée (voice.target) : 'orchestrator' = barre
+// de dictée (review + apprentissage ✨) ; 'terminal' = PTY du terminal focus. Expose toggle/state + la mic.
+
+type VoiceTarget = 'orchestrator' | 'terminal'
+
+/** API qu'enregistre la barre de dictée orchestrateur pour recevoir le texte et servir de cible command-mode. */
+export interface OrchestratorBarApi {
+  setText: (text: string) => void
+  commandTarget: CommandTarget
 }
 
-let voiceProviderMounted = false
-
 interface VoiceContextValue {
-  registerOrchestratorTarget: (target: CommandTarget | null) => void
+  registerOrchestratorBar: (api: OrchestratorBarApi | null) => void
+  toggle: () => void
+  voiceState: VoiceState
 }
 
 const VoiceContext = createContext<VoiceContextValue>({
-  registerOrchestratorTarget: () => {},
+  registerOrchestratorBar: () => {},
+  toggle: () => {},
+  voiceState: 'idle',
 })
 
-export function VoiceProvider({ children }: VoiceProviderProps) {
-  const [orchestratorTarget, setOrchestratorTarget] = useState<CommandTarget | null>(null)
-  const [voiceTarget, setVoiceTarget] = useState<'orchestrator' | 'terminal'>('orchestrator')
-  const orchestratorTargetRef = useRef<CommandTarget | null>(null)
-  const voiceTargetRef = useRef<'orchestrator' | 'terminal'>('orchestrator')
-  orchestratorTargetRef.current = orchestratorTarget
-  voiceTargetRef.current = voiceTarget
+export const useVoiceContext = (): VoiceContextValue => useContext(VoiceContext)
 
-  const registerOrchestratorTarget = useCallback((target: CommandTarget | null) => {
-    setOrchestratorTarget(target)
+export function VoiceProvider({ children }: { children: ReactNode }): JSX.Element {
+  const barRef = useRef<OrchestratorBarApi | null>(null)
+  const [target, setTarget] = useState<VoiceTarget>('orchestrator')
+  const targetRef = useRef<VoiceTarget>(target)
+  targetRef.current = target
+
+  // Cible d'injection (réglage), relue à chaque ouverture de réglages via l'event focus de la fenêtre.
+  useEffect(() => {
+    const load = () =>
+      void window.bridge.settings.getApp().then((s) => setTarget((s['voice.target'] as VoiceTarget) ?? 'orchestrator'))
+    load()
+    window.addEventListener('focus', load)
+    return () => window.removeEventListener('focus', load)
   }, [])
 
-  useEffect(() => {
-    window.bridge.settings.getApp().then((settings) => {
-      const target = (settings['voice.target'] ?? 'orchestrator') as 'orchestrator' | 'terminal'
-      setVoiceTarget(target)
-    })
+  const registerOrchestratorBar = useCallback((api: OrchestratorBarApi | null) => {
+    barRef.current = api
   }, [])
 
-  const handleVoiceText = useCallback(
-    (text: string) => {
-      const target = voiceTargetRef.current
-      if (target === 'orchestrator' && orchestratorTargetRef.current) {
-        const sel = orchestratorTargetRef.current.getSelection()
-        if (sel) {
-          orchestratorTargetRef.current.applyResult(text, sel)
-        }
-      } else if (target === 'terminal') {
-        const focusedTermId = useAppStore.getState().focusedTerminalId
-        if (focusedTermId) {
-          window.bridge.terminals.write(focusedTermId, text)
-        }
-      }
-    },
-    [],
-  )
-
-  useVoice(handleVoiceText, voiceTarget)
-  useVoiceCommand(voiceTarget === 'orchestrator' ? (orchestratorTargetRef.current ?? { getSelection: () => null, applyResult: () => {} }) : { getSelection: () => null, applyResult: () => {} })
-
-  useEffect(() => {
-    if (voiceProviderMounted) {
-      console.warn('VoiceProvider already mounted — mount only once at top level')
+  // Routage de la dictée. orchestrator → barre (l'utilisateur relit/édite puis envoie). terminal → PTY focus.
+  const handleText = useCallback((text: string) => {
+    if (targetRef.current === 'orchestrator' && barRef.current) {
+      barRef.current.setText(text)
       return
     }
-    voiceProviderMounted = true
-    warmModel('Xenova/whisper-small', 'q8', (p: { status: string; progress?: number; file?: string }) => {
-      if (p.status === 'loading model') toast.info('Chargement modèle vocal…', { title: 'Dictée' })
-    }).catch(() => {
-      /* error is logged elsewhere */
-    })
+    const fid = useAppStore.getState().focusedTerminalId
+    if (fid) window.bridge.terminals.write(fid, text)
+    else if (barRef.current) barRef.current.setText(text) // repli : aucun terminal focus → barre orchestrateur
   }, [])
 
-  return (
-    <VoiceContext.Provider value={{ registerOrchestratorTarget }}>
-      {children}
-    </VoiceContext.Provider>
-  )
-}
+  const { state, toggle } = useVoice(handleText, target)
 
-export function useVoiceContext() {
-  return useContext(VoiceContext)
+  // Command mode : la cible est la barre orchestrateur (sélection/insertion) ; no-op gracieux si absente.
+  const commandTarget = useMemo<CommandTarget>(
+    () => ({
+      getSelection: () => barRef.current?.commandTarget.getSelection() ?? null,
+      applyResult: (result, sel) => barRef.current?.commandTarget.applyResult(result, sel),
+    }),
+    [],
+  )
+  useVoiceCommand(commandTarget)
+
+  const value = useMemo<VoiceContextValue>(
+    () => ({ registerOrchestratorBar, toggle, voiceState: state }),
+    [registerOrchestratorBar, toggle, state],
+  )
+
+  return <VoiceContext.Provider value={value}>{children}</VoiceContext.Provider>
 }
