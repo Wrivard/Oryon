@@ -91,15 +91,24 @@ function computeStats(): VoiceStats {
     .prepare("SELECT COUNT(*) AS c FROM voice_vocab WHERE source = 'auto'")
     .pluck()
     .get() as number
-  // « Mots les plus corrigés » : injected = formes mal transcrites (mon schéma migration 007). Top 5.
+  // « Mots les plus corrigés » : `injected` agrège par ' | ' TOUTES les formes mal transcrites d'UNE
+  // édition (cf. learn.ts). On éclate donc en formes avant de compter, sinon on dénombre des ensembles
+  // d'édition et non des mots. Top 5.
   let mostCorrected: { word: string; count: number }[] = []
   try {
-    mostCorrected = db
-      .prepare(
-        `SELECT injected AS word, COUNT(*) AS count FROM voice_corrections_log
-         WHERE injected IS NOT NULL AND TRIM(injected) != '' GROUP BY injected ORDER BY count DESC LIMIT 5`,
-      )
-      .all() as { word: string; count: number }[]
+    const rows = db
+      .prepare(`SELECT injected FROM voice_corrections_log WHERE injected IS NOT NULL AND TRIM(injected) != ''`)
+      .all() as { injected: string }[]
+    const counts = new Map<string, number>()
+    for (const r of rows)
+      for (const part of r.injected.split(' | ')) {
+        const word = part.trim()
+        if (word) counts.set(word, (counts.get(word) ?? 0) + 1)
+      }
+    mostCorrected = [...counts.entries()]
+      .map(([word, count]) => ({ word, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5)
   } catch {
     mostCorrected = []
   }
