@@ -1,18 +1,20 @@
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { Settings2, BookOpenText, Keyboard, BarChart3 } from 'lucide-react'
+import { Settings2, BookOpenText, Keyboard, BarChart3, History } from 'lucide-react'
 import { cn } from '../../../lib/cn'
 import { transitionFast } from '../../../lib/motion'
 import { VoiceGeneral } from './VoiceGeneral'
 import { VoiceDictionaries } from './VoiceDictionaries'
 import { VoiceHotkeys } from './VoiceHotkeys'
 import { VoiceStats } from './VoiceStats'
+import { VoiceHistory } from './VoiceHistory'
 
 const SUBS = [
   { id: 'general', label: 'Général', icon: Settings2 },
   { id: 'dict', label: 'Dictionnaires', icon: BookOpenText },
   { id: 'hotkeys', label: 'Raccourcis', icon: Keyboard },
   { id: 'stats', label: 'Stats', icon: BarChart3 },
+  { id: 'history', label: 'Historique', icon: History },
 ] as const
 type VoiceSub = (typeof SUBS)[number]['id']
 
@@ -58,6 +60,7 @@ export function VoiceSettings() {
             {sub === 'dict' && <VoiceDictionaries />}
             {sub === 'hotkeys' && <VoiceHotkeys />}
             {sub === 'stats' && <VoiceStats onGoToDict={() => setSub('dict')} />}
+            {sub === 'history' && <VoiceHistory />}
           </motion.div>
         </AnimatePresence>
       </div>
