@@ -55,6 +55,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
   const [state, setState] = useState<VoiceState>('idle')
   const recRef = useRef<Recorder | null>(null)
   const startingRef = useRef(false) // garde synchrone anti double-start pendant l'await
+  const processingRef = useRef(false) // transcription en vol (stop()→finally) : signal fiable même quand l'affichage passe à 'downloading' — désambiguïse le 'downloading' de transcription du 'downloading' de préchauffage idle (H1 micro chaud)
   const startedAt = useRef(0)
   const snapRef = useRef<Snapshot | null>(null)
   const dictsRef = useRef<Dicts | null>(null) // dicos préfetchés pendant l'écoute (speed-7)
@@ -161,6 +162,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
     if (!rec) return
     recRef.current = null
     const runId = ++runIdRef.current // capture le token de ce run
+    processingRef.current = true // transcription en vol, même si l'affichage bascule ensuite vers 'downloading'
     setState('processing')
     try {
       const pcm = await rec.stop()
@@ -221,6 +223,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
     } catch (e) {
       toast.error((e as Error).message, { title: 'Transcription échouée' })
     } finally {
+      if (runId === runIdRef.current) processingRef.current = false // seul le run courant efface son flag (un run annulé/dépassé ne stomp pas un run plus récent)
       release('dictation')
       setState('idle')
     }
@@ -231,6 +234,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
   /** Annule la dictée en cours : invalide le run (le résultat en vol ne sera pas injecté) et réinitialise (rel-7). */
   const cancel = useCallback(() => {
     runIdRef.current++ // toute transcription/format en vol devient stale → ignorée
+    processingRef.current = false // plus de transcription en vol → un toggle suivant redémarre (au lieu de re-annuler)
     const rec = recRef.current
     recRef.current = null
     rec?.cancel()
@@ -239,13 +243,16 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
   }, [])
 
   const toggle = useCallback(() => {
-    if (state === 'processing') {
-      cancel() // toggle pendant la transcription = annulation (widget/hotkey n'ont pas le focus DOM pour Échap)
+    if (processingRef.current) {
+      // Transcription en vol → annulation (widget/hotkey n'ont pas le focus DOM pour Échap). processingRef couvre
+      // 'processing' ET le sous-état 'downloading' (DL modèle en cours de transcription) : sinon toggle tomberait
+      // dans start() et relancerait un micro zombie par-dessus la transcription en vol (H1 micro chaud).
+      cancel()
       return
     }
     if (recRef.current) void stop()
     else void start()
-  }, [start, stop, state, cancel])
+  }, [start, stop, cancel])
   const toggleRef = useRef(toggle)
   toggleRef.current = toggle
 
@@ -256,9 +263,10 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
     return () => window.bridge.voice.offToggle()
   }, [])
 
-  // ESC annule pendant l'écoute / la transcription (rel-7).
+  // ESC annule pendant l'écoute / la transcription (rel-7). En 'downloading', on n'attache ESC QUE si une
+  // transcription est en vol (processingRef) : le simple préchauffage idle n'a rien à annuler (H1 micro chaud).
   useEffect(() => {
-    if (state === 'idle' || state === 'downloading') return
+    if (state === 'idle' || (state === 'downloading' && !processingRef.current)) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') cancel()
     }

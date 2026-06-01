@@ -130,27 +130,6 @@ export function VoiceGeneral() {
               <option value="terminal">Terminal (texte brut)</option>
             </select>
           </label>
-          <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Mode</span>
-            <div className={cn('inline-flex gap-1.5', !loaded && 'pointer-events-none opacity-50')}>
-              {[
-                { v: 'toggle', label: 'Toggle (appui = bascule)' },
-                { v: 'ptt', label: 'PTT (maintien = dictée)' },
-              ].map((o) => (
-                <button
-                  key={o.v}
-                  onClick={() => set('voice.mode', o.v)}
-                  disabled={!loaded}
-                  className={cn(
-                    'rounded-md border px-2.5 py-1.5 text-[12px] transition-colors duration-fast',
-                    (s['voice.mode'] ?? 'toggle') === o.v ? 'border-accent bg-accent-soft text-accent' : 'border-border text-fg-muted hover:text-fg',
-                  )}
-                >
-                  {o.label}
-                </button>
-              ))}
-            </div>
-          </label>
         </div>
       </section>
 
@@ -161,7 +140,7 @@ export function VoiceGeneral() {
           <SettingRow
             title="Arrêt auto sur silence"
             sub="Termine la dictée après un court silence."
-            right={<Toggle on={autoStopOn} onClick={() => set('voice.autoStopOnSilence', autoStopOn ? '0' : '1')} disabled={!loaded} />}
+            right={<Toggle on={autoStopOn} onClick={() => set('voice.autoStopOnSilence', autoStopOn ? '0' : '1')} disabled={!loaded} ariaLabel="Arrêt auto sur silence" />}
           />
           <label className={cn('flex flex-col gap-1.5', (!autoStopOn || !loaded) && 'opacity-50')}>
             <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-fg-subtle">
@@ -225,7 +204,7 @@ export function VoiceGeneral() {
         <SettingRow
           title="Widget always-on-top"
           sub="Pastille de dictée par-dessus toutes les fenêtres."
-          right={<Toggle on={(s['voice.showWidget'] ?? '1') !== '0'} onClick={toggleWidget} disabled={!loaded} />}
+          right={<Toggle on={(s['voice.showWidget'] ?? '1') !== '0'} onClick={toggleWidget} disabled={!loaded} ariaLabel="Widget always-on-top" />}
         />
       </section>
 
@@ -235,7 +214,7 @@ export function VoiceGeneral() {
         <SettingRow
           title="Tout local"
           sub="Désactive les 3 appels réseau (apprentissage, smart-formatting, command mode). Tout reste sur l'appareil."
-          right={<Toggle on={privacyOn} onClick={togglePrivacy} disabled={!loaded} />}
+          right={<Toggle on={privacyOn} onClick={togglePrivacy} disabled={!loaded} ariaLabel="Tout local" />}
         />
         <p className={cn('mt-2 text-[11px]', privacyOn ? 'text-accent' : 'text-fg-subtle')}>
           {privacyOn
