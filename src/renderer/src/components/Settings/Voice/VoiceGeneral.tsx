@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Mic, Wand2, PictureInPicture2, ShieldCheck, Zap } from 'lucide-react'
+import { Mic, Wand2, PictureInPicture2, ShieldCheck, Zap, SlidersHorizontal } from 'lucide-react'
 import { cn } from '../../../lib/cn'
+import { toast } from '../../../store/toasts'
 import { SectionHeader, SettingRow, Toggle } from './_parts'
 
 type Fmt = 'none' | 'light' | 'medium' | 'high'
@@ -38,24 +39,51 @@ function Segmented<T extends string>({
 const SELECT_CLS =
   'rounded-md border border-border bg-bg-inset px-2.5 py-1.5 text-[12px] text-fg outline-none focus:border-accent'
 
+/** parse sûr : préserve un 0 légitime, retombe sur `d` si absent/vide/NaN (réglage corrompu). */
+function numOr(v: string | undefined, d: number): number {
+  if (v == null || v === '') return d
+  const n = Number(v)
+  return Number.isFinite(n) ? n : d
+}
+
 export function VoiceGeneral() {
   const [s, setS] = useState<Record<string, string>>({})
+  // `loaded` : false jusqu'à ce que getApp réponde. On désactive les contrôles d'ici là pour qu'aucun
+  // onChange ne parte contre des valeurs par défaut vides (ce qui écraserait les vrais réglages).
+  const [loaded, setLoaded] = useState(false)
   useEffect(() => {
-    void window.bridge.settings.getApp().then(setS)
+    void window.bridge.settings.getApp().then((v) => {
+      setS(v)
+      setLoaded(true)
+    })
   }, [])
 
   const set = async (key: string, v: string) => {
-    await window.bridge.settings.setApp(key, v)
-    setS((prev) => ({ ...prev, [key]: v }))
+    try {
+      await window.bridge.settings.setApp(key, v)
+      setS((prev) => ({ ...prev, [key]: v }))
+    } catch {
+      toast.error("Échec de l'enregistrement.")
+    }
   }
   const toggleWidget = async () => {
     const next = (s['voice.showWidget'] ?? '1') === '0'
-    await window.bridge.settings.setApp('voice.showWidget', next ? '1' : '0')
-    await window.bridge.voice.setWidget(next)
-    setS((prev) => ({ ...prev, 'voice.showWidget': next ? '1' : '0' }))
+    try {
+      await window.bridge.settings.setApp('voice.showWidget', next ? '1' : '0')
+      await window.bridge.voice.setWidget(next)
+      setS((prev) => ({ ...prev, 'voice.showWidget': next ? '1' : '0' }))
+    } catch {
+      toast.error("Échec de l'enregistrement.")
+    }
   }
   const privacyOn = (s['voice.privacy'] ?? '0') === '1'
   const togglePrivacy = () => set('voice.privacy', privacyOn ? '0' : '1')
+
+  // Réglages hot-path (lus par useVoice au snapshot de capture). Encodages alignés sur useVoice.ts :
+  // autoStop = valeur !== '0' (défaut on), silenceMs = ms brut, boostThreshold = flottant 0–1.
+  const autoStopOn = (s['voice.autoStopOnSilence'] ?? '1') !== '0'
+  const silenceMs = numOr(s['voice.silenceMs'], 1400)
+  const boostThreshold = numOr(s['voice.boostThreshold'], 0.82)
 
   return (
     <div className="space-y-8">
@@ -65,7 +93,7 @@ export function VoiceGeneral() {
         <div className="grid grid-cols-2 gap-3">
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Modèle Whisper</span>
-            <select value={s['voice.model'] || 'small'} onChange={(e) => set('voice.model', e.target.value)} className={SELECT_CLS}>
+            <select value={s['voice.model'] || 'small'} onChange={(e) => set('voice.model', e.target.value)} disabled={!loaded} className={SELECT_CLS}>
               <option value="tiny">Tiny (très rapide)</option>
               <option value="base">Base</option>
               <option value="small">Small (recommandé QC)</option>
@@ -79,6 +107,7 @@ export function VoiceGeneral() {
             <select
               value={s['voice.language'] ?? 'french'}
               onChange={(e) => set('voice.language', e.target.value)}
+              disabled={!loaded}
               className={SELECT_CLS}
             >
               <option value="french">Français (Québec)</option>
@@ -96,14 +125,14 @@ export function VoiceGeneral() {
         <div className="space-y-4">
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Destination</span>
-            <select value={s['voice.target'] ?? 'orchestrator'} onChange={(e) => set('voice.target', e.target.value)} className={SELECT_CLS}>
+            <select value={s['voice.target'] ?? 'orchestrator'} onChange={(e) => set('voice.target', e.target.value)} disabled={!loaded} className={SELECT_CLS}>
               <option value="orchestrator">Orchestrateur (traitement IA)</option>
               <option value="terminal">Terminal (texte brut)</option>
             </select>
           </label>
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Mode</span>
-            <div className="inline-flex gap-1.5">
+            <div className={cn('inline-flex gap-1.5', !loaded && 'pointer-events-none opacity-50')}>
               {[
                 { v: 'toggle', label: 'Toggle (appui = bascule)' },
                 { v: 'ptt', label: 'PTT (maintien = dictée)' },
@@ -111,6 +140,7 @@ export function VoiceGeneral() {
                 <button
                   key={o.v}
                   onClick={() => set('voice.mode', o.v)}
+                  disabled={!loaded}
                   className={cn(
                     'rounded-md border px-2.5 py-1.5 text-[12px] transition-colors duration-fast',
                     (s['voice.mode'] ?? 'toggle') === o.v ? 'border-accent bg-accent-soft text-accent' : 'border-border text-fg-muted hover:text-fg',
@@ -121,32 +151,51 @@ export function VoiceGeneral() {
               ))}
             </div>
           </label>
-          <fieldset className="flex flex-col gap-1.5">
-            <legend className="text-[10px] uppercase tracking-wide text-fg-subtle">Langues</legend>
-            <div className="space-y-2">
-              {[
-                { v: 'french', label: 'Français' },
-                { v: 'english', label: 'Anglais' },
-              ].map((lang) => {
-                const langs = (s['voice.languages'] ?? 'french,english').split(',').map((l) => l.trim())
-                const checked = langs.includes(lang.v)
-                return (
-                  <label key={lang.v} className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(e) => {
-                        const newLangs = e.target.checked ? [...langs, lang.v] : langs.filter((l) => l !== lang.v)
-                        set('voice.languages', newLangs.join(','))
-                      }}
-                      className="rounded border border-border"
-                    />
-                    <span className="text-[12px] text-fg">{lang.label}</span>
-                  </label>
-                )
-              })}
-            </div>
-          </fieldset>
+        </div>
+      </section>
+
+      {/* 1.6 — Détection de fin de phrase & précision (réglages hot-path lus par useVoice) */}
+      <section>
+        <SectionHeader icon={SlidersHorizontal} title="Détection & précision" />
+        <div className="space-y-4">
+          <SettingRow
+            title="Arrêt auto sur silence"
+            sub="Termine la dictée après un court silence."
+            right={<Toggle on={autoStopOn} onClick={() => set('voice.autoStopOnSilence', autoStopOn ? '0' : '1')} disabled={!loaded} />}
+          />
+          <label className={cn('flex flex-col gap-1.5', (!autoStopOn || !loaded) && 'opacity-50')}>
+            <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-fg-subtle">
+              <span>Délai de silence avant arrêt</span>
+              <span className="tabular-nums text-fg-muted">{silenceMs} ms</span>
+            </span>
+            <input
+              type="range"
+              min={400}
+              max={2000}
+              step={100}
+              value={silenceMs}
+              disabled={!autoStopOn || !loaded}
+              onChange={(e) => set('voice.silenceMs', e.target.value)}
+              className="accent-accent"
+            />
+          </label>
+          <label className={cn('flex flex-col gap-1.5', !loaded && 'opacity-50')}>
+            <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-fg-subtle">
+              <span>Seuil de boost du vocabulaire</span>
+              <span className="tabular-nums text-fg-muted">{boostThreshold.toFixed(2)}</span>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={boostThreshold}
+              disabled={!loaded}
+              onChange={(e) => set('voice.boostThreshold', e.target.value)}
+              className="accent-accent"
+            />
+            <span className="text-[11px] text-fg-subtle">Plus haut = correspondances plus strictes (moins de faux positifs).</span>
+          </label>
         </div>
       </section>
 
@@ -162,7 +211,7 @@ export function VoiceGeneral() {
             { v: 'high', label: 'Élevé' },
           ]}
           onChange={(v) => set('voice.formatting', v)}
-          disabled={privacyOn}
+          disabled={privacyOn || !loaded}
         />
         <p className="mt-2 flex items-start gap-1.5 text-[11px] text-fg-subtle">
           <ShieldCheck size={12} className="mt-px shrink-0 text-accent" />
@@ -176,7 +225,7 @@ export function VoiceGeneral() {
         <SettingRow
           title="Widget always-on-top"
           sub="Pastille de dictée par-dessus toutes les fenêtres."
-          right={<Toggle on={(s['voice.showWidget'] ?? '1') !== '0'} onClick={toggleWidget} />}
+          right={<Toggle on={(s['voice.showWidget'] ?? '1') !== '0'} onClick={toggleWidget} disabled={!loaded} />}
         />
       </section>
 
@@ -186,7 +235,7 @@ export function VoiceGeneral() {
         <SettingRow
           title="Tout local"
           sub="Désactive les 3 appels réseau (apprentissage, smart-formatting, command mode). Tout reste sur l'appareil."
-          right={<Toggle on={privacyOn} onClick={togglePrivacy} />}
+          right={<Toggle on={privacyOn} onClick={togglePrivacy} disabled={!loaded} />}
         />
         <p className={cn('mt-2 text-[11px]', privacyOn ? 'text-accent' : 'text-fg-subtle')}>
           {privacyOn

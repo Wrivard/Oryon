@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Star, ArrowLeftRight, Code2, Plus, Trash2, Upload, Sparkles } from 'lucide-react'
 import { cn } from '../../../lib/cn'
+import { toast } from '../../../store/toasts'
 import type { VoiceReplacement, VoiceVocab, VoiceSnippet } from '@shared/types'
 import { SectionHeader, EmptyState } from './_parts'
 
@@ -30,6 +31,7 @@ export function VoiceDictionaries() {
   const [snTrigger, setSnTrigger] = useState('')
   const [snExpansion, setSnExpansion] = useState('')
   const [csvMessage, setCsvMessage] = useState<{ text: string; kind: 'success' | 'error' } | null>(null)
+  const [importing, setImporting] = useState(false)
   const csvRef = useRef<HTMLInputElement>(null)
   const csvTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
@@ -53,51 +55,89 @@ export function VoiceDictionaries() {
 
   const addVocab = async () => {
     if (!vTerm.trim()) return
-    await window.bridge.voice.addVocab(vTerm.trim())
-    setVTerm('')
-    void loadVocab()
+    try {
+      await window.bridge.voice.addVocab(vTerm.trim())
+      setVTerm('')
+      void loadVocab()
+    } catch {
+      toast.error("Échec de l'enregistrement.")
+    }
   }
   const addReplacement = async () => {
     if (!dSpoken.trim() || !dRepl.trim()) return
-    await window.bridge.voice.addReplacement(dSpoken.trim(), dRepl.trim())
-    setDSpoken('')
-    setDRepl('')
-    void loadReps()
+    try {
+      await window.bridge.voice.addReplacement(dSpoken.trim(), dRepl.trim())
+      setDSpoken('')
+      setDRepl('')
+      void loadReps()
+    } catch {
+      toast.error("Échec de l'enregistrement.")
+    }
   }
   const addSnippet = async () => {
     if (!snTrigger.trim() || !snExpansion.trim()) return
-    await window.bridge.voice.addSnippet(snTrigger.trim(), snExpansion.trim())
-    setSnTrigger('')
-    setSnExpansion('')
-    void loadSnippets()
+    try {
+      await window.bridge.voice.addSnippet(snTrigger.trim(), snExpansion.trim())
+      setSnTrigger('')
+      setSnExpansion('')
+      void loadSnippets()
+    } catch {
+      toast.error("Échec de l'enregistrement.")
+    }
   }
 
   const onCsv = async (file: File) => {
+    const MAX_ROWS = 5000
+    const HEADER_TOKENS = new Set(['term', 'replacement', 'spoken', 'vocab'])
+    setImporting(true)
     try {
       const text = await file.text()
       let vocabCount = 0
       let repCount = 0
+      let failed = 0
+      let processed = 0
+      let capped = false
+      let headerChecked = false
       for (const raw of text.split(/\r?\n/)) {
         const line = raw.trim()
         if (!line) continue
         const cols = line.split(/[;,\t]/).map((c) => c.trim().replace(/^"|"$/g, ''))
-        if (cols.length >= 2 && cols[0] && cols[1]) {
-          await window.bridge.voice.addReplacement(cols[0], cols[1])
-          repCount++
-        } else if (cols[0]) {
-          await window.bridge.voice.addVocab(cols[0])
-          vocabCount++
+        // Saute une éventuelle ligne d'en-tête en tête de fichier.
+        if (!headerChecked) {
+          headerChecked = true
+          if (cols.some((c) => HEADER_TOKENS.has(c.toLowerCase()))) continue
+        }
+        if (processed >= MAX_ROWS) {
+          capped = true
+          break
+        }
+        processed++
+        // try/catch PAR ligne : une ligne fautive n'avorte plus tout l'import.
+        try {
+          if (cols.length >= 2 && cols[0] && cols[1]) {
+            await window.bridge.voice.addReplacement(cols[0], cols[1])
+            repCount++
+          } else if (cols[0]) {
+            await window.bridge.voice.addVocab(cols[0])
+            vocabCount++
+          }
+        } catch {
+          failed++
         }
       }
-      const msg = `${vocabCount} terme${vocabCount !== 1 ? 's' : ''} + ${repCount} règle${repCount !== 1 ? 's' : ''} importé${vocabCount + repCount !== 1 ? 's' : ''}`
-      setCsvMessage({ text: msg, kind: 'success' })
+      let msg = `${vocabCount} terme${vocabCount !== 1 ? 's' : ''} + ${repCount} règle${repCount !== 1 ? 's' : ''} importé${vocabCount + repCount !== 1 ? 's' : ''}`
+      if (failed > 0) msg += ` · ${failed} échec${failed !== 1 ? 's' : ''}`
+      if (capped) msg += ` · limite de ${MAX_ROWS} lignes atteinte`
+      setCsvMessage({ text: msg, kind: failed > 0 ? 'error' : 'success' })
       void loadVocab()
       void loadReps()
     } catch (e) {
       setCsvMessage({ text: `Erreur lors de l'import: ${e instanceof Error ? e.message : 'erreur inconnue'}`, kind: 'error' })
+    } finally {
+      setImporting(false)
+      if (csvTimeoutRef.current) clearTimeout(csvTimeoutRef.current)
+      csvTimeoutRef.current = setTimeout(() => setCsvMessage(null), 4000)
     }
-    if (csvTimeoutRef.current) clearTimeout(csvTimeoutRef.current)
-    csvTimeoutRef.current = setTimeout(() => setCsvMessage(null), 4000)
   }
 
   return (
@@ -122,8 +162,8 @@ export function VoiceDictionaries() {
           count={vocab.length}
           action={
             <div className="flex items-center gap-2">
-              <button onClick={() => csvRef.current?.click()} title="1 colonne = vocabulaire · 2 colonnes = entendu/corrigé" aria-label="Importer CSV" className={HEADER_ACTION}>
-                <Upload size={12} /> CSV
+              <button onClick={() => csvRef.current?.click()} disabled={importing} title="1 colonne = vocabulaire · 2 colonnes = entendu/corrigé" aria-label="Importer CSV" className={cn(HEADER_ACTION, 'disabled:opacity-40')}>
+                <Upload size={12} /> {importing ? 'Importation…' : 'CSV'}
               </button>
               <button onClick={() => setAddingV((a) => !a)} aria-label="Ajouter vocabulaire" className={HEADER_ACTION}>
                 <Plus size={12} /> Ajouter
@@ -150,8 +190,12 @@ export function VoiceDictionaries() {
               <div key={v.id} className="flex min-h-9 items-center gap-3 rounded-lg border border-border bg-bg-inset px-3 py-2">
                 <button
                   onClick={async () => {
-                    await window.bridge.voice.toggleVocabStar(v.id, !v.starred)
-                    void loadVocab()
+                    try {
+                      await window.bridge.voice.toggleVocabStar(v.id, !v.starred)
+                      void loadVocab()
+                    } catch {
+                      toast.error("Échec de l'enregistrement.")
+                    }
                   }}
                   title={v.starred ? 'Prioritaire' : 'Mettre en priorité'}
                   aria-label={v.starred ? 'Retirer de priorité' : 'Mettre en priorité'}
@@ -167,8 +211,12 @@ export function VoiceDictionaries() {
                 </span>
                 <button
                   onClick={async () => {
-                    await window.bridge.voice.deleteVocab(v.id)
-                    void loadVocab()
+                    try {
+                      await window.bridge.voice.deleteVocab(v.id)
+                      void loadVocab()
+                    } catch {
+                      toast.error("Échec de l'enregistrement.")
+                    }
                   }}
                   aria-label={`Supprimer "${v.term}"`}
                   className="flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:bg-hover hover:text-danger"
@@ -219,8 +267,12 @@ export function VoiceDictionaries() {
                 {r.source === 'auto' && <Sparkles size={11} className="text-accent" />}
                 <button
                   onClick={async () => {
-                    await window.bridge.voice.deleteReplacement(r.id)
-                    void loadReps()
+                    try {
+                      await window.bridge.voice.deleteReplacement(r.id)
+                      void loadReps()
+                    } catch {
+                      toast.error("Échec de l'enregistrement.")
+                    }
                   }}
                   aria-label={`Supprimer la règle "${r.spoken}" → "${r.replacement}"`}
                   className="ml-auto flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:bg-hover hover:text-danger"
@@ -277,8 +329,12 @@ export function VoiceDictionaries() {
                 </span>
                 <button
                   onClick={async () => {
-                    await window.bridge.voice.deleteSnippet(sn.id)
-                    void loadSnippets()
+                    try {
+                      await window.bridge.voice.deleteSnippet(sn.id)
+                      void loadSnippets()
+                    } catch {
+                      toast.error("Échec de l'enregistrement.")
+                    }
                   }}
                   aria-label={`Supprimer le snippet "${sn.trigger}"`}
                   className="ml-auto flex h-5 w-5 items-center justify-center rounded text-fg-subtle hover:bg-hover hover:text-danger"

@@ -24,12 +24,34 @@ function relativeTime(ts: number | null): string {
 export function VoiceStats({ onGoToDict }: { onGoToDict: () => void }) {
   const [stats, setStats] = useState<VStats | null>(null)
   const [history, setHistory] = useState<VoiceHistoryItem[]>([])
+  const [loaded, setLoaded] = useState(false)
   useEffect(() => {
-    void window.bridge.voice.stats().then(setStats)
-    void window.bridge.voice.listHistory(8).then(setHistory)
+    void Promise.allSettled([
+      window.bridge.voice.stats().then(setStats),
+      window.bridge.voice.listHistory(8).then(setHistory),
+    ]).then(() => setLoaded(true))
   }, [])
 
   const s = stats
+  // Squelette tant que les données ne sont pas résolues : évite d'afficher des zéros / états vides
+  // qui se liraient comme de vraies données.
+  if (!loaded) {
+    return (
+      <div>
+        <div className="grid grid-cols-2 gap-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="h-[88px] animate-pulse rounded-lg border border-border bg-bg-inset" />
+          ))}
+        </div>
+        <div className="mt-6 space-y-2">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="h-6 animate-pulse rounded-md bg-bg-inset" />
+          ))}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div>
       {/* Cartes */}
