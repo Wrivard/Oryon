@@ -4,8 +4,11 @@ import type { Workspace, Terminal, TerminalStatus, Task, MailboxMessage } from '
 interface AppStore {
   workspaces: Workspace[]
   activeWorkspaceId: string | null
-  /** Terminaux du workspace actif (montés dans la grille). */
-  terminals: Terminal[]
+  /** Terminaux montés, indexés par workspace. Tous les workspaces visités cette session restent
+   *  présents (leurs <Terminal> restent montés → PTY + scrollback xterm vivants en arrière-plan). */
+  terminalsByWorkspace: Record<string, Terminal[]>
+  /** Workspaces déjà activés cette session : montés en parallèle, JAMAIS retirés au switch. */
+  openWorkspaceIds: string[]
   statuses: Record<string, TerminalStatus>
   focusedTerminalId: string | null
   maximizedTerminalId: string | null
@@ -30,7 +33,9 @@ interface AppStore {
 
   setWorkspaces: (ws: Workspace[]) => void
   setActiveWorkspace: (id: string | null) => void
-  setTerminals: (t: Terminal[]) => void
+  /** Marque un workspace comme ouvert (monté en arrière-plan). Idempotent ; jamais retiré au switch. */
+  openWorkspace: (id: string) => void
+  setTerminals: (workspaceId: string, t: Terminal[]) => void
   addTerminal: (t: Terminal) => void
   removeTerminal: (id: string) => void
   setStatus: (id: string, s: TerminalStatus) => void
@@ -43,7 +48,8 @@ interface AppStore {
 export const useAppStore = create<AppStore>((set) => ({
   workspaces: [],
   activeWorkspaceId: null,
-  terminals: [],
+  terminalsByWorkspace: {},
+  openWorkspaceIds: [],
   statuses: {},
   focusedTerminalId: null,
   maximizedTerminalId: null,
@@ -63,20 +69,36 @@ export const useAppStore = create<AppStore>((set) => ({
 
   setWorkspaces: (workspaces) => set({ workspaces }),
   setActiveWorkspace: (activeWorkspaceId) => set({ activeWorkspaceId, maximizedTerminalId: null }),
-  setTerminals: (terminals) =>
-    set({ terminals, focusedTerminalId: terminals[0]?.id ?? null, maximizedTerminalId: null }),
-  addTerminal: (t) => set((s) => ({ terminals: [...s.terminals, t], focusedTerminalId: t.id })),
+  openWorkspace: (id) =>
+    set((s) => (s.openWorkspaceIds.includes(id) ? {} : { openWorkspaceIds: [...s.openWorkspaceIds, id] })),
+  // Pose les terminaux d'UN workspace (clé = workspaceId). N'altère plus le focus : à l'activation
+  // c'est TerminalGrid qui le pilote (un workspace de fond ne doit pas voler le focus).
+  setTerminals: (workspaceId, terminals) =>
+    set((s) => ({ terminalsByWorkspace: { ...s.terminalsByWorkspace, [workspaceId]: terminals } })),
+  addTerminal: (t) =>
+    set((s) => ({
+      terminalsByWorkspace: {
+        ...s.terminalsByWorkspace,
+        [t.workspace_id]: [...(s.terminalsByWorkspace[t.workspace_id] ?? []), t],
+      },
+      focusedTerminalId: t.id,
+    })),
   removeTerminal: (id) =>
     set((s) => {
-      const idx = s.terminals.findIndex((t) => t.id === id)
-      const remaining = s.terminals.filter((t) => t.id !== id)
+      const wsId = Object.keys(s.terminalsByWorkspace).find((w) =>
+        s.terminalsByWorkspace[w].some((t) => t.id === id),
+      )
+      if (!wsId) return {}
+      const list = s.terminalsByWorkspace[wsId]
+      const idx = list.findIndex((t) => t.id === id)
+      const remaining = list.filter((t) => t.id !== id)
       let focusedTerminalId = s.focusedTerminalId
       if (focusedTerminalId === id) {
         // Auto-focus le terminal adjacent (suivant, sinon précédent).
         focusedTerminalId = (remaining[idx] ?? remaining[idx - 1] ?? remaining[0])?.id ?? null
       }
       return {
-        terminals: remaining,
+        terminalsByWorkspace: { ...s.terminalsByWorkspace, [wsId]: remaining },
         focusedTerminalId,
         maximizedTerminalId: s.maximizedTerminalId === id ? null : s.maximizedTerminalId,
       }

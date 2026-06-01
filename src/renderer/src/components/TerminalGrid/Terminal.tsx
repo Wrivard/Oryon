@@ -61,7 +61,9 @@ function styleBlock(el: HTMLElement, block: CmdBlock, onClick: () => void): void
 // Décalage entre démarrages de terminaux (anti-corruption de ~/.claude.json par boots concurrents).
 const SPAWN_STAGGER_MS = 500
 
-export function Terminal({ term, focused }: { term: TermRow; focused: boolean }) {
+// `active` (défaut true) : false = cellule cachée (workspace de fond). Le terminal RESTE monté (PTY vivant) ;
+// au passage à true on re-fit (cf. effet d'activation). L'orchestrateur monte <Terminal> sans cette prop → true.
+export function Terminal({ term, focused, active = true }: { term: TermRow; focused: boolean; active?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<Xterm | null>(null)
   // Re-fit + resize PTY + scroll en bas : appelé au clic pour garantir que la ligne de saisie de claude
@@ -234,6 +236,15 @@ export function Terminal({ term, focused }: { term: TermRow; focused: boolean })
   useEffect(() => {
     if (focused) xtermRef.current?.focus()
   }, [focused])
+
+  // Réactivation du workspace : sous display:none le ResizeObserver ne fire pas → xterm garde des
+  // dimensions périmées. Au retour visible, on re-fit (recalcule cols/rows + resize le PTY) pour que le
+  // TUI claude soit bien dimensionné et collé en bas. rAF : laisser le layout s'appliquer avant de mesurer.
+  useEffect(() => {
+    if (!active) return
+    const raf = requestAnimationFrame(() => refitRef.current())
+    return () => cancelAnimationFrame(raf)
+  }, [active])
 
   // Clic = focus clavier explicite sur xterm (les workers se tapent directement, sans passer par
   // l'orchestrateur). Garde-fou si le focus React/onglet n'a pas (re)donné le focus à ce terminal.
