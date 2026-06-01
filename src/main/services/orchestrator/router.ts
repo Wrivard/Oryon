@@ -1,6 +1,15 @@
 import { BrowserWindow } from 'electron'
 import { getDb } from '../../db'
-import { addDataObserver, addExitObserver, writeTerminal, hasLiveTerminal } from '../pty-manager'
+import {
+  addDataObserver,
+  addExitObserver,
+  writeTerminal,
+  hasLiveTerminal,
+  createTerminal,
+  killTerminal,
+} from '../pty-manager'
+import { ensureClaudeReady, normalizeClaudeAutostart, enforceAgentSpawn } from '../claude-launcher'
+import { buildProjectMcpConfigForPath } from '../../ipc/settings.ipc'
 import { recordMailbox } from './mailbox'
 import { getOrCreateProjectId, createTask, listTasks, getTask, updateTask } from './task-store'
 import { isGitRepo, worktreeDir, branchFor, refreshWorktreeToHead, branchEvidence } from '../worktrees'
@@ -508,4 +517,79 @@ export function agentBroadcastCommand(
   if (terminalRef && targets.length) agentMailbox(workspaceId, 'orchestrateur', `\`${line}\` → ${terminalName(targets[0])}`)
   else agentMailbox(workspaceId, 'orchestrateur', `\`${line}\` → ${targets.length} worker(s)`)
   return { count: targets.length, command: line }
+}
+
+/** Envoie sur un canal IPC à toutes les fenêtres (single-window en pratique) → recâble le flux d'un PTY recréé. */
+function sendToAllWindows(channel: string, ...payload: unknown[]): void {
+  for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send(channel, ...payload)
+}
+/** Résout une réf worker (name « Nell » / position « #2 ») → id, SANS exiger qu'il soit vivant (un mort se relance). */
+function resolveWorkerIdAllowDead(workspaceId: string, ref: string): string | null {
+  const ids = terminalIds(workspaceId)
+  const r = ref.trim().replace(/^#/, '')
+  const idx = Number(r)
+  if (Number.isInteger(idx) && idx >= 1 && idx <= ids.length) return ids[idx - 1]
+  return ids.find((x) => terminalName(x).toLowerCase() === r.toLowerCase()) ?? null
+}
+
+/**
+ * restart_agent (MCP, orchestrateur-only) : tue puis recrée le PTY d'UN worker — SEULE façon de relancer un
+ * serveur MCP mort (enfant du `claude`). Reconstruit le spawn comme terminals:create (chokepoint) : shell dans
+ * le worktree, config MCP ancrée sur le projet PRINCIPAL, identité worker durable. Sérialisé/sûr : ne touche
+ * QUE le terminal ciblé. L'indirection file-de-commandes empêche de renvoyer une erreur au caller MCP → on
+ * réveille l'orchestrateur (succès comme échec), comme la porte-à-preuves de assign_task.
+ */
+export function agentRestartAgent(workspaceId: string, terminalRef: string): void {
+  const orchE = orchestratorTerminalId(workspaceId)
+  const tellOrch = (msg: string): void => {
+    if (orchE && hasLiveTerminal(orchE)) pasteLine(orchE, oneLinePrompt(msg))
+  }
+  const id = resolveWorkerIdAllowDead(workspaceId, terminalRef)
+  if (!id) {
+    tellOrch(`[oryon] ⚠ restart_agent : terminal « ${terminalRef} » introuvable.`)
+    return
+  }
+  const row = getDb()
+    .prepare('SELECT id, name, role, cwd, worktree_path, autostart_cmd FROM terminals WHERE id = ?')
+    .get(id) as
+    | { id: string; name: string; role: string | null; cwd: string; worktree_path: string | null; autostart_cmd: string | null }
+    | undefined
+  if (!row) {
+    tellOrch(`[oryon] ⚠ restart_agent : terminal introuvable en DB.`)
+    return
+  }
+
+  // Tue le PTY s'il est encore vivant (claude figé / MCP tombé dans un shell ouvert) ; s'il est déjà sorti, on
+  // recrée directement. terminalBusy est remis à null par l'exit-observer sur kill ; on l'assure ici aussi.
+  if (hasLiveTerminal(id)) killTerminal(id)
+  terminalBusy.set(id, null)
+  stallNotified.delete(id)
+
+  // Reconstruit l'autostart EXACTEMENT comme terminals.ipc.ts (sinon le claude relancé n'aurait pas le serveur
+  // oryon — soit tout le but du restart). Shell dans le worktree ; ancre MCP = projet principal (colonne cwd).
+  const shellCwd = row.worktree_path || row.cwd
+  let autostart = row.autostart_cmd || null
+  if (autostart && /^claude(\s|$)/.test(autostart.trim())) {
+    ensureClaudeReady(shellCwd)
+    autostart = normalizeClaudeAutostart(autostart)
+    const mcpFile = buildProjectMcpConfigForPath(row.cwd)
+    if (mcpFile && !/--mcp-config/.test(autostart)) autostart += ` --mcp-config '${mcpFile.replace(/'/g, "''")}'`
+    autostart = enforceAgentSpawn(autostart)
+  }
+  const env: Record<string, string> = { ORYON_AGENT_NAME: row.name, ORYON_WORKSPACE_ID: workspaceId }
+  if (row.role) env.ORYON_AGENT_ROLE = row.role
+
+  // Recâble le flux PTY vers le renderer sur les MÊMES canaux que terminals:create (le composant Terminal de ce
+  // id garde ses listeners onData/onExit). Taille par défaut : le renderer re-fit au prochain resize/clic.
+  createTerminal({
+    id,
+    cwd: shellCwd,
+    autostart,
+    cols: 80,
+    rows: 24,
+    env,
+    onData: (data) => sendToAllWindows(`terminal:data:${id}`, data),
+    onExit: (code) => sendToAllWindows(`terminal:exit:${id}`, code),
+  })
+  tellOrch(`[oryon] ↻ ${row.name} relancé (kill+recreate du PTY). Attends qu'il soit prêt avant de le re-piloter.`)
 }

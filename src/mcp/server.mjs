@@ -5,7 +5,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import * as memory from '../shared/memory-core.mjs'
 
@@ -25,6 +25,22 @@ const DEFAULT_ROLE = process.env.ORYON_AGENT_ROLE || undefined
 // propre serveur MCP avec cet env → un orchestrateur ne voit/pilote jamais les terminaux d'un autre workspace.
 const WORKSPACE_ID = process.env.ORYON_WORKSPACE_ID || ''
 
+// Log de cycle de vie DÉDIÉ (d2) : la stderr du serveur est au mieux noyée dans le scrollback TUI du worker,
+// au pire perdue (câblage stdio interne du CLI). On écrit EN PLUS les marqueurs connexion/erreur dans
+// <STATE_DIR>/mcp-<nom>.log (STATE_DIR = ORYON_MCP_STATE, PARTAGÉ par tous les agents) → l'orchestrateur lit
+// ce fichier via get_mcp_log/mcp_health pour diagnostiquer un MCP worker mort, sans dépendre du scrollback.
+const MCP_LOG = DEFAULT_AUTHOR ? join(STATE_DIR, `mcp-${DEFAULT_AUTHOR}.log`) : null
+function mcpLog(line) {
+  console.error('[oryon-mcp] ' + line) // conserve la stderr existante
+  if (!MCP_LOG) return
+  try {
+    mkdirSync(STATE_DIR, { recursive: true })
+    appendFileSync(MCP_LOG, `[${new Date().toISOString()}] ${line}\n`)
+  } catch {
+    /* best-effort : ne JAMAIS casser le serveur pour un log */
+  }
+}
+
 // Role-gate (F2) : un WORKER ne doit PAS LIRE la mémoire partagée — c'est le contexte orchestrateur/session,
 // et des workers s'en servaient pour se prendre pour l'orchestrateur (« qu'est-ce que je dois faire ? »).
 // Les outils de LECTURE mémoire ne sont exposés qu'au rôle 'orchestrator' (fail-safe : un rôle absent =
@@ -32,6 +48,14 @@ const WORKSPACE_ID = process.env.ORYON_WORKSPACE_ID || ''
 // coordination (claim_files) et report_task/send_mailbox.
 const isOrchestrator = DEFAULT_ROLE === 'orchestrator'
 const readMemoryTool = (...args) => {
+  if (isOrchestrator) server.tool(...args)
+}
+
+// Gate orchestration (E/c2) : les outils de PILOTAGE de flotte (assign_task/approve_task/broadcast_command +
+// restart_agent/mcp_health/get_mcp_log) ne sont exposés qu'au rôle 'orchestrator'. Ferme PAR LE SERVEUR le trou
+// « un worker qui dérive s'auto-orchestre » (merge de branche via approve_task, etc.) — même fail-safe que
+// readMemoryTool (rôle absent = worker → outils retirés). Le gate ne retire JAMAIS un outil à l'orchestrateur.
+const orchestratorTool = (...args) => {
   if (isOrchestrator) server.tool(...args)
 }
 
@@ -65,6 +89,15 @@ function scopedTasks(meta) {
 function scopedMailbox(meta) {
   const list = meta.mailbox ?? []
   return WORKSPACE_ID ? list.filter((m) => m.workspace_id === WORKSPACE_ID) : list
+}
+// Résout une réf WORKER (id, name « Nell » ou position « #2 ») → terminal de meta.json (orchestrateur exclu),
+// avec le MÊME ordre/position que le routeur (pane_index). Sert à mapper terminal → fichier mcp-<name>.log.
+function resolveWorkerTerminal(ref) {
+  const workers = scopedTerminals(readMeta()).filter((t) => t.role !== 'orchestrator')
+  const r = String(ref).trim().replace(/^#/, '')
+  const idx = Number(r)
+  if (Number.isInteger(idx) && idx >= 1 && idx <= workers.length) return workers[idx - 1]
+  return workers.find((t) => t.id === ref || (t.name || '').toLowerCase() === r.toLowerCase()) || null
 }
 
 const server = new McpServer({ name: 'oryon', version: '0.1.0' })
@@ -305,7 +338,7 @@ function queueCommand(cmd) {
   return id
 }
 
-server.tool(
+orchestratorTool(
   'assign_task',
   "Donne une sous-task à UN worker (par name « Nell » ou position « #2 »). Le worker la fait dans son worktree git puis signale la fin (report_task). Émets plusieurs assign_task pour paralléliser. Le taskId arrive dans la notification de fin (ou via list_tasks).",
   {
@@ -326,7 +359,7 @@ server.tool(
   },
 )
 
-server.tool(
+orchestratorTool(
   'approve_task',
   "Valide une task revue → merge-back de la branche du worker dans le tronc principal (sérialisé, conflict-safe). Utilise le taskId reçu dans la notification de fin.",
   { taskId: z.string().describe('id de la task à approuver') },
@@ -363,7 +396,7 @@ server.tool(
   },
 )
 
-server.tool(
+orchestratorTool(
   'broadcast_command',
   "Envoie une commande dans les terminaux des workers : une slash-command claude (ex. \"/effort high\", \"/model opus\") pour changer leur effort/modèle/réglages, ou une instruction libre. Par défaut à TOUS les workers vivants ; cible-en un seul via `terminal`. Niveaux d'effort valides : low|medium|high|max.",
   {
@@ -382,6 +415,68 @@ server.tool(
   },
 )
 
+// ---- Diagnostic & réparation d'un worker/MCP mort (orchestrateur-only, lacune d1/d2/d3) ----
+
+orchestratorTool(
+  'restart_agent',
+  "Tue puis relance le terminal claude d'UN worker (par name « Nell » ou position « #2 ») : SEULE façon de relancer un serveur MCP mort (il est enfant du `claude`). À utiliser quand un worker ne répond plus / son MCP est tombé (cf. mcp_health). kill+recreate sérialisé côté main ; ne touche QUE le terminal ciblé. Attends qu'il soit prêt avant de le re-piloter.",
+  { terminal: z.string().describe('name (ex. "Nell") ou position (ex. "#2") du worker à relancer') },
+  async ({ terminal }) => {
+    const workspaceId = currentWorkspaceId()
+    if (!workspaceId) return text(JSON.stringify({ queued: false, error: 'workspace introuvable (Oryon tourne ?)' }))
+    try {
+      const id = queueCommand({ type: 'restart-agent', workspaceId, terminal })
+      return text(JSON.stringify({ queued: true, id, terminal }))
+    } catch (e) {
+      return text(JSON.stringify({ queued: false, error: String(e) }))
+    }
+  },
+)
+
+orchestratorTool(
+  'mcp_health',
+  "Diagnostique l'état du serveur MCP d'un worker (par name « Nell » / position « #2 ») via son log dédié : renvoie status connected|failed|unknown + dernière erreur + dernière ligne. Sers-t'en quand un worker semble ne plus répondre, AVANT de décider un restart_agent.",
+  { terminal: z.string().describe('name ou #position du worker') },
+  async ({ terminal }) => {
+    const t = resolveWorkerTerminal(terminal)
+    if (!t) return text(JSON.stringify({ status: 'unknown', error: `terminal "${terminal}" introuvable` }))
+    const p = join(STATE_DIR, `mcp-${t.name}.log`)
+    const log = existsSync(p) ? readFileSync(p, 'utf8') : ''
+    const lines = log.split('\n').filter(Boolean)
+    const failed = lines.some((l) => /ÉCHEC connexion/.test(l))
+    const connected = lines.some((l) => /connecté/.test(l))
+    const status = failed ? 'failed' : connected ? 'connected' : 'unknown'
+    const lastError = [...lines].reverse().find((l) => /ÉCHEC|error|exception/i.test(l)) ?? null
+    // Note : sans heartbeat, un MCP qui meurt APRÈS un boot réussi reste vu 'connected' (limite assumée).
+    return text(
+      JSON.stringify(
+        { terminal: t.name, status, lastError, lastLine: lines[lines.length - 1] ?? null, logLines: lines.length },
+        null,
+        2,
+      ),
+    )
+  },
+)
+
+orchestratorTool(
+  'get_mcp_log',
+  "Lit le log de cycle de vie DÉDIÉ du serveur MCP d'un worker (connexion/erreurs), par name « Nell » ou position « #2 ». Complète get_terminal_output (qui montre le TUI) pour diagnostiquer un MCP qui ne répond plus.",
+  { terminal: z.string().describe('name ou #position du worker') },
+  async ({ terminal }) => {
+    const t = resolveWorkerTerminal(terminal)
+    if (!t) return text(`Terminal "${terminal}" introuvable (workers : ${scopedTerminals(readMeta()).filter((x) => x.role !== 'orchestrator').map((x) => x.name).join(', ') || '(aucun)'})`)
+    const p = join(STATE_DIR, `mcp-${t.name}.log`)
+    const log = existsSync(p) ? readFileSync(p, 'utf8') : ''
+    return text(log || `(aucun log MCP pour ${t.name} — le serveur n'a pas écrit de marqueur : pas démarré, ou version sans log dédié)`)
+  },
+)
+
 const transport = new StdioServerTransport()
-await server.connect(transport)
-console.error('[oryon-mcp] connecté (state: ' + STATE_DIR + ' | memory: ' + MEMORY_DIR + ')')
+try {
+  await server.connect(transport)
+  mcpLog('connecté (state: ' + STATE_DIR + ' | memory: ' + MEMORY_DIR + ')')
+} catch (e) {
+  // Marqueur 'failed' exploitable par mcp_health (les échecs d'IMPORT, eux, crashent avant ce code → 'unknown').
+  mcpLog('ÉCHEC connexion: ' + String(e))
+  throw e
+}
