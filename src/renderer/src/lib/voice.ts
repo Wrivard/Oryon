@@ -46,6 +46,13 @@ const gpuDevice: Promise<'webgpu' | 'wasm'> = (async () => {
     return 'wasm'
   }
 })()
+// Diagnostic : log le backend ASR résolu au démarrage (webgpu = rapide ; wasm = CPU, transcription LENTE).
+void gpuDevice.then((d) => console.log('[voice] ASR backend résolu = ' + d)).catch(() => {})
+
+/** Backend ASR effectif résolu au chargement : 'webgpu' (rapide) ou 'wasm' (CPU mono-thread, nettement plus lent). */
+export function getAsrDevice(): Promise<'webgpu' | 'wasm'> {
+  return gpuDevice
+}
 
 /** Charge (lazy, recharge par clé model@dtype) le pipeline ASR — après la purge du cache ORT.
  *  dtype 'q8' par défaut (léger/rapide) ; 'fp32' en dernier repli (NON quantifié → immunisé MatMulNBits). */
@@ -152,10 +159,10 @@ export interface Recorder {
 /** Détection de fin de parole (VAD énergie RMS) → auto-stop + auto-paste. */
 export interface VadOptions {
   onSilence?: () => void // appelé UNE fois quand le silence dépasse silenceMs après de la vraie parole
-  silenceMs?: number // durée de silence avant auto-stop (défaut 1400)
+  silenceMs?: number // durée de silence avant auto-stop (défaut 600 — réactif ; réglable 400-2000 dans les réglages)
   minSpeechMs?: number // parole minimale avant d'armer l'auto-stop (anti silence initial)
   rmsThreshold?: number // plancher de bruit
-  maxDurationMs?: number // coupe de sécurité
+  maxDurationMs?: number // garde-fou anti-emballement mémoire — PAS une limite de dictée (généreux exprès : « sans limite »)
 }
 
 /**
@@ -175,19 +182,80 @@ function micError(e: unknown): Error {
   return e instanceof Error ? e : new Error(String(e))
 }
 
+// Micro CHAUD : on garde le MediaStream + AudioContext vivants entre deux dictées rapprochées pour supprimer la
+// latence de getUserMedia/AudioContext au démarrage. Relâchés après WARM_IDLE_MS d'inactivité — le voyant micro
+// de l'OS s'éteint alors (compromis vitesse / voyant assumé ; ajustable via WARM_IDLE_MS).
+const WARM_IDLE_MS = 30000
+let warmStream: MediaStream | null = null
+let warmAc: AudioContext | null = null
+let warmReleaseTimer: ReturnType<typeof setTimeout> | null = null
+
+function warmMicLive(): boolean {
+  return !!warmStream && warmStream.getAudioTracks().some((t) => t.readyState === 'live')
+}
+
+/** Relâche le micro chaud : arrête les pistes (voyant OS éteint) et ferme l'AudioContext. */
+function releaseWarmMic(): void {
+  if (warmReleaseTimer) {
+    clearTimeout(warmReleaseTimer)
+    warmReleaseTimer = null
+  }
+  try {
+    warmStream?.getTracks().forEach((t) => t.stop())
+  } catch {
+    /* ignore */
+  }
+  try {
+    void warmAc?.close()
+  } catch {
+    /* ignore */
+  }
+  warmStream = null
+  warmAc = null
+}
+
+/** Programme le relâchement du micro chaud après WARM_IDLE_MS sans nouvelle capture. */
+function scheduleWarmRelease(): void {
+  if (warmReleaseTimer) clearTimeout(warmReleaseTimer)
+  warmReleaseTimer = setTimeout(releaseWarmMic, WARM_IDLE_MS)
+}
+
+/** Réutilise le micro/AC chauds s'ils sont vivants, sinon en acquiert de frais (1re dictée / micro relâché ou changé). */
+async function acquireWarmMic(): Promise<{ stream: MediaStream; ac: AudioContext }> {
+  if (warmReleaseTimer) {
+    clearTimeout(warmReleaseTimer)
+    warmReleaseTimer = null
+  }
+  if (warmMicLive() && warmAc && warmAc.state !== 'closed') {
+    if (warmAc.state === 'suspended') {
+      try {
+        await warmAc.resume()
+      } catch {
+        /* ignore */
+      }
+    }
+    return { stream: warmStream as MediaStream, ac: warmAc }
+  }
+  releaseWarmMic() // nettoie un éventuel reste mort (piste finie / AC fermé) avant d'acquérir
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+  })
+  warmStream = stream
+  const ac = new AudioContext()
+  warmAc = ac
+  return { stream, ac }
+}
+
 export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
   if (capturing) throw new Error('Capture déjà en cours')
   capturing = true
-  const { onSilence, silenceMs = 1400, minSpeechMs = 350, rmsThreshold = 0.012, maxDurationMs = 30000 } = vad
+  const { onSilence, silenceMs = 600, minSpeechMs = 350, rmsThreshold = 0.012, maxDurationMs = 600000 } = vad
+  console.log('[voice] REC start · autoStop=' + (onSilence ? 'ON' : 'OFF') + ' silenceMs=' + silenceMs + ' thr=' + rmsThreshold + ' maxMs=' + maxDurationMs)
   // Tout le setup est gardé : si N'IMPORTE quelle étape échoue (permission, AudioContext, ScriptProcessor…),
   // on réinitialise `capturing` et on libère le micro — sinon le flag resterait bloqué à true (« capture déjà en cours »).
-  let stream: MediaStream | null = null
-  let ac: AudioContext | null = null
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-    })
-    ac = new AudioContext()
+    // Micro + AudioContext CHAUDS : réutilisés entre dictées rapprochées (zéro latence getUserMedia/AC au démarrage).
+    const { stream, ac } = await acquireWarmMic()
     const source = ac.createMediaStreamSource(stream)
     const processor = ac.createScriptProcessor(4096, 1, 1)
     const mute = ac.createGain()
@@ -200,6 +268,7 @@ export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
     let silenceRun = 0
     let totalMs = 0
     let fired = false
+    let peakRms = 0 // diagnostic : RMS max observé → révèle si la parole passe SOUS rmsThreshold (faux « silence »)
     processor.onaudioprocess = (e) => {
       const data = e.inputBuffer.getChannelData(0)
       chunks.push(new Float32Array(data))
@@ -207,6 +276,7 @@ export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
       let sum = 0
       for (let i = 0; i < data.length; i++) sum += data[i] * data[i]
       const rms = Math.sqrt(sum / data.length)
+      if (rms > peakRms) peakRms = rms
       const frameMs = (data.length / srcRate) * 1000
       totalMs += frameMs
       if (rms >= rmsThreshold) {
@@ -219,26 +289,26 @@ export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
       // Auto-stop UNIQUEMENT si onSilence est fourni (VAD activé).
       if (onSilence && !fired && ((sawSpeech && silenceRun >= silenceMs) || totalMs >= maxDurationMs)) {
         fired = true
+        console.log('[voice] REC auto-stop @' + Math.round(totalMs) + 'ms · reason=' + (totalMs >= maxDurationMs ? 'MAXDUR' : 'silence(run=' + Math.round(silenceRun) + 'ms)') + ' · peakRms=' + peakRms.toFixed(4) + ' thr=' + rmsThreshold + ' sawSpeech=' + sawSpeech)
         onSilence()
       }
     }
     source.connect(processor)
     processor.connect(mute)
     mute.connect(ac.destination)
-    const theAc = ac
-    const theStream = stream
-
+    // cleanup : détache CE recording (handler + nœuds) mais GARDE le micro/AC chauds pour la dictée suivante ;
+    // arme le relâchement après WARM_IDLE_MS d'inactivité (le voyant micro de l'OS s'éteint alors).
     const cleanup = () => {
       capturing = false
       try {
+        processor.onaudioprocess = null
         processor.disconnect()
         source.disconnect()
         mute.disconnect()
       } catch {
         /* ignore */
       }
-      theStream.getTracks().forEach((t) => t.stop())
-      void theAc.close()
+      scheduleWarmRelease()
     }
 
     return {
@@ -246,6 +316,7 @@ export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
       stop: async () => {
         cleanup()
         const total = chunks.reduce((n, c) => n + c.length, 0)
+        console.log('[voice] REC stop · recorded ' + Math.round(totalMs) + 'ms · samples ' + total + ' · peakRms=' + peakRms.toFixed(4) + ' thr=' + rmsThreshold + ' sawSpeech=' + sawSpeech + ' speechMs=' + Math.round(speechMs))
         const merged = new Float32Array(total)
         let off = 0
         for (const c of chunks) {
@@ -254,20 +325,14 @@ export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
         }
         return resampleTo16k(merged, srcRate)
       },
-      hadSpeech: () => sawSpeech,
+      // « parole détectée » = ≥350 ms au-dessus du seuil VAD (0.012) OU un pic d'énergie clair (≥0.004) :
+      // le 2e terme rattrape les micros à faible gain (la parole réelle reste sous 0.012 → sawSpeech jamais
+      // armé → faux « Aucune parole détectée »). Seul un vrai silence (micro mort/muet, pic < 0.004) est rejeté.
+      hadSpeech: () => sawSpeech || peakRms >= 0.004,
     }
   } catch (e) {
     capturing = false
-    try {
-      stream?.getTracks().forEach((t) => t.stop())
-    } catch {
-      /* ignore */
-    }
-    try {
-      await ac?.close()
-    } catch {
-      /* ignore */
-    }
+    releaseWarmMic() // setup échoué pendant/après acquisition : on relâche le micro chaud (état incertain)
     throw micError(e)
   }
 }

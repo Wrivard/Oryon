@@ -93,6 +93,29 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
     xterm.loadAddon(new SearchAddon())
     xterm.loadAddon(new WebLinksAddon())
     xterm.open(el)
+
+    // Molette : scroller le viewport (scrollback) nous-mêmes (xterm transmet sinon la molette au CLI sous
+    // mouse-reporting). + DIAGNOSTIC TEMPORAIRE (v0.1.18) : on logue le mode de buffer (normal/alterné) et
+    // l'état du scrollback (len/rows/baseY/viewY) pour comprendre pourquoi le scroll échoue chez l'utilisateur.
+    const offBuf = xterm.buffer.onBufferChange((b) => console.log('[term] buffer → ' + b.type))
+    const onWheel = (e: WheelEvent): void => {
+      const b = xterm.buffer.active
+      console.log(
+        '[term:' + term.name + '] wheel · buf=' + b.type + ' len=' + b.length + ' rows=' + xterm.rows +
+          ' baseY=' + b.baseY + ' viewY=' + b.viewportY + ' dY=' + Math.round(e.deltaY) + ' dM=' + e.deltaMode,
+      )
+      // On ne scrolle le viewport NOUS-MÊMES que s'il y a vraiment un scrollback à parcourir. Sinon (buffer alterné,
+      // OU normal sans historique parce que Claude se redessine en place → len≈rows, baseY=0) on LAISSE l'événement
+      // atteindre le CLI : il peut gérer sa propre molette ; l'intercepter (stopPropagation) empêcherait tout scroll.
+      if (b.type === 'alternate') return
+      if (b.baseY === 0 && b.length <= xterm.rows) return
+      const lines = e.deltaMode === 1 ? e.deltaY : e.deltaMode === 2 ? e.deltaY * xterm.rows : e.deltaY / 16
+      xterm.scrollLines(Math.round(lines) || (e.deltaY > 0 ? 1 : -1))
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    el.addEventListener('wheel', onWheel, { capture: true, passive: false })
+
     setStatus(term.id, 'spawning')
 
     // Garde fit/resize : le layout 8 panneaux ("eight") monte des cellules cachées / à 0px → fit.fit()
@@ -215,6 +238,8 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
     return () => {
       cancelAnimationFrame(raf)
       if (spawnTimer) clearTimeout(spawnTimer)
+      el.removeEventListener('wheel', onWheel, true)
+      offBuf.dispose()
       ro.disconnect()
       window.bridge.terminals.offData(term.id)
       window.bridge.terminals.offExit(term.id)
@@ -251,6 +276,7 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
   return (
     <div
       ref={containerRef}
+      data-oryon-term={term.id}
       onMouseDown={() => {
         refitRef.current()
         xtermRef.current?.focus()

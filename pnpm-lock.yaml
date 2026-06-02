@@ -44,6 +44,9 @@ dependencies:
   electron-updater:
     specifier: ^6.8.3
     version: 6.8.3
+  koffi:
+    specifier: ^3.0.2
+    version: 3.0.2
   lucide-react:
     specifier: ^0.460.0
     version: 0.460.0(react@18.3.1)
@@ -53,6 +56,9 @@ dependencies:
   motion:
     specifier: ^12.40.0
     version: 12.40.0(react-dom@18.3.1)(react@18.3.1)
+  uiohook-napi:
+    specifier: ^1.5.5
+    version: 1.5.5
   uuid:
     specifier: ^10.0.0
     version: 10.0.0
@@ -962,6 +968,118 @@ packages:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
     dev: true
+
+  /@koromix/koffi-darwin-arm64@3.0.2:
+    resolution: {integrity: sha512-OaL5EViEvsdbc8Ut90zY44AKF3mq6JBqkK/xLkGaSXcLsOJUsD+XaPAZb/WOWcKVg7On31wP+4hB7MwHQPdiUg==}
+    cpu: [arm64]
+    os: [darwin]
+    requiresBuild: true
+    dev: false
+    optional: true
+
+  /@koromix/koffi-darwin-x64@3.0.2:
+    resolution: {integrity: sha512-ZkBKudZkIOy5yVcp8cUTFCrE5DSgxkcH26mUxV6m8JgUtvtps4iMIGAAZLSq5aouvQQKhbKpXtZ3YdzpcytM+g==}
+    cpu: [x64]
+    os: [darwin]
+    requiresBuild: true
+    dev: false
+    optional: true
+
+  /@koromix/koffi-freebsd-arm64@3.0.2:
+    resolution: {integrity: sha512-eVHMjYL6yMc7GOdH0juDVEYFU4D9Az6cqyI7+ytWwovwAjHNtf96S17Ag/aI2qs7WVCoHceKDdMUATzs5grvMw==}
+    cpu: [arm64]
+    os: [freebsd]
+    requiresBuild: true
+    dev: false
+    optional: true
+
+  /@koromix/koffi-freebsd-ia32@3.0.2:
+    resolution: {integrity: sha512-qiSkR5fF/oa8MIukjsXMmFPC/FWGfUtw3ee+jgURg0R+Tuhlvqlfh50W4rQ0Y0faITJcF+3wmCI6WSt7p4iCkA==}
+    cpu: [ia32]
+    os: [freebsd]
+    requiresBuild: true
+    dev: false
+    optional: true
+
+  /@koromix/koffi-freebsd-x64@3.0.2:
+    resolution: {integrity: sha512-RDqoD8tBiRoe1C/lZEdMWETKk2dTR298XgJ9PBXbw2ETMVpIX+ci++X+j+4e7J3kVldxHLdFCykNei6d1wmhTA==}
+    cpu: [x64]
+    os: [freebsd]
+    requiresBuild: true
+    dev: false
+    optional: true
+
+  /@koromix/koffi-linux-arm64@3.0.2:
+    resolution: {integrity: sha512-zIm5NlzFuxt4f6mDjwTDgfzu8oZngcALTmOkWbp7HSeWdjQeiy8JRaSOEpfzlIlqWoPxhRUX5Yniqkt8564VnA==}
+    cpu: [arm64]
+    os: [linux]
+    requiresBuild: true
+    dev: false
+    optional: true
+
+  /@koromix/koffi-linux-ia32@3.0.2:
+    resolution: {integrity: sha512-Le3JxJswxBhO3OeeSWA400/v2sTPwTWz/IIc6ARc4SbTGUcz2jm6jXXQviW01r5OvCQ+w2Q2T4PxP+eaRa2+fQ==}
+    cpu: [ia32]
+    os: [linux]
+    requiresBuild: true
+    dev: false
+    optional: true
+
+  /@koromix/koffi-linux-loong64@3.0.2:
+    resolution: {integrity: sha512-TiPOFy4OX0tLhKwL6oSOhDIhwd5b48x7nxCBT8u6IW+nLXMIo2j+jla1h9niQ8HVGknGOzu48k55KVl0YMsaew==}
+    cpu: [loong64]
+    os: [linux]
+    requiresBuild: true
+    dev: false
+    optional: true
+
+  /@koromix/koffi-linux-riscv64@3.0.2:
+    resolution: {integrity: sha512-U44szVAHW4WKTV0s6K6rjeZEURJ0CFHbZC0Ik3lpzvEidbOu8dTft7OGNr4hhBvx/XaeLMCCebPLBoYZZNW2Dg==}
+    cpu: [riscv64]
+    os: [linux]
+    requiresBuild: true
+    dev: false
+    optional: true
+
+  /@koromix/koffi-linux-x64@3.0.2:
+    resolution: {integrity: sha512-bm4qT+e59KWn4V/jK8uF1RV2k0/JJvmGPUj4qCJ3E9663H+6ZLqz1rpCdgXSEA95f5CNR3RWcgjQwxgKO9xFtQ==}
+    cpu: [x64]
+    os: [linux]
+    requiresBuild: true
+    dev: false
+    optional: true
+
+  /@koromix/koffi-openbsd-ia32@3.0.2:
+    resolution: {integrity: sha512-tUu2LMSyeCSe1DbJKZrjGOKRQzDhj/RAw4rVdlHXlU/B26sdyKZjEwE3GxVlYDdEBX4FiYYmoVuG3BwGWSefCw==}
+    cpu: [ia32]
+    os: [openbsd]
+    requiresBuild: true
+    dev: false
+    optional: true
+
+  /@koromix/koffi-openbsd-x64@3.0.2:
+    resolution: {integrity: sha512-o4QZwsKIQvlMSIJaCXsu8d2sz4bbKEJrZhmnCeT/SKEU1VEiegmDn/I6DYrg5mOMDC15GWlUP1qP6AsVlrxqXA==}
+    cpu: [x64]
+    os: [openbsd]
+    requiresBuild: true
+    dev: false
+    optional: true
+
+  /@koromix/koffi-win32-ia32@3.0.2:
+    resolution: {integrity: sha512-Yz/iP2xLaq8t3TFy5+f2Oww7rBpXgZ4YRexdYffSm2EwcnDeCtPudQSjIiKyEBdvDsU2vQetTrxyqDHStXXocw==}
+    cpu: [ia32]
+    os: [win32]
+    requiresBuild: true
+    dev: false
+    optional: true
+
+  /@koromix/koffi-win32-x64@3.0.2:
+    resolution: {integrity: sha512-zozoHzvSi61jch4sKqFi3ATsDC7lviFthoivzPKVk4VeJvFeSdqueKoYGHNXEzfhIXn9Y5K85l9a59nwfutkUA==}
+    cpu: [x64]
+    os: [win32]
+    requiresBuild: true
+    dev: false
+    optional: true
 
   /@lydell/node-pty-darwin-arm64@1.2.0-beta.12:
     resolution: {integrity: sha512-tqaifcY9Cr41SblO1+FLzh8oxxtkNhuW9Dhl22lKme9BreYvKvxEZcdPIXTuqkJc5tagOEC4QHShKmJjLyLXLQ==}
@@ -3508,6 +3626,26 @@ packages:
       json-buffer: 3.0.1
     dev: true
 
+  /koffi@3.0.2:
+    resolution: {integrity: sha512-YS4sGzlVMhFNNkKbkB3tcLKJxH9WGP3jHTxi4Eyx+ieMRKVz4K2i+6rebYr9ngHN36jhIW6YXnxkzBeOQ51lsw==}
+    requiresBuild: true
+    optionalDependencies:
+      '@koromix/koffi-darwin-arm64': 3.0.2
+      '@koromix/koffi-darwin-x64': 3.0.2
+      '@koromix/koffi-freebsd-arm64': 3.0.2
+      '@koromix/koffi-freebsd-ia32': 3.0.2
+      '@koromix/koffi-freebsd-x64': 3.0.2
+      '@koromix/koffi-linux-arm64': 3.0.2
+      '@koromix/koffi-linux-ia32': 3.0.2
+      '@koromix/koffi-linux-loong64': 3.0.2
+      '@koromix/koffi-linux-riscv64': 3.0.2
+      '@koromix/koffi-linux-x64': 3.0.2
+      '@koromix/koffi-openbsd-ia32': 3.0.2
+      '@koromix/koffi-openbsd-x64': 3.0.2
+      '@koromix/koffi-win32-ia32': 3.0.2
+      '@koromix/koffi-win32-x64': 3.0.2
+    dev: false
+
   /lazy-val@1.0.5:
     resolution: {integrity: sha512-0/BnGCCfyUMkBpeDgWihanIAF9JmZhHBgUhEqzvf+adhNGLoP6TaiI5oF8oyb3I45P+PcnrqihSf01M0l0G5+Q==}
 
@@ -3908,6 +4046,11 @@ packages:
     dependencies:
       semver: 7.8.1
     dev: true
+
+  /node-gyp-build@4.8.4:
+    resolution: {integrity: sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ==}
+    hasBin: true
+    dev: false
 
   /node-gyp@9.4.1:
     resolution: {integrity: sha512-OQkWKbjQKbGkMf/xqI1jjy3oCTgMKJac58G2+bjZb3fza6gW2YrCSdMQYaoTb70crvE//Gngr4f0AgVHmqHvBQ==}
@@ -5074,6 +5217,14 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
     dev: true
+
+  /uiohook-napi@1.5.5:
+    resolution: {integrity: sha512-oSlTdnECw2GBfsJPTbBQBeE4v/EXP0EZmX6BJq5nzH/JgFaBE8JpFwEA/kLhiEP7HxQw28FViWiYgdIZzWuuJQ==}
+    engines: {node: '>= 16'}
+    requiresBuild: true
+    dependencies:
+      node-gyp-build: 4.8.4
+    dev: false
 
   /undici-types@6.21.0:
     resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}

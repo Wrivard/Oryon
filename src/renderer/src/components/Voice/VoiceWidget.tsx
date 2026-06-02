@@ -33,10 +33,9 @@ export function VoiceWidget() {
         aria-label={STATE_LABEL[state]}
         onDoubleClick={() => window.bridge.voice.requestToggle()}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            if (e.key === ' ') e.preventDefault()
-            window.bridge.voice.requestToggle()
-          }
+          // Entrée uniquement — JAMAIS Espace (trop facile à frapper en tapant → toggle parasite). De toute façon
+          // la fenêtre est focusable:false, donc en pratique aucun keydown n'arrive ici ; double garde.
+          if (e.key === 'Enter') window.bridge.voice.requestToggle()
         }}
         title={state === 'downloading' ? 'Téléchargement du modèle…' : 'Double-clic / Entrée = démarrer / arrêter la dictée'}
         className={cn(

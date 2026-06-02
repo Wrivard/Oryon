@@ -14,6 +14,7 @@ import { z } from 'zod'
 import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import * as memory from '../shared/memory-core.mjs'
+import * as archive from './archive-read.mjs'
 
 const APPDATA =
   process.env.APPDATA ||
@@ -250,6 +251,59 @@ server.tool(
   async ({ oldName, newName }) => text(JSON.stringify(await memory.renameMemory(PROJECT_DIR, oldName, newName), null, 2)),
 )
 
+// ---- Oryon Archive : LECTURE des transcripts de conversation archivés (.oryon/archive/) ----
+// Pur FS + gunzip (built-in) → coût $0, lecture seule (ne modifie jamais l'archive). Exposés à TOUS les
+// agents (orchestrateur ET workers) : fouiller l'historique des sessions n'est pas un acte d'orchestration.
+
+server.tool(
+  'list_archived_sessions',
+  "Liste les sessions de conversation archivées (.oryon/archive), les plus récentes d'abord. Filtre optionnel par agent (slug, ex. \"nell\" ou \"orchestrator\"). Renvoie sessionId, agent, rôle, date (+ relative), taille, tâches liées et chemin gz. Archive vide → []. Survol avant read_archived_session / search_archive.",
+  {
+    agent: z.string().optional().describe('slug d\'agent (ex. "nell", "orchestrator") ; absent = tous'),
+    limit: z.number().optional().describe('nb max de sessions (défaut 30)'),
+  },
+  async ({ agent, limit }) =>
+    text(JSON.stringify(archive.listArchivedSessions(PROJECT_DIR, { agent, limit: limit ?? 30 }), null, 2)),
+)
+
+server.tool(
+  'read_archived_session',
+  "Lit une session archivée (par agent + sessionId, cf. list_archived_sessions). format \"text\" (défaut) = transcript aplati « <rôle>: <texte> » tronqué à maxChars (défaut 40000) ; format \"raw\" = enreg. JSON bruts. Erreur claire si la session est introuvable.",
+  {
+    agent: z.string().describe('slug d\'agent (ex. "nell", "orchestrator")'),
+    sessionId: z.string().describe('id de session (cf. list_archived_sessions)'),
+    format: z.enum(['text', 'raw']).optional().describe('"text" (défaut, aplati) ou "raw" (JSON brut)'),
+    maxChars: z.number().optional().describe('troncature en caractères (défaut 40000)'),
+  },
+  async ({ agent, sessionId, format, maxChars }) =>
+    text(
+      JSON.stringify(
+        archive.readArchivedSession(PROJECT_DIR, { agent, sessionId, format: format ?? 'text', maxChars: maxChars ?? 40000 }),
+        null,
+        2,
+      ),
+    ),
+)
+
+server.tool(
+  'search_archive',
+  "Recherche plein-texte (sous-chaîne, insensible à la casse) dans le texte des sessions archivées. Filtre optionnel par agent. Renvoie ≤ limit correspondances (défaut 40) : agent, sessionId, date, rôle et un extrait (snippet) autour du match (±contextChars, défaut 160). Pour retrouver une discussion/décision passée sans relire une session entière.",
+  {
+    query: z.string().describe('sous-chaîne à chercher'),
+    agent: z.string().optional().describe('slug d\'agent (ex. "nell") ; absent = tous'),
+    limit: z.number().optional().describe('nb max de résultats (défaut 40)'),
+    contextChars: z.number().optional().describe('contexte de part et d\'autre du match (défaut 160)'),
+  },
+  async ({ query, agent, limit, contextChars }) =>
+    text(
+      JSON.stringify(
+        archive.searchArchive(PROJECT_DIR, { query, agent, limit: limit ?? 40, contextChars: contextChars ?? 160 }),
+        null,
+        2,
+      ),
+    ),
+)
+
 // ---- Orchestration : tâches et mailbox (MCP→main via file de commandes) ----
 
 server.tool(
@@ -378,6 +432,29 @@ orchestratorTool(
     if (!workspaceId) return text('Workspace introuvable.')
     const out = readBrowserConsole(workspaceId)
     return text(out || '(console vide — ouvre un site avec open_browser puis recharge/interagis)')
+  },
+)
+
+orchestratorTool(
+  'read_app_log',
+  "Logs récents de la console de la FENÊTRE PRINCIPALE d'Oryon (renderer hôte) — pour déboguer le runtime de l'app elle-même (ex. les sondes [voice] de la dictée : REC start / auto-stop / transcribe). `filter` = sous-chaîne à matcher (ex. '[voice]') ; `lines` = nombre de dernières lignes (défaut 60).",
+  {
+    filter: z.string().optional().describe("sous-chaîne à matcher (ex. '[voice]') ; absent = toutes les lignes"),
+    lines: z.number().optional().describe('nombre de dernières lignes à renvoyer (défaut 60)'),
+  },
+  async ({ filter, lines }) => {
+    const p = join(STATE_DIR, 'app-console.log')
+    let raw = ''
+    try {
+      raw = existsSync(p) ? readFileSync(p, 'utf8') : ''
+    } catch {
+      raw = ''
+    }
+    if (!raw) return text("(console principale vide — relance Oryon pour charger le capteur, puis reproduis l'action)")
+    let arr = raw.split('\n').filter(Boolean)
+    if (filter) arr = arr.filter((l) => l.includes(filter))
+    const n = lines && lines > 0 ? lines : 60
+    return text(arr.slice(-n).join('\n') || `(aucune ligne ne matche « ${filter} »)`)
   },
 )
 

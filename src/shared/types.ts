@@ -689,6 +689,13 @@ export interface BridgeApi {
     command: (command: string, selection: string) => Promise<string>
     /** Cible 'system' (voice.target, façon WisprFlow) : colle au curseur de l'app au premier plan (Windows, presse-papier + Ctrl+V). */
     injectText: (text: string) => Promise<{ ok: boolean; reason?: string }>
+    /** Transcription distante via Groq (moteur 'groq', clé côté main). { ok:false, reason:'no-key'|'error'|'empty' } → repli LOCAL on-device par l'appelant. */
+    transcribeRemote: (
+      pcm: Float32Array,
+      opts: { language?: string },
+    ) => Promise<{ ok: boolean; text?: string; reason?: string; message?: string }>
+    /** Nettoyage intelligent du transcript (layer post-dictée) via LLM Groq rapide. '' = aucun nettoyage (privacy / pas de clé / échec) → l'appelant garde le brut. */
+    cleanup: (text: string) => Promise<string>
 
     /** Hotkey dédiée du command mode (main → renderer). */
     onCommandKey: (cb: () => void) => void
@@ -696,6 +703,9 @@ export interface BridgeApi {
     /** Reçoit les démarrages/arrêts demandés par la hotkey globale ou le widget (main → renderer). */
     onToggle: (cb: () => void) => void
     offToggle: () => void
+    /** Push-to-talk (mode 'hold') : down:true au keydown (démarrer), down:false au keyup (arrêter). main → renderer. */
+    onHold: (cb: (down: boolean) => void) => void
+    offHold: () => void
     /** Widget → main : demande un toggle (rediffusé à la fenêtre principale). */
     requestToggle: () => void
     /** Fenêtre principale → main → widget : pousse l'état courant de la dictée. */

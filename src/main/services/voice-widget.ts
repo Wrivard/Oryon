@@ -84,6 +84,10 @@ export function createVoiceWidget(): void {
     fullscreenable: false,
     maximizable: false,
     minimizable: false,
+    // Ne JAMAIS prendre le focus clavier : c'est un indicateur souris/drag. Sinon, quand la fenêtre widget tient
+    // le focus, l'Espace/Entrée que l'utilisateur tape lui parvient et déclenche le toggle (« la dictée s'active
+    // quand je tape »). Le drag (-webkit-app-region) et le double-clic restent des événements souris → OK.
+    focusable: false,
     show: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

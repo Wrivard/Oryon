@@ -40,6 +40,7 @@ files:
 asarUnpack:
   - '**/node_modules/better-sqlite3/**'
   - '**/node_modules/@lydell/node-pty/**'
+  - '**/node_modules/koffi/**'
   - '**/*.node'
 
 # Reconstruit les modules natifs pour la cible Electron.

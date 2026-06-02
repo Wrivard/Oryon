@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Mic, Wand2, PictureInPicture2, ShieldCheck, Zap, SlidersHorizontal } from 'lucide-react'
+import { Mic, Wand2, PictureInPicture2, ShieldCheck, Zap, SlidersHorizontal, Volume2 } from 'lucide-react'
 import { cn } from '../../../lib/cn'
 import { toast } from '../../../store/toasts'
 import { SectionHeader, SettingRow, Toggle } from './_parts'
+import { getAsrDevice } from '../../../lib/voice'
 
 type Fmt = 'none' | 'light' | 'medium' | 'high'
 
@@ -51,11 +52,14 @@ export function VoiceGeneral() {
   // `loaded` : false jusqu'à ce que getApp réponde. On désactive les contrôles d'ici là pour qu'aucun
   // onChange ne parte contre des valeurs par défaut vides (ce qui écraserait les vrais réglages).
   const [loaded, setLoaded] = useState(false)
+  // Backend ASR effectif (diagnostic vitesse) : WebGPU = rapide ; WASM = CPU mono-thread, nettement plus lent.
+  const [asrDevice, setAsrDevice] = useState<'webgpu' | 'wasm' | null>(null)
   useEffect(() => {
     void window.bridge.settings.getApp().then((v) => {
       setS(v)
       setLoaded(true)
     })
+    void getAsrDevice().then(setAsrDevice)
   }, [])
 
   const set = async (key: string, v: string) => {
@@ -66,6 +70,9 @@ export function VoiceGeneral() {
       toast.error("Échec de l'enregistrement.")
     }
   }
+  // Le déclenchement (bascule/maintien) change la sémantique de la hotkey côté main (keydown seul vs keydown+keyup)
+  // → on ré-enregistre à chaud pour l'appliquer sans redémarrage (comme VoiceHotkeys au changement de raccourci).
+  const setMode = (v: 'toggle' | 'hold') => void set('voice.mode', v).then(() => window.bridge.voice.reregisterHotkeys())
   const toggleWidget = async () => {
     const next = (s['voice.showWidget'] ?? '1') === '0'
     try {
@@ -78,11 +85,13 @@ export function VoiceGeneral() {
   }
   const privacyOn = (s['voice.privacy'] ?? '0') === '1'
   const togglePrivacy = () => set('voice.privacy', privacyOn ? '0' : '1')
+  // Moteur de transcription (Groq cloud par défaut, local on-device en repli) → pilote l'affichage du bloc clé Groq.
+  const engine: 'groq' | 'local' = s['voice.engine'] === 'local' ? 'local' : 'groq'
 
   // Réglages hot-path (lus par useVoice au snapshot de capture). Encodages alignés sur useVoice.ts :
   // autoStop = valeur !== '0' (défaut on), silenceMs = ms brut, boostThreshold = flottant 0–1.
-  const autoStopOn = (s['voice.autoStopOnSilence'] ?? '1') !== '0'
-  const silenceMs = numOr(s['voice.silenceMs'], 1400)
+  const autoStopOn = (s['voice.autoStopOnSilence'] ?? '0') !== '0'
+  const silenceMs = numOr(s['voice.silenceMs'], 600)
   const boostThreshold = numOr(s['voice.boostThreshold'], 0.82)
 
   return (
@@ -90,9 +99,55 @@ export function VoiceGeneral() {
       {/* 1 — Transcription */}
       <section>
         <SectionHeader icon={Mic} title="Transcription" />
+        {/* Moteur : Groq (cloud, rapide) par défaut ; local on-device en repli (pas de clé / hors-ligne / erreur). */}
+        <label className="mb-3 flex flex-col gap-1.5">
+          <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Moteur</span>
+          <Segmented<'groq' | 'local'>
+            value={engine}
+            options={[
+              { v: 'groq', label: 'Groq (cloud, rapide)' },
+              { v: 'local', label: 'Local (sur l’appareil)' },
+            ]}
+            onChange={(v) => set('voice.engine', v)}
+            disabled={!loaded}
+          />
+        </label>
+        {engine === 'groq' && (
+          <div className="mb-3 space-y-3 rounded-lg border border-border bg-bg-inset/40 p-3">
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Clé API Groq</span>
+              <input
+                type="password"
+                value={s['voice.groqApiKey'] ?? ''}
+                onChange={(e) => set('voice.groqApiKey', e.target.value)}
+                disabled={!loaded}
+                placeholder="gsk_…"
+                autoComplete="off"
+                spellCheck={false}
+                className={SELECT_CLS}
+              />
+              <span className="text-[11px] text-fg-subtle">
+                Clé gratuite sur <span className="text-fg-muted">console.groq.com</span> → API Keys. L’audio de dictée est
+                envoyé à Groq pour transcription. Sans clé valide, repli local automatique.
+              </span>
+            </label>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Modèle Groq</span>
+              <select
+                value={s['voice.groqModel'] || 'whisper-large-v3-turbo'}
+                onChange={(e) => set('voice.groqModel', e.target.value)}
+                disabled={!loaded}
+                className={SELECT_CLS}
+              >
+                <option value="whisper-large-v3-turbo">whisper-large-v3-turbo (rapide)</option>
+                <option value="whisper-large-v3">whisper-large-v3 (plus précis)</option>
+              </select>
+            </label>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Modèle Whisper</span>
+            <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Modèle local (repli)</span>
             <select value={s['voice.model'] || 'small'} onChange={(e) => set('voice.model', e.target.value)} disabled={!loaded} className={SELECT_CLS}>
               <option value="tiny">Tiny (très rapide)</option>
               <option value="base">Base</option>
@@ -117,6 +172,47 @@ export function VoiceGeneral() {
           </label>
         </div>
         <p className="mt-2 text-[11px] text-fg-subtle">Small + français recommandé pour le québécois.</p>
+        <p className="mt-1 flex items-center gap-1.5 text-[11px]">
+          <span className="text-fg-subtle">Accélération :</span>
+          {asrDevice === 'webgpu' ? (
+            <span className="text-accent">⚡ WebGPU (rapide)</span>
+          ) : asrDevice === 'wasm' ? (
+            <span className="text-fg-muted">⚠ WASM — CPU mono-thread, transcription nettement plus lente (pas de WebGPU sur cette machine)</span>
+          ) : (
+            <span className="text-fg-subtle">…</span>
+          )}
+        </p>
+      </section>
+
+      {/* 1.4 — Retour sonore */}
+      <section>
+        <SectionHeader icon={Volume2} title="Retour sonore" />
+        <div className="space-y-3">
+          <SettingRow
+            title="Sons de dictée"
+            sub="Bip à l'ouverture et au relâchement de la dictée."
+            right={
+              <Toggle
+                on={(s['voice.cueSounds'] ?? '1') !== '0'}
+                onClick={() => set('voice.cueSounds', (s['voice.cueSounds'] ?? '1') !== '0' ? '0' : '1')}
+                disabled={!loaded}
+                ariaLabel="Sons de dictée"
+              />
+            }
+          />
+          <SettingRow
+            title="Couper le son système pendant la dictée"
+            sub="Met Windows en sourdine tant que tu parles, puis rétablit l'état précédent. Windows uniquement."
+            right={
+              <Toggle
+                on={(s['voice.muteDuringDictation'] ?? '0') === '1'}
+                onClick={() => set('voice.muteDuringDictation', (s['voice.muteDuringDictation'] ?? '0') === '1' ? '0' : '1')}
+                disabled={!loaded}
+                ariaLabel="Couper le son système pendant la dictée"
+              />
+            }
+          />
+        </div>
       </section>
 
       {/* 1.5 — Mode de dictée */}
@@ -130,6 +226,21 @@ export function VoiceGeneral() {
               <option value="terminal">Terminal (texte brut)</option>
               <option value="system">Système (colle dans l’app au premier plan)</option>
             </select>
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Déclenchement</span>
+            <Segmented<'toggle' | 'hold'>
+              value={s['voice.mode'] === 'toggle' ? 'toggle' : 'hold'}
+              options={[
+                { v: 'toggle', label: 'Bascule' },
+                { v: 'hold', label: 'Maintien (push-to-talk)' },
+              ]}
+              onChange={setMode}
+              disabled={!loaded}
+            />
+            <span className="text-[11px] text-fg-subtle">
+              Maintien : la dictée enregistre tant que le raccourci est pressé et s’arrête au relâchement (sans limite de durée).
+            </span>
           </label>
         </div>
       </section>
@@ -182,6 +293,20 @@ export function VoiceGeneral() {
       {/* 2 — Nettoyage du texte (formatting) */}
       <section className={cn(privacyOn && 'opacity-50')} title={privacyOn ? 'Désactivé en mode tout-local' : undefined}>
         <SectionHeader icon={Wand2} title="Nettoyage du texte" />
+        <div className="mb-4">
+          <SettingRow
+            title="Nettoyage intelligent (IA Groq)"
+            sub="Interprète tes commandes parlées (« scratch that », auto-corrections, « nouvelle ligne »…) et nettoie le texte AVANT de coller — dans n'importe quelle app. Nécessite une clé Groq ; remplace le niveau ci-dessous quand activé."
+            right={
+              <Toggle
+                on={(s['voice.smartCleanup'] ?? '0') === '1'}
+                onClick={() => set('voice.smartCleanup', (s['voice.smartCleanup'] ?? '0') === '1' ? '0' : '1')}
+                disabled={!loaded || privacyOn}
+                ariaLabel="Nettoyage intelligent par IA"
+              />
+            }
+          />
+        </div>
         <Segmented<Fmt>
           value={(s['voice.formatting'] ?? 'light') as Fmt}
           options={[

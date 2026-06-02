@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, globalShortcut, session, protocol, ipcMain } from 'electron'
+import { app, BrowserWindow, shell, session, protocol, ipcMain } from 'electron'
 import { join, extname, resolve, sep } from 'path'
 import { readFile } from 'fs/promises'
 import { existsSync, writeFileSync, rmSync, readFileSync } from 'fs'
@@ -11,7 +11,8 @@ import { closeEditorWatcher } from './ipc/editor.ipc'
 import { initMcpExport } from './services/mcp-export'
 import { reconcileStaleTasks } from './services/orchestrator/task-store'
 import { appSetting } from './ipc/settings.ipc'
-import { emitVoiceToggle } from './ipc/voice.ipc'
+import { appendAppConsole } from './ipc/browser.ipc'
+import { registerVoiceHotkeys, stopVoiceHotkeys, getVoiceHotkeyConflicts } from './services/voice-hotkey'
 import { createVoiceWidget, destroyVoiceWidget } from './services/voice-widget'
 import { initUpdater } from './services/updater'
 
@@ -166,9 +167,10 @@ function createWindow() {
     clearStartupCrumb() // renderer chargé avec succès → démarrage abouti
   })
   // Miroir des erreurs renderer dans le main : MIME module refusé, 404 de chunk hashé, exception non capturée.
-  win.webContents.on('console-message', (_e, level, message, line, sourceId) =>
-    console.error(`[renderer] level=${level} ${message} (${sourceId}:${line})`),
-  )
+  win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    console.error(`[renderer] level=${level} ${message} (${sourceId}:${line})`)
+    appendAppConsole(level, message, sourceId, line) // ring → mcp-state/app-console.log (outil MCP read_app_log)
+  })
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
@@ -259,13 +261,13 @@ app.whenReady().then(() => {
   )
 
   createWindow()
-  registerVoiceHotkey()
-  // Ré-enregistrement à chaud des hotkeys après un changement de réglage (le renderer appelle via le preload).
-  ipcMain.handle('voice:reregisterHotkeys', () => registerVoiceHotkey())
+  registerVoiceHotkeys()
+  // Ré-enregistrement à chaud des hotkeys après un changement de réglage/mode (le renderer appelle via le preload).
+  ipcMain.handle('voice:reregisterHotkeys', () => registerVoiceHotkeys())
   // Conflits du DERNIER enregistrement : le renderer les récupère au montage. L'event 'voice:hotkeyConflict'
-  // émis au boot part AVANT que VoiceProvider ne soit abonné (registerVoiceHotkey court juste après
+  // émis au boot part AVANT que VoiceProvider ne soit abonné (registerVoiceHotkeys court juste après
   // createWindow, le renderer n'a pas chargé) → sans ce pull, une hotkey morte n'a aucun feedback.
-  ipcMain.handle('voice:getHotkeyConflicts', () => lastHotkeyConflicts)
+  ipcMain.handle('voice:getHotkeyConflicts', () => getVoiceHotkeyConflicts())
   if (appSetting('voice.showWidget') !== '0') createVoiceWidget() // widget flottant (activé par défaut)
   void initUpdater() // auto-update brandé (canaux stable/dev) — no-op hors build packagé
 
@@ -298,67 +300,12 @@ function registerMediaPermissions(): void {
   )
 }
 
-// État module : accélérateurs réellement enregistrés (pour ré-enregistrement à chaud) + conflits du dernier
-// enregistrement. La coalescence du toggle vit dans voice.ipc.ts (emitVoiceToggle), partagée avec le widget (C-7).
-let registeredAccels: string[] = []
-let lastHotkeyConflicts: { accel: string; mode: string }[] = []
-
-/**
- * Hotkeys globales de dictée (toggle) et de command mode → notifient le renderer. Défauts configurables.
- * RE-RUNNABLE : libère d'abord les accélérateurs précédemment posés par CETTE fonction, puis ré-enregistre à
- * partir des réglages COURANTS — appelable à chaud (cf. ipcMain 'voice:reregisterHotkeys') sans redémarrage.
- * globalShortcut.register renvoie false (SANS throw) si l'accélérateur est déjà pris : on le détecte et on
- * notifie le renderer (voice:hotkeyConflict) au lieu d'avaler l'échec en silence. Le try/catch couvre, lui,
- * le cas de l'accélérateur MALFORMÉ (qui, lui, throw).
- */
-export function registerVoiceHotkey(): void {
-  // Libère uniquement ce que CETTE fonction avait posé (surtout pas unregisterAll, qui tuerait d'autres hotkeys).
-  for (const accel of registeredAccels) {
-    try { globalShortcut.unregister(accel) } catch { /* ignore */ }
-  }
-  registeredAccels = []
-  lastHotkeyConflicts = []
-
-  const broadcast = (channel: string): void => {
-    for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send(channel)
-  }
-  const toggleAccel = appSetting('voice.hotkey.toggle') || appSetting('voice.hotkey') || 'CommandOrControl+Shift+Space'
-  const commandAccel = appSetting('voice.hotkey.command') || 'CommandOrControl+Shift+.'
-  try {
-    // Toggle dictée → emitVoiceToggle : coalesceur 250 ms partagé avec le widget (C-7).
-    const okToggle = globalShortcut.register(toggleAccel, emitVoiceToggle)
-    if (!okToggle || !globalShortcut.isRegistered(toggleAccel)) {
-      console.warn('Voice hotkey conflict:', toggleAccel)
-      lastHotkeyConflicts.push({ accel: toggleAccel, mode: 'toggle' })
-      BrowserWindow.getAllWindows()[0]?.webContents.send('voice:hotkeyConflict', { accel: toggleAccel, mode: 'toggle' })
-    } else {
-      registeredAccels.push(toggleAccel)
-    }
-  } catch (e) {
-    console.error('[voice] enregistrement hotkey dictée échoué :', (e as Error).message)
-  }
-  try {
-    if (commandAccel && commandAccel !== toggleAccel) {
-      const okCommand = globalShortcut.register(commandAccel, () => broadcast('voice:command-key'))
-      if (!okCommand || !globalShortcut.isRegistered(commandAccel)) {
-        console.warn('Voice hotkey conflict:', commandAccel)
-        lastHotkeyConflicts.push({ accel: commandAccel, mode: 'command' })
-        BrowserWindow.getAllWindows()[0]?.webContents.send('voice:hotkeyConflict', { accel: commandAccel, mode: 'command' })
-      } else {
-        registeredAccels.push(commandAccel)
-      }
-    }
-  } catch (e) {
-    console.error('[voice] enregistrement hotkey command mode échoué :', (e as Error).message)
-  }
-}
-
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
 app.on('will-quit', () => {
-  globalShortcut.unregisterAll()
+  stopVoiceHotkeys()
   destroyVoiceWidget()
   sweepArchiveSync() // capture finale des transcripts (delta depuis le dernier sweep) AVANT de tuer les agents + fermer la DB
   killAllTerminals()

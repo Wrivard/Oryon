@@ -26,6 +26,8 @@ interface Snapshot {
   threshold?: number
   formatting: string
   privacy: boolean
+  engine: 'groq' | 'local'
+  smartCleanup: boolean
 }
 
 interface Dicts {
@@ -66,6 +68,8 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
   sourceRef.current = source
   const warmedModelRef = useRef<string | null>(null) // dernier modèle préchauffé → re-warm au changement
   const stopRef = useRef<(() => void) | null>(null)
+  const startRef = useRef<(() => Promise<void>) | null>(null)
+  const holdWantRef = useRef(false) // mode 'hold' (PTT) : la touche est-elle maintenue (intention d'enregistrer) ?
 
   // Préchauffe le modèle à l'idle (download + init session ORT hors du chemin critique) ET re-préchauffe si
   // l'utilisateur change de modèle dans les réglages (relu au retour de focus). État 'downloading' (speed-1/2).
@@ -74,6 +78,10 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
     const warm = (): void => {
       void window.bridge.settings.getApp().then((s) => {
         if (cancelled) return
+        // Moteur Groq actif (clé présente) → transcription DISTANTE : ne PAS précharger le lourd modèle Whisper
+        // local. Inutile (il ne sert que de repli) ET son chargement met l'état à 'downloading' à CHAQUE focus de
+        // la fenêtre — perçu comme « la dictée démarre toute seule » quand on revient taper dans Oryon.
+        if (s['voice.engine'] !== 'local' && (s['voice.groqApiKey'] || '').trim()) return
         const model = resolveModelId(s['voice.model'] || 'small')
         if (model === warmedModelRef.current) return // déjà préchauffé ce modèle
         warmedModelRef.current = model
@@ -100,20 +108,31 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
     if (recRef.current || startingRef.current) return
     startingRef.current = true
     if (!tryAcquire('dictation')) {
+      console.log('[voice] start ABORT · verrou dictation occupé (command mode ou dictée précédente non libérée)')
       startingRef.current = false // micro tenu par le command mode : no-op gracieux
       return
     }
     try {
       const s = await window.bridge.settings.getApp()
+      // Mode 'hold' (push-to-talk) : l'utilisateur contrôle la durée en maintenant la touche → on DÉSACTIVE l'arrêt
+      // auto sur silence (sinon une pause couperait la dictée avant le relâchement) → enregistrement sans limite
+      // tant que la touche est tenue (le keyup déclenche l'arrêt via release()).
+      const holdMode = s['voice.mode'] !== 'toggle' // défaut = HOLD (push-to-talk demandé) ; 'toggle' seulement si explicitement choisi
       const snap: Snapshot = {
         model: resolveModelId(s['voice.model'] || 'small'),
         source: sourceRef.current,
         language: s['voice.language'] ?? 'french',
-        autoStop: (s['voice.autoStopOnSilence'] ?? '1') !== '0',
+        // Arrêt-auto sur silence = OPT-IN (défaut OFF). Un seuil de silence ne peut PAS à la fois épargner les
+        // pauses naturelles ET être instantané à la fin (les 2 plaintes) → on arrête sur action EXPLICITE (re-appui
+        // du raccourci en toggle, relâchement en hold). Réactivable dans les réglages pour le mains-libres.
+        autoStop: !holdMode && (s['voice.autoStopOnSilence'] ?? '0') !== '0',
         silenceMs: num(s['voice.silenceMs']),
         threshold: num(s['voice.boostThreshold']),
         formatting: s['voice.formatting'] ?? 'light',
         privacy: (s['voice.privacy'] ?? '0') === '1',
+        // Moteur de transcription : Groq (cloud, rapide) par défaut ; 'local' = on-device uniquement.
+        engine: s['voice.engine'] === 'local' ? 'local' : 'groq',
+        smartCleanup: (s['voice.smartCleanup'] ?? '0') === '1',
       }
       snapRef.current = snap
       // Préfetch des dicos pendant l'écoute → post-traitement local instantané au stop (speed-7).
@@ -142,6 +161,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
       startingRef.current = false
     }
   }, [])
+  startRef.current = start
 
   const loadDicts = async (): Promise<Dicts> => {
     if (dictsRef.current) return dictsRef.current
@@ -178,15 +198,39 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
         autoStop: true,
         formatting: 'light',
         privacy: false,
+        engine: 'groq' as const,
+        smartCleanup: false,
       }
       const durationMs = Date.now() - startedAt.current
-      let text = await transcribe(pcm, {
-        model: snap.model,
-        language: snap.language,
-        onProgress: (p) => {
-          if (isDownloadStatus(p.status)) setState((cur) => (cur === 'processing' ? 'downloading' : cur))
-        },
-      })
+      const _tx0 = performance.now()
+      // Moteur Groq (défaut) : transcription cloud rapide. Repli LOCAL on-device si pas de clé / erreur / hors-ligne
+      // → la dictée ne casse jamais quand Groq est indisponible.
+      let text = ''
+      let viaGroq = false
+      if (snap.engine !== 'local') {
+        try {
+          const r = await window.bridge.voice.transcribeRemote(pcm, { language: snap.language })
+          if (r.ok && typeof r.text === 'string') {
+            text = r.text
+            viaGroq = true
+          } else if (r.reason === 'error') {
+            console.warn('[voice] Groq erreur → repli local : ' + (r.message ?? ''))
+          }
+        } catch (err) {
+          console.warn('[voice] Groq IPC indisponible → repli local : ' + ((err as Error)?.message ?? ''))
+        }
+      }
+      if (!viaGroq) {
+        text = await transcribe(pcm, {
+          model: snap.model,
+          language: snap.language,
+          onProgress: (p) => {
+            if (isDownloadStatus(p.status)) setState((cur) => (cur === 'processing' ? 'downloading' : cur))
+          },
+        })
+      }
+      // Sonde latence (#2) : durée PURE de transcription (le gros du « long avant collage »). Visible via read_app_log.
+      console.log(`[voice] transcribe ${Math.round(performance.now() - _tx0)}ms · ${viaGroq ? 'Groq' : 'local ' + snap.model} · pcm ${pcm.length} · raw="${text.slice(0, 80)}"`)
       if (runId !== runIdRef.current) return // annulé pendant la transcription (rel-7)
       setState('processing')
       const dicts = await loadDicts()
@@ -200,10 +244,20 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
       if (snap.source === 'orchestrator') text = applyFileTags(text, projectFiles)
       if (codeSafe) {
         text = formatCodeSafe(text)
+      } else if (snap.smartCleanup && text.trim()) {
+        // Layer INTELLIGENT (global, toute app) : nettoyage + auto-corrections (« scratch that ») + commandes
+        // parlées via LLM Groq rapide. Repli sur le formatage local si Groq renvoie '' (privacy / pas de clé / échec / dérive).
+        const cleaned = await window.bridge.voice.cleanup(text)
+        if (runId !== runIdRef.current) return
+        if (cleaned) text = cleaned
+        else if (snap.formatting !== 'none') text = formatLight(text, { french: snap.language === 'french' })
       } else if (snap.formatting !== 'none' && text.trim()) {
         const french = snap.language === 'french'
         const light = formatLight(text, { french })
-        if (snap.formatting === 'light' || snap.privacy) {
+        if (snap.formatting === 'light' || snap.privacy || snap.source !== 'orchestrator') {
+          // light/privacy OU cible système/terminal : formatage LOCAL uniquement — on n'attend JAMAIS le CLI Claude
+          // sur le chemin de collage (c'est la latence perçue « parole → collage »). Le CLI medium/high reste
+          // réservé à la barre orchestrateur (surface de relecture, où l'attente d'1-3 s est acceptable).
           text = light
         } else {
           const cli = await window.bridge.voice.format(text, snap.formatting === 'high' ? 'high' : 'medium')
@@ -211,6 +265,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
           text = cli || light
         }
       }
+      console.log(`[voice] final="${text.slice(0, 80)}" (${text.length} car., post-traitement)`)
       if (text && runId === runIdRef.current) {
         onTextRef.current(text, snap.source)
         void window.bridge.voice.addHistory({
@@ -261,6 +316,39 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
   useEffect(() => {
     window.bridge.voice.onToggle(() => toggleRef.current())
     return () => window.bridge.voice.offToggle()
+  }, [])
+
+  // Push-to-talk (mode 'hold') ROBUSTE : on suit l'INTENTION (holdWantRef = touche tenue ?) et on RÉCONCILIE
+  // l'enregistrement réel dessus, en boucle SINGLE-FLIGHT. Corrige « la dictée reste active après le relâchement » :
+  // si on relâche PENDANT le start asynchrone, l'ancien code appelait stop() alors que recRef était encore null
+  // (no-op), puis le start finissait → écoute bloquée. Ici, après chaque start/stop on RE-VÉRIFIE l'intention et on
+  // agit en conséquence ; le keyup (ou un double-down) finit donc toujours dans le bon état.
+  useEffect(() => {
+    let reconciling = false
+    const reconcile = async (): Promise<void> => {
+      if (reconciling) return // une réconciliation est déjà en vol → elle re-bouclera sur l'intention courante
+      reconciling = true
+      try {
+        while (holdWantRef.current !== (recRef.current != null)) {
+          if (holdWantRef.current) {
+            await startRef.current?.()
+            if (recRef.current == null) break // start a échoué (verrou/permission) → ne pas boucler à l'infini
+          } else {
+            await stopRef.current?.()
+            if (recRef.current != null) break // anormal : stop n'a pas libéré → on s'arrête là
+          }
+        }
+      } finally {
+        reconciling = false
+      }
+    }
+    const onHold = (down: boolean): void => {
+      console.log('[voice] onHold ' + (down ? 'down' : 'up'))
+      holdWantRef.current = down
+      void reconcile()
+    }
+    window.bridge.voice.onHold(onHold)
+    return () => window.bridge.voice.offHold()
   }, [])
 
   // ESC annule pendant l'écoute / la transcription (rel-7). En 'downloading', on n'attache ESC QUE si une

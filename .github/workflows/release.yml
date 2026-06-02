@@ -24,6 +24,14 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      # node-gyp (rebuild natif d'uiohook-napi par electron-builder npmRebuild) a besoin de `distutils`, RETIRÉ de
+      # Python 3.12+ que le runner windows-latest fournit par défaut → « ModuleNotFoundError: No module named
+      # 'distutils' ». On épingle Python 3.11 (distutils inclus). (better-sqlite3/node-pty utilisent des prébuilts
+      # reconnus → pas de compilation ; seul uiohook-napi est recompilé depuis les sources.)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       # Installe les deps + rebuild natif (better-sqlite3 via postinstall ; node-pty via npmRebuild d'eb).
       - run: npm ci
 
