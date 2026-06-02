@@ -17,6 +17,7 @@ interface Combo {
   mode: 'toggle' | 'command'
   parsed: Parsed
   pressed: boolean // anti auto-répétition (le keydown se répète tant que la touche est maintenue) + suivi du relâchement
+  downAt: number // horodatage du dernier front montant → auto-réparation si un keyup est raté (pressed resterait true)
   onDown: () => void
   onUp?: () => void
 }
@@ -93,13 +94,21 @@ function matches(e: UiohookKeyboardEvent, p: Parsed): boolean {
   return e.keycode === p.keycode && e.ctrlKey === p.ctrl && e.shiftKey === p.shift && e.altKey === p.alt && e.metaKey === p.meta
 }
 
+// Si un keyup est raté (pressed resterait true → toggle-off / re-départ bloqués pour toujours), un nouvel appui
+// au-delà de ce délai re-déclenche quand même. > durée d'un appui/tap normal, < l'intervalle entre deux dictées.
+const REPRESS_STUCK_MS = 2000
 function onKeyDown(e: UiohookKeyboardEvent): void {
   try {
+    const now = Date.now()
     for (const c of combos) {
-      if (!c.pressed && matches(e, c.parsed)) {
-        c.pressed = true
-        c.onDown()
-      }
+      if (!matches(e, c.parsed)) continue
+      // N'agir QUE sur le front montant : le keydown se RÉPÈTE tant que la touche est tenue (auto-répétition
+      // clavier Windows ~250 ms). Sans ce garde, le toggle se ré-enclenchait au repeat et coupait la dictée à
+      // ~256 ms. Auto-réparation : un keyup raté laisserait pressed=true à jamais → on ré-autorise après REPRESS_STUCK_MS.
+      if (c.pressed && now - c.downAt <= REPRESS_STUCK_MS) continue
+      c.pressed = true
+      c.downAt = now
+      c.onDown()
     }
   } catch (err) {
     console.error('[voice-hotkey] keydown:', (err as Error).message)
@@ -143,9 +152,11 @@ export function registerVoiceHotkeys(): void {
   const mode = appSetting('voice.mode')
   const holdMode = mode === 'hold' || mode === 'ptt' // 'ptt' = ancienne valeur persistée (compat)
 
-  // uiohook UNIQUEMENT pour le HOLD (il a besoin du keyup). En TOGGLE, on reste sur globalShortcut (keydown seul) :
-  // fiable, sans le flag `pressed` qui reste coincé si uiohook rate un keyup (→ « le toggle off ne marche pas »).
-  const uio = holdMode ? getUio() : null
+  // uiohook pour TOGGLE *et* HOLD : son flag `pressed` (front montant uniquement) neutralise l'auto-répétition du
+  // keydown. globalShortcut ne l'expose pas → en toggle il se ré-déclenchait au repeat clavier Windows (~250 ms),
+  // coupant la dictée à ~256 ms. Le bug « toggle-off bloqué si un keyup est raté » est traité par l'auto-réparation
+  // REPRESS_STUCK_MS (onKeyDown). globalShortcut ne sert plus que de repli si uiohook est indisponible.
+  const uio = getUio()
   if (uio) registerViaUiohook(uio, toggleAccel, commandAccel, holdMode)
   else registerViaGlobalShortcut(toggleAccel, commandAccel)
 }
@@ -171,6 +182,7 @@ function registerViaUiohook(
       mode: 'toggle',
       parsed: toggleParsed,
       pressed: false,
+      downAt: 0,
       // toggle : bascule au keydown (coalescée 250 ms, partagée avec le widget). hold : démarre au keydown, arrête au keyup.
       onDown: holdMode ? () => emitVoiceHold(true) : emitVoiceToggle,
       onUp: holdMode ? () => emitVoiceHold(false) : undefined,
@@ -180,7 +192,7 @@ function registerViaUiohook(
   }
   if (commandAccel && commandAccel !== toggleAccel) {
     const commandParsed = parseAccel(commandAccel, UiohookKey)
-    if (commandParsed) next.push({ accel: commandAccel, mode: 'command', parsed: commandParsed, pressed: false, onDown: broadcastCommandKey })
+    if (commandParsed) next.push({ accel: commandAccel, mode: 'command', parsed: commandParsed, pressed: false, downAt: 0, onDown: broadcastCommandKey })
     else reportConflict(commandAccel, 'command')
   }
   combos = next
