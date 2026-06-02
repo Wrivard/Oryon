@@ -293,6 +293,20 @@ export function VoiceGeneral() {
       {/* 2 — Nettoyage du texte (formatting) */}
       <section className={cn(privacyOn && 'opacity-50')} title={privacyOn ? 'Désactivé en mode tout-local' : undefined}>
         <SectionHeader icon={Wand2} title="Nettoyage du texte" />
+        <div className="mb-4">
+          <SettingRow
+            title="Nettoyage intelligent (IA Groq)"
+            sub="Interprète tes commandes parlées (« scratch that », auto-corrections, « nouvelle ligne »…) et nettoie le texte AVANT de coller — dans n'importe quelle app. Nécessite une clé Groq ; remplace le niveau ci-dessous quand activé."
+            right={
+              <Toggle
+                on={(s['voice.smartCleanup'] ?? '0') === '1'}
+                onClick={() => set('voice.smartCleanup', (s['voice.smartCleanup'] ?? '0') === '1' ? '0' : '1')}
+                disabled={!loaded || privacyOn}
+                ariaLabel="Nettoyage intelligent par IA"
+              />
+            }
+          />
+        </div>
         <Segmented<Fmt>
           value={(s['voice.formatting'] ?? 'light') as Fmt}
           options={[

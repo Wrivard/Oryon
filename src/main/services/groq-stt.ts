@@ -68,3 +68,44 @@ export async function transcribeWithGroq(
   const json = (await res.json()) as { text?: string }
   return (json.text ?? '').trim()
 }
+
+const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions'
+
+/**
+ * Nettoyage intelligent du transcript via un LLM Groq RAPIDE (défaut llama-3.1-8b-instant) : retire les
+ * hésitations, applique les auto-corrections parlées (« scratch that ») + commandes, SANS rien inventer (édition
+ * soustractive, cf. CLEANUP_SYSTEM). Fournisseur SÉPARÉ de Claude → $0 Claude. Renvoie '' (→ repli sur le brut)
+ * si vide, erreur, ou si la sortie a beaucoup gonflé (garde anti-hallucination/emballement).
+ */
+export async function cleanupWithGroq(
+  text: string,
+  systemPrompt: string,
+  apiKey: string,
+  model = 'llama-3.1-8b-instant',
+): Promise<string> {
+  // Borne la sortie près de la taille de l'entrée → coupe court à un emballement (« répète un mot 100× »).
+  const maxTokens = Math.min(2048, Math.ceil((text.length / 4) * 1.4) + 64)
+  const res = await fetch(GROQ_CHAT_URL, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      temperature: 0, // transformation déterministe, pas de génération créative → minimise hallucination/paraphrase
+      top_p: 1,
+      max_tokens: maxTokens,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: text },
+      ],
+    }),
+  })
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`Groq chat ${res.status} ${res.statusText}: ${body.slice(0, 200)}`)
+  }
+  const json = (await res.json()) as { choices?: { message?: { content?: string } }[] }
+  const out = (json.choices?.[0]?.message?.content ?? '').trim()
+  // Garde anti-ballonnement : une sortie nettement plus longue que l'entrée = probable dérive → repli sur le brut.
+  if (!out || out.length > text.length * 1.6 + 40) return ''
+  return out
+}

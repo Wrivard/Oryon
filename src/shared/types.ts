@@ -694,6 +694,8 @@ export interface BridgeApi {
       pcm: Float32Array,
       opts: { language?: string },
     ) => Promise<{ ok: boolean; text?: string; reason?: string; message?: string }>
+    /** Nettoyage intelligent du transcript (layer post-dictée) via LLM Groq rapide. '' = aucun nettoyage (privacy / pas de clé / échec) → l'appelant garde le brut. */
+    cleanup: (text: string) => Promise<string>
 
     /** Hotkey dédiée du command mode (main → renderer). */
     onCommandKey: (cb: () => void) => void

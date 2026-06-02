@@ -27,6 +27,7 @@ interface Snapshot {
   formatting: string
   privacy: boolean
   engine: 'groq' | 'local'
+  smartCleanup: boolean
 }
 
 interface Dicts {
@@ -131,6 +132,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
         privacy: (s['voice.privacy'] ?? '0') === '1',
         // Moteur de transcription : Groq (cloud, rapide) par défaut ; 'local' = on-device uniquement.
         engine: s['voice.engine'] === 'local' ? 'local' : 'groq',
+        smartCleanup: (s['voice.smartCleanup'] ?? '0') === '1',
       }
       snapRef.current = snap
       // Préfetch des dicos pendant l'écoute → post-traitement local instantané au stop (speed-7).
@@ -197,6 +199,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
         formatting: 'light',
         privacy: false,
         engine: 'groq' as const,
+        smartCleanup: false,
       }
       const durationMs = Date.now() - startedAt.current
       const _tx0 = performance.now()
@@ -241,6 +244,13 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
       if (snap.source === 'orchestrator') text = applyFileTags(text, projectFiles)
       if (codeSafe) {
         text = formatCodeSafe(text)
+      } else if (snap.smartCleanup && text.trim()) {
+        // Layer INTELLIGENT (global, toute app) : nettoyage + auto-corrections (« scratch that ») + commandes
+        // parlées via LLM Groq rapide. Repli sur le formatage local si Groq renvoie '' (privacy / pas de clé / échec / dérive).
+        const cleaned = await window.bridge.voice.cleanup(text)
+        if (runId !== runIdRef.current) return
+        if (cleaned) text = cleaned
+        else if (snap.formatting !== 'none') text = formatLight(text, { french: snap.language === 'french' })
       } else if (snap.formatting !== 'none' && text.trim()) {
         const french = snap.language === 'french'
         const light = formatLight(text, { french })

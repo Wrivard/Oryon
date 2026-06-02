@@ -6,8 +6,8 @@ import { injectText } from '../services/text-injection'
 import { muteForDictation, restoreAfterDictation } from '../services/audio-mute'
 import { learnFromEdit } from '../services/orchestrator/learn'
 import { voiceCliOneShot } from '../services/orchestrator/cli'
-import { formatSystem, COMMAND_SYSTEM } from '../services/orchestrator/roles'
-import { transcribeWithGroq } from '../services/groq-stt'
+import { formatSystem, COMMAND_SYSTEM, CLEANUP_SYSTEM } from '../services/orchestrator/roles'
+import { transcribeWithGroq, cleanupWithGroq } from '../services/groq-stt'
 import { appSetting } from './settings.ipc'
 import type {
   VoiceReplacement,
@@ -199,6 +199,22 @@ export function registerVoiceIpc(): void {
   ipcMain.handle('voice:format', async (_e, text: string, level: 'medium' | 'high'): Promise<string> => {
     if (!text.trim() || (appSetting('voice.privacy') ?? '0') === '1') return ''
     return voiceCliOneShot(formatSystem(level === 'high' ? 'high' : 'medium'), text)
+  })
+  // Nettoyage intelligent (layer post-dictée) via LLM Groq RAPIDE (clé Groq, $0 Claude). Édition soustractive :
+  // hésitations + auto-corrections (« scratch that ») + commandes parlées. Renvoie '' → l'appelant garde le texte
+  // brut/formaté localement (repli). Coupé en mode privacy (appel réseau) et sans clé Groq.
+  ipcMain.handle('voice:cleanup', async (_e, text: string): Promise<string> => {
+    const t = str(text)
+    if (!t.trim() || (appSetting('voice.privacy') ?? '0') === '1') return ''
+    const key = (appSetting('voice.groqApiKey') ?? '').trim()
+    if (!key) return ''
+    try {
+      const model = appSetting('voice.cleanupModel') || 'llama-3.1-8b-instant'
+      return await cleanupWithGroq(t, CLEANUP_SYSTEM, key, model)
+    } catch (e) {
+      console.error('[voice] cleanup Groq échec → repli brut : ' + ((e as Error)?.message ?? ''))
+      return ''
+    }
   })
   // Command mode (INC9) : la voix transforme la sélection / insère inline, via CLI $0. Coupé en mode privacy.
   ipcMain.handle('voice:command', async (_e, command: string, selection: string): Promise<string> => {
