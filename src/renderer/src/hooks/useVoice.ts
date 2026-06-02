@@ -77,6 +77,10 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
     const warm = (): void => {
       void window.bridge.settings.getApp().then((s) => {
         if (cancelled) return
+        // Moteur Groq actif (clé présente) → transcription DISTANTE : ne PAS précharger le lourd modèle Whisper
+        // local. Inutile (il ne sert que de repli) ET son chargement met l'état à 'downloading' à CHAQUE focus de
+        // la fenêtre — perçu comme « la dictée démarre toute seule » quand on revient taper dans Oryon.
+        if (s['voice.engine'] !== 'local' && (s['voice.groqApiKey'] || '').trim()) return
         const model = resolveModelId(s['voice.model'] || 'small')
         if (model === warmedModelRef.current) return // déjà préchauffé ce modèle
         warmedModelRef.current = model
