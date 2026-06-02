@@ -29,6 +29,15 @@ export function emitVoiceToggle(): void {
     if (!w.isDestroyed() && !isVoiceWidget(w)) w.webContents.send('voice:toggle')
 }
 
+// Push-to-talk (mode 'hold') : la hotkey en maintien envoie le démarrage au keydown (down:true) et l'arrêt au
+// keyup (down:false). Contrairement au toggle, AUCUNE coalescence — les deux fronts doivent passer (un tap rapide
+// < 250 ms démarrerait-puis-arrêterait, ce que la coalescence avalerait). L'anti auto-répétition est gérée en
+// amont par le service de hotkey (flag pressed). Exclut le widget, jamais destinataire (comme emitVoiceToggle).
+export function emitVoiceHold(down: boolean): void {
+  for (const w of BrowserWindow.getAllWindows())
+    if (!w.isDestroyed() && !isVoiceWidget(w)) w.webContents.send('voice:hold', down)
+}
+
 // Coercition défensive des arguments IPC non fiables (renderer/preload) — pas de lib de schéma.
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
 const num = (v: unknown): number => (Number.isFinite(v as number) ? Number(v) : 0)

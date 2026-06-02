@@ -66,6 +66,8 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
   sourceRef.current = source
   const warmedModelRef = useRef<string | null>(null) // dernier modèle préchauffé → re-warm au changement
   const stopRef = useRef<(() => void) | null>(null)
+  const startRef = useRef<(() => Promise<void>) | null>(null)
+  const holdWantRef = useRef(false) // mode 'hold' (PTT) : la touche est-elle maintenue (intention d'enregistrer) ?
 
   // Préchauffe le modèle à l'idle (download + init session ORT hors du chemin critique) ET re-préchauffe si
   // l'utilisateur change de modèle dans les réglages (relu au retour de focus). État 'downloading' (speed-1/2).
@@ -105,11 +107,15 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
     }
     try {
       const s = await window.bridge.settings.getApp()
+      // Mode 'hold' (push-to-talk) : l'utilisateur contrôle la durée en maintenant la touche → on DÉSACTIVE l'arrêt
+      // auto sur silence (sinon une pause couperait la dictée avant le relâchement) → enregistrement sans limite
+      // tant que la touche est tenue (le keyup déclenche l'arrêt via release()).
+      const holdMode = s['voice.mode'] === 'hold' || s['voice.mode'] === 'ptt'
       const snap: Snapshot = {
         model: resolveModelId(s['voice.model'] || 'small'),
         source: sourceRef.current,
         language: s['voice.language'] ?? 'french',
-        autoStop: (s['voice.autoStopOnSilence'] ?? '1') !== '0',
+        autoStop: !holdMode && (s['voice.autoStopOnSilence'] ?? '1') !== '0',
         silenceMs: num(s['voice.silenceMs']),
         threshold: num(s['voice.boostThreshold']),
         formatting: s['voice.formatting'] ?? 'light',
@@ -142,6 +148,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
       startingRef.current = false
     }
   }, [])
+  startRef.current = start
 
   const loadDicts = async (): Promise<Dicts> => {
     if (dictsRef.current) return dictsRef.current
@@ -264,6 +271,25 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
   useEffect(() => {
     window.bridge.voice.onToggle(() => toggleRef.current())
     return () => window.bridge.voice.offToggle()
+  }, [])
+
+  // Push-to-talk (mode 'hold') : keydown → démarrage, keyup → arrêt. On suit l'INTENTION (holdWantRef) pour gérer
+  // le tap très court : si la touche est relâchée PENDANT l'acquisition micro (start est asynchrone), on arrête dès
+  // que start a fini — sinon le micro resterait ouvert (le release est arrivé alors que recRef était encore null).
+  useEffect(() => {
+    const onHold = async (down: boolean): Promise<void> => {
+      if (down) {
+        if (holdWantRef.current) return // anti double-down défensif (l'anti auto-répétition clavier est gérée côté main)
+        holdWantRef.current = true
+        await startRef.current?.()
+        if (!holdWantRef.current) void stopRef.current?.() // relâché pendant le démarrage → arrêt immédiat
+      } else {
+        holdWantRef.current = false
+        void stopRef.current?.()
+      }
+    }
+    window.bridge.voice.onHold((down) => void onHold(down))
+    return () => window.bridge.voice.offHold()
   }, [])
 
   // ESC annule pendant l'écoute / la transcription (rel-7). En 'downloading', on n'attache ESC QUE si une
