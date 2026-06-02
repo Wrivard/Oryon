@@ -226,14 +226,22 @@ export function registerVoiceIpc(): void {
       // 'french'|'english'|'' (valeurs app) → ISO-639-1 attendu par Groq.
       const lang = opts?.language === 'english' ? 'en' : opts?.language === 'french' ? 'fr' : ''
       const model = appSetting('voice.groqModel') || 'whisper-large-v3-turbo'
-      // Amorce Whisper : français QC + noms propres/jargon de l'utilisateur (vocabulaire + remplacements) →
-      // meilleure reconnaissance des termes du domaine (kua-coiffure, OryonBridge, Supabase, Next.js…).
-      const terms = [...new Set([...listVocab().map((v) => v.term), ...listReplacements().map((r) => r.replacement)])].filter(Boolean).slice(0, 40)
-      const prompt = ((lang === 'fr' ? 'Transcription en français québécois.' : '') + (terms.length ? ' ' + terms.join(', ') + '.' : '')).trim()
+      // Amorce BILINGUE Whisper (≤224 tokens). Whisper « verrouille » UNE langue par clip et francise l'autre →
+      // le code-switching FR↔EN est sa faiblesse STRUCTURELLE. Le levier #1 (gratuit) est le prompt : une amorce
+      // qui MÉLANGE québécois + anglicismes/termes techniques dans leur ORTHOGRAPHE ANGLAISE démontre au modèle de
+      // GARDER l'anglais en anglais (vs l'ancienne amorce 100 % FR qui biaisait contre). Noms propres/jargon de
+      // l'utilisateur EN FIN (Whisper pondère plus fort la fin du prompt → termes les plus mal transcrits en dernier).
+      const PRIMER =
+        "Salut, c'est correct, on se call tantôt. Faut que je deploy le build pis que je merge la pull request. " +
+        "J'ai un bug dans le frontend, check les logs pis le dashboard, on va shipper ça là."
+      const terms = [...new Set([...listVocab().map((v) => v.term), ...listReplacements().map((r) => r.replacement)])].filter(Boolean).slice(0, 30)
+      const prompt = (PRIMER + (terms.length ? ' ' + terms.join(', ') + '.' : '')).slice(0, 800)
       try {
         const t0 = Date.now()
-        const text = await transcribeWithGroq(samples, lang, key, model, prompt)
-        console.log('[voice] Groq ' + model + ' · ' + (Date.now() - t0) + 'ms · ' + samples.length + ' samples → ' + text.length + ' chars')
+        let text = await transcribeWithGroq(samples, lang, key, model, prompt)
+        // Garde anti-fuite de prompt : Whisper recrache parfois l'amorce en tête du transcript → on la retire.
+        if (text && text.startsWith(PRIMER.slice(0, 30))) text = text.slice(PRIMER.length).replace(/^[\s.,;:!?…-]+/, '')
+        console.log('[voice] Groq ' + model + ' · ' + (Date.now() - t0) + 'ms · ' + samples.length + ' samples → "' + text.slice(0, 60) + '"')
         return { ok: true, text }
       } catch (e) {
         const message = (e as Error)?.message ?? String(e)
