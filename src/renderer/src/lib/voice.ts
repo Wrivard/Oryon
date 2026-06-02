@@ -248,6 +248,7 @@ export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
   if (capturing) throw new Error('Capture déjà en cours')
   capturing = true
   const { onSilence, silenceMs = 600, minSpeechMs = 350, rmsThreshold = 0.012, maxDurationMs = 600000 } = vad
+  console.log('[voice] REC start · autoStop=' + (onSilence ? 'ON' : 'OFF') + ' silenceMs=' + silenceMs + ' thr=' + rmsThreshold + ' maxMs=' + maxDurationMs)
   // Tout le setup est gardé : si N'IMPORTE quelle étape échoue (permission, AudioContext, ScriptProcessor…),
   // on réinitialise `capturing` et on libère le micro — sinon le flag resterait bloqué à true (« capture déjà en cours »).
   try {
@@ -265,6 +266,7 @@ export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
     let silenceRun = 0
     let totalMs = 0
     let fired = false
+    let peakRms = 0 // diagnostic : RMS max observé → révèle si la parole passe SOUS rmsThreshold (faux « silence »)
     processor.onaudioprocess = (e) => {
       const data = e.inputBuffer.getChannelData(0)
       chunks.push(new Float32Array(data))
@@ -272,6 +274,7 @@ export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
       let sum = 0
       for (let i = 0; i < data.length; i++) sum += data[i] * data[i]
       const rms = Math.sqrt(sum / data.length)
+      if (rms > peakRms) peakRms = rms
       const frameMs = (data.length / srcRate) * 1000
       totalMs += frameMs
       if (rms >= rmsThreshold) {
@@ -284,6 +287,7 @@ export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
       // Auto-stop UNIQUEMENT si onSilence est fourni (VAD activé).
       if (onSilence && !fired && ((sawSpeech && silenceRun >= silenceMs) || totalMs >= maxDurationMs)) {
         fired = true
+        console.log('[voice] REC auto-stop @' + Math.round(totalMs) + 'ms · reason=' + (totalMs >= maxDurationMs ? 'MAXDUR' : 'silence(run=' + Math.round(silenceRun) + 'ms)') + ' · peakRms=' + peakRms.toFixed(4) + ' thr=' + rmsThreshold + ' sawSpeech=' + sawSpeech)
         onSilence()
       }
     }
@@ -310,6 +314,7 @@ export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
       stop: async () => {
         cleanup()
         const total = chunks.reduce((n, c) => n + c.length, 0)
+        console.log('[voice] REC stop · recorded ' + Math.round(totalMs) + 'ms · samples ' + total)
         const merged = new Float32Array(total)
         let off = 0
         for (const c of chunks) {
