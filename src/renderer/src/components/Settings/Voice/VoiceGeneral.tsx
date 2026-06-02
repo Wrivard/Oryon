@@ -139,18 +139,32 @@ export function VoiceGeneral() {
       {/* 1.4 — Retour sonore */}
       <section>
         <SectionHeader icon={Volume2} title="Retour sonore" />
-        <SettingRow
-          title="Sons de dictée"
-          sub="Bip à l'ouverture et au relâchement de la dictée."
-          right={
-            <Toggle
-              on={(s['voice.cueSounds'] ?? '1') !== '0'}
-              onClick={() => set('voice.cueSounds', (s['voice.cueSounds'] ?? '1') !== '0' ? '0' : '1')}
-              disabled={!loaded}
-              ariaLabel="Sons de dictée"
-            />
-          }
-        />
+        <div className="space-y-3">
+          <SettingRow
+            title="Sons de dictée"
+            sub="Bip à l'ouverture et au relâchement de la dictée."
+            right={
+              <Toggle
+                on={(s['voice.cueSounds'] ?? '1') !== '0'}
+                onClick={() => set('voice.cueSounds', (s['voice.cueSounds'] ?? '1') !== '0' ? '0' : '1')}
+                disabled={!loaded}
+                ariaLabel="Sons de dictée"
+              />
+            }
+          />
+          <SettingRow
+            title="Couper le son système pendant la dictée"
+            sub="Met Windows en sourdine tant que tu parles, puis rétablit l'état précédent. Windows uniquement."
+            right={
+              <Toggle
+                on={(s['voice.muteDuringDictation'] ?? '0') === '1'}
+                onClick={() => set('voice.muteDuringDictation', (s['voice.muteDuringDictation'] ?? '0') === '1' ? '0' : '1')}
+                disabled={!loaded}
+                ariaLabel="Couper le son système pendant la dictée"
+              />
+            }
+          />
+        </div>
       </section>
 
       {/* 1.5 — Mode de dictée */}

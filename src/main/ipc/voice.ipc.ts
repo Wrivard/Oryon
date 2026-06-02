@@ -3,6 +3,7 @@ import { v4 as uuid } from 'uuid'
 import { getDb } from '../db'
 import { createVoiceWidget, destroyVoiceWidget, sendVoiceState, isVoiceWidget } from '../services/voice-widget'
 import { injectText } from '../services/text-injection'
+import { muteForDictation, restoreAfterDictation } from '../services/audio-mute'
 import { learnFromEdit } from '../services/orchestrator/learn'
 import { voiceCliOneShot } from '../services/orchestrator/cli'
 import { formatSystem, COMMAND_SYSTEM } from '../services/orchestrator/roles'
@@ -219,7 +220,13 @@ export function registerVoiceIpc(): void {
   // une hotkey rapprochés démarreraient-puis-arrêteraient aussitôt une capture. emitVoiceToggle exclut le widget.
   ipcMain.on('voice:requestToggle', () => emitVoiceToggle())
   // Fenêtre principale → état courant → widget.
-  ipcMain.on('voice:stateChanged', (_e, state: VoiceState) => sendVoiceState(state))
+  ipcMain.on('voice:stateChanged', (_e, state: VoiceState) => {
+    sendVoiceState(state)
+    // Couper le son système pendant l'ÉCOUTE (réglage voice.muteDuringDictation), rétabli dès qu'on quitte
+    // 'listening' (arrêt / annulation / idle). Asynchrone : ne bloque pas le pont d'état → widget.
+    if (state === 'listening' && (appSetting('voice.muteDuringDictation') ?? '0') === '1') void muteForDictation()
+    else void restoreAfterDictation()
+  })
   // Settings : afficher/cacher le widget flottant.
   ipcMain.handle('voice:setWidget', (_e, visible: boolean): void => {
     if (visible) createVoiceWidget()
