@@ -38,6 +38,32 @@ function flushConsole(): void {
   dirtyConsole.clear()
 }
 
+// Console de la FENÊTRE PRINCIPALE (renderer hôte) → ring + flush (debounce 500 ms) vers mcp-state/app-console.log,
+// lu par l'outil MCP read_app_log (debug runtime de l'app elle-même, ex. les sondes [voice] de la dictée).
+let appBuf = ''
+let appDirty = false
+let appFlushTimer: ReturnType<typeof setTimeout> | null = null
+function flushAppConsole(): void {
+  appFlushTimer = null
+  if (!appDirty) return
+  const dir = mcpStateDir()
+  try {
+    mkdirSync(dir, { recursive: true })
+  } catch {
+    /* ignore */
+  }
+  writeFileAtomic(join(dir, 'app-console.log'), appBuf)
+  appDirty = false
+}
+/** Append une ligne de la console de la fenêtre principale au ring (lu via l'outil MCP read_app_log). */
+export function appendAppConsole(level: number | string, message: string, source?: string, line?: number): void {
+  const loc = source ? ` (${source}:${line ?? '?'})` : ''
+  const t = new Date().toISOString().slice(11, 23)
+  appBuf = (appBuf + `${t} [${level}] ${message}${loc}\n`).slice(-CONSOLE_CAP)
+  appDirty = true
+  if (!appFlushTimer) appFlushTimer = setTimeout(flushAppConsole, 500)
+}
+
 export function registerBrowserIpc() {
   ipcMain.handle('browser:startDevServer', (e, workspaceId: string): Promise<DevServerResult> => {
     const wc = e.sender

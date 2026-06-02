@@ -382,6 +382,29 @@ orchestratorTool(
 )
 
 orchestratorTool(
+  'read_app_log',
+  "Logs récents de la console de la FENÊTRE PRINCIPALE d'Oryon (renderer hôte) — pour déboguer le runtime de l'app elle-même (ex. les sondes [voice] de la dictée : REC start / auto-stop / transcribe). `filter` = sous-chaîne à matcher (ex. '[voice]') ; `lines` = nombre de dernières lignes (défaut 60).",
+  {
+    filter: z.string().optional().describe("sous-chaîne à matcher (ex. '[voice]') ; absent = toutes les lignes"),
+    lines: z.number().optional().describe('nombre de dernières lignes à renvoyer (défaut 60)'),
+  },
+  async ({ filter, lines }) => {
+    const p = join(STATE_DIR, 'app-console.log')
+    let raw = ''
+    try {
+      raw = existsSync(p) ? readFileSync(p, 'utf8') : ''
+    } catch {
+      raw = ''
+    }
+    if (!raw) return text("(console principale vide — relance Oryon pour charger le capteur, puis reproduis l'action)")
+    let arr = raw.split('\n').filter(Boolean)
+    if (filter) arr = arr.filter((l) => l.includes(filter))
+    const n = lines && lines > 0 ? lines : 60
+    return text(arr.slice(-n).join('\n') || `(aucune ligne ne matche « ${filter} »)`)
+  },
+)
+
+orchestratorTool(
   'browser_screenshot',
   "Capture le panneau Browser in-app (site actuellement affiché) et renvoie l'image, pour VOIR le rendu et proposer des améliorations visuelles. Nécessite un site ouvert (open_browser) dans le workspace actif.",
   {},

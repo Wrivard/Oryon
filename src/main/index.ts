@@ -11,6 +11,7 @@ import { closeEditorWatcher } from './ipc/editor.ipc'
 import { initMcpExport } from './services/mcp-export'
 import { reconcileStaleTasks } from './services/orchestrator/task-store'
 import { appSetting } from './ipc/settings.ipc'
+import { appendAppConsole } from './ipc/browser.ipc'
 import { registerVoiceHotkeys, stopVoiceHotkeys, getVoiceHotkeyConflicts } from './services/voice-hotkey'
 import { createVoiceWidget, destroyVoiceWidget } from './services/voice-widget'
 import { initUpdater } from './services/updater'
@@ -166,9 +167,10 @@ function createWindow() {
     clearStartupCrumb() // renderer chargé avec succès → démarrage abouti
   })
   // Miroir des erreurs renderer dans le main : MIME module refusé, 404 de chunk hashé, exception non capturée.
-  win.webContents.on('console-message', (_e, level, message, line, sourceId) =>
-    console.error(`[renderer] level=${level} ${message} (${sourceId}:${line})`),
-  )
+  win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    console.error(`[renderer] level=${level} ${message} (${sourceId}:${line})`)
+    appendAppConsole(level, message, sourceId, line) // ring → mcp-state/app-console.log (outil MCP read_app_log)
+  })
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
