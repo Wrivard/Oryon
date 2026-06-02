@@ -312,6 +312,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
   // que start a fini — sinon le micro resterait ouvert (le release est arrivé alors que recRef était encore null).
   useEffect(() => {
     const onHold = async (down: boolean): Promise<void> => {
+      console.log('[voice] onHold ' + (down ? 'down' : 'up'))
       if (down) {
         if (holdWantRef.current) return // anti double-down défensif (l'anti auto-répétition clavier est gérée côté main)
         holdWantRef.current = true

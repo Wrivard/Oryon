@@ -1,6 +1,7 @@
 import { BrowserWindow, globalShortcut } from 'electron'
 import { appSetting } from '../ipc/settings.ipc'
 import { emitVoiceToggle, emitVoiceHold } from '../ipc/voice.ipc'
+import { appendAppConsole } from '../ipc/browser.ipc'
 import type { UiohookKeyboardEvent, UiohookKey as UiohookKeyMap } from 'uiohook-napi'
 
 // Hotkeys globales de dictée (toggle / hold) et de command mode, via uiohook-napi — un hook clavier BAS NIVEAU
@@ -101,6 +102,10 @@ function onKeyDown(e: UiohookKeyboardEvent): void {
   try {
     const now = Date.now()
     for (const c of combos) {
+      // DIAG (v0.1.26) : trace les events de la TOUCHE du raccourci (même sans modificateurs) → comprendre
+      // pourquoi le keyup ne stoppe pas le hold (F1). hold=true si la combo a un onUp (mode maintien).
+      if (e.keycode === c.parsed.keycode)
+        appendAppConsole('log', `[hotkey] DOWN code=${e.keycode} ctrl=${e.ctrlKey} shift=${e.shiftKey} match=${matches(e, c.parsed)} pressed=${c.pressed} hold=${!!c.onUp}`)
       if (!matches(e, c.parsed)) continue
       // N'agir QUE sur le front montant : le keydown se RÉPÈTE tant que la touche est tenue (auto-répétition
       // clavier Windows ~250 ms). Sans ce garde, le toggle se ré-enclenchait au repeat et coupait la dictée à
@@ -118,6 +123,8 @@ function onKeyDown(e: UiohookKeyboardEvent): void {
 function onKeyUp(e: UiohookKeyboardEvent): void {
   try {
     for (const c of combos) {
+      if (e.keycode === c.parsed.keycode)
+        appendAppConsole('log', `[hotkey] UP code=${e.keycode} pressed=${c.pressed} hold=${!!c.onUp}`)
       // keyup de la TOUCHE PRINCIPALE (on ignore le relâchement des modificateurs) → fin du maintien.
       if (c.pressed && e.keycode === c.parsed.keycode) {
         c.pressed = false
