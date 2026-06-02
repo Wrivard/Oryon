@@ -86,7 +86,7 @@ export function VoiceGeneral() {
   // Réglages hot-path (lus par useVoice au snapshot de capture). Encodages alignés sur useVoice.ts :
   // autoStop = valeur !== '0' (défaut on), silenceMs = ms brut, boostThreshold = flottant 0–1.
   const autoStopOn = (s['voice.autoStopOnSilence'] ?? '1') !== '0'
-  const silenceMs = numOr(s['voice.silenceMs'], 800)
+  const silenceMs = numOr(s['voice.silenceMs'], 600)
   const boostThreshold = numOr(s['voice.boostThreshold'], 0.82)
 
   return (

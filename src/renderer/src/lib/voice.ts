@@ -157,7 +157,7 @@ export interface Recorder {
 /** Détection de fin de parole (VAD énergie RMS) → auto-stop + auto-paste. */
 export interface VadOptions {
   onSilence?: () => void // appelé UNE fois quand le silence dépasse silenceMs après de la vraie parole
-  silenceMs?: number // durée de silence avant auto-stop (défaut 800 — réactif ; réglable 400-2000 dans les réglages)
+  silenceMs?: number // durée de silence avant auto-stop (défaut 600 — réactif ; réglable 400-2000 dans les réglages)
   minSpeechMs?: number // parole minimale avant d'armer l'auto-stop (anti silence initial)
   rmsThreshold?: number // plancher de bruit
   maxDurationMs?: number // coupe de sécurité
@@ -180,19 +180,79 @@ function micError(e: unknown): Error {
   return e instanceof Error ? e : new Error(String(e))
 }
 
+// Micro CHAUD : on garde le MediaStream + AudioContext vivants entre deux dictées rapprochées pour supprimer la
+// latence de getUserMedia/AudioContext au démarrage. Relâchés après WARM_IDLE_MS d'inactivité — le voyant micro
+// de l'OS s'éteint alors (compromis vitesse / voyant assumé ; ajustable via WARM_IDLE_MS).
+const WARM_IDLE_MS = 30000
+let warmStream: MediaStream | null = null
+let warmAc: AudioContext | null = null
+let warmReleaseTimer: ReturnType<typeof setTimeout> | null = null
+
+function warmMicLive(): boolean {
+  return !!warmStream && warmStream.getAudioTracks().some((t) => t.readyState === 'live')
+}
+
+/** Relâche le micro chaud : arrête les pistes (voyant OS éteint) et ferme l'AudioContext. */
+function releaseWarmMic(): void {
+  if (warmReleaseTimer) {
+    clearTimeout(warmReleaseTimer)
+    warmReleaseTimer = null
+  }
+  try {
+    warmStream?.getTracks().forEach((t) => t.stop())
+  } catch {
+    /* ignore */
+  }
+  try {
+    void warmAc?.close()
+  } catch {
+    /* ignore */
+  }
+  warmStream = null
+  warmAc = null
+}
+
+/** Programme le relâchement du micro chaud après WARM_IDLE_MS sans nouvelle capture. */
+function scheduleWarmRelease(): void {
+  if (warmReleaseTimer) clearTimeout(warmReleaseTimer)
+  warmReleaseTimer = setTimeout(releaseWarmMic, WARM_IDLE_MS)
+}
+
+/** Réutilise le micro/AC chauds s'ils sont vivants, sinon en acquiert de frais (1re dictée / micro relâché ou changé). */
+async function acquireWarmMic(): Promise<{ stream: MediaStream; ac: AudioContext }> {
+  if (warmReleaseTimer) {
+    clearTimeout(warmReleaseTimer)
+    warmReleaseTimer = null
+  }
+  if (warmMicLive() && warmAc && warmAc.state !== 'closed') {
+    if (warmAc.state === 'suspended') {
+      try {
+        await warmAc.resume()
+      } catch {
+        /* ignore */
+      }
+    }
+    return { stream: warmStream as MediaStream, ac: warmAc }
+  }
+  releaseWarmMic() // nettoie un éventuel reste mort (piste finie / AC fermé) avant d'acquérir
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+  })
+  warmStream = stream
+  const ac = new AudioContext()
+  warmAc = ac
+  return { stream, ac }
+}
+
 export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
   if (capturing) throw new Error('Capture déjà en cours')
   capturing = true
-  const { onSilence, silenceMs = 800, minSpeechMs = 350, rmsThreshold = 0.012, maxDurationMs = 30000 } = vad
+  const { onSilence, silenceMs = 600, minSpeechMs = 350, rmsThreshold = 0.012, maxDurationMs = 30000 } = vad
   // Tout le setup est gardé : si N'IMPORTE quelle étape échoue (permission, AudioContext, ScriptProcessor…),
   // on réinitialise `capturing` et on libère le micro — sinon le flag resterait bloqué à true (« capture déjà en cours »).
-  let stream: MediaStream | null = null
-  let ac: AudioContext | null = null
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-    })
-    ac = new AudioContext()
+    // Micro + AudioContext CHAUDS : réutilisés entre dictées rapprochées (zéro latence getUserMedia/AC au démarrage).
+    const { stream, ac } = await acquireWarmMic()
     const source = ac.createMediaStreamSource(stream)
     const processor = ac.createScriptProcessor(4096, 1, 1)
     const mute = ac.createGain()
@@ -230,20 +290,19 @@ export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
     source.connect(processor)
     processor.connect(mute)
     mute.connect(ac.destination)
-    const theAc = ac
-    const theStream = stream
-
+    // cleanup : détache CE recording (handler + nœuds) mais GARDE le micro/AC chauds pour la dictée suivante ;
+    // arme le relâchement après WARM_IDLE_MS d'inactivité (le voyant micro de l'OS s'éteint alors).
     const cleanup = () => {
       capturing = false
       try {
+        processor.onaudioprocess = null
         processor.disconnect()
         source.disconnect()
         mute.disconnect()
       } catch {
         /* ignore */
       }
-      theStream.getTracks().forEach((t) => t.stop())
-      void theAc.close()
+      scheduleWarmRelease()
     }
 
     return {
@@ -263,16 +322,7 @@ export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
     }
   } catch (e) {
     capturing = false
-    try {
-      stream?.getTracks().forEach((t) => t.stop())
-    } catch {
-      /* ignore */
-    }
-    try {
-      await ac?.close()
-    } catch {
-      /* ignore */
-    }
+    releaseWarmMic() // setup échoué pendant/après acquisition : on relâche le micro chaud (état incertain)
     throw micError(e)
   }
 }
