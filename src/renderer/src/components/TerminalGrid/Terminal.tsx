@@ -104,7 +104,11 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
         '[term] wheel · buf=' + b.type + ' len=' + b.length + ' rows=' + xterm.rows +
           ' baseY=' + b.baseY + ' viewY=' + b.viewportY + ' dY=' + Math.round(e.deltaY) + ' dM=' + e.deltaMode,
       )
-      if (b.type === 'alternate') return // vrai TUI plein écran (pager) : l'app gère sa propre molette
+      // On ne scrolle le viewport NOUS-MÊMES que s'il y a vraiment un scrollback à parcourir. Sinon (buffer alterné,
+      // OU normal sans historique parce que Claude se redessine en place → len≈rows, baseY=0) on LAISSE l'événement
+      // atteindre le CLI : il peut gérer sa propre molette ; l'intercepter (stopPropagation) empêcherait tout scroll.
+      if (b.type === 'alternate') return
+      if (b.baseY === 0 && b.length <= xterm.rows) return
       const lines = e.deltaMode === 1 ? e.deltaY : e.deltaMode === 2 ? e.deltaY * xterm.rows : e.deltaY / 16
       xterm.scrollLines(Math.round(lines) || (e.deltaY > 0 ? 1 : -1))
       e.preventDefault()
