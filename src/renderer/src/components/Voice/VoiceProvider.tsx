@@ -3,6 +3,7 @@ import { useVoice } from '../../hooks/useVoice'
 import { useVoiceCommand, type CommandTarget } from '../../hooks/useVoiceCommand'
 import { useAppStore } from '../../store'
 import { toast } from '../../store/toasts'
+import { playStartCue, playEndCue } from '../../lib/voice-cues'
 import type { VoiceState } from '@shared/types'
 
 // Monte le pipeline Voice UNE SEULE fois au niveau racine (le preload utilise removeAllListeners → un seul
@@ -97,6 +98,28 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
   }, [])
 
   const { state, toggle, cancel } = useVoice(handleText, target)
+
+  // Sons de repère (réglage voice.cueSounds) : bip à l'ouverture (→ écoute) et au relâchement (écoute → traitement).
+  // Joués sur les transitions d'état → indépendant du déclencheur (toggle, hotkey, hold PTT, widget).
+  const prevStateRef = useRef<VoiceState>('idle')
+  const cueSoundsRef = useRef(true)
+  useEffect(() => {
+    const load = (): void => {
+      void window.bridge.settings.getApp().then((s) => {
+        cueSoundsRef.current = (s['voice.cueSounds'] ?? '1') !== '0'
+      })
+    }
+    load()
+    window.addEventListener('focus', load)
+    return () => window.removeEventListener('focus', load)
+  }, [])
+  useEffect(() => {
+    const prev = prevStateRef.current
+    prevStateRef.current = state
+    if (!cueSoundsRef.current) return
+    if (prev !== 'listening' && state === 'listening') playStartCue()
+    else if (prev === 'listening' && state === 'processing') playEndCue()
+  }, [state])
 
   // Conflit de raccourci global : la hotkey demandée est déjà prise par une autre appli → échec silencieux
   // côté OS. On le signale. Les conflits du BOOT sont émis AVANT que cet abonnement n'existe (registerVoiceHotkey

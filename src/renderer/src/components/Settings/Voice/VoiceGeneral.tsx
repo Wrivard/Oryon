@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Mic, Wand2, PictureInPicture2, ShieldCheck, Zap, SlidersHorizontal } from 'lucide-react'
+import { Mic, Wand2, PictureInPicture2, ShieldCheck, Zap, SlidersHorizontal, Volume2 } from 'lucide-react'
 import { cn } from '../../../lib/cn'
 import { toast } from '../../../store/toasts'
 import { SectionHeader, SettingRow, Toggle } from './_parts'
@@ -131,6 +131,23 @@ export function VoiceGeneral() {
             <span className="text-fg-subtle">…</span>
           )}
         </p>
+      </section>
+
+      {/* 1.4 — Retour sonore */}
+      <section>
+        <SectionHeader icon={Volume2} title="Retour sonore" />
+        <SettingRow
+          title="Sons de dictée"
+          sub="Bip à l'ouverture et au relâchement de la dictée."
+          right={
+            <Toggle
+              on={(s['voice.cueSounds'] ?? '1') !== '0'}
+              onClick={() => set('voice.cueSounds', (s['voice.cueSounds'] ?? '1') !== '0' ? '0' : '1')}
+              disabled={!loaded}
+              ariaLabel="Sons de dictée"
+            />
+          }
+        />
       </section>
 
       {/* 1.5 — Mode de dictée */}
