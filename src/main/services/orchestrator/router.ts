@@ -9,6 +9,7 @@ import {
   killTerminal,
 } from '../pty-manager'
 import { ensureClaudeReady, normalizeClaudeAutostart, enforceAgentSpawn } from '../claude-launcher'
+import { sweepArchive } from '../archive'
 import { buildProjectMcpConfigForPath, addConnector } from '../../ipc/settings.ipc'
 import { recordMailbox } from './mailbox'
 import { getOrCreateProjectId, createTask, listTasks, getTask, updateTask } from './task-store'
@@ -25,6 +26,9 @@ import type { OrchestratorEvent, TaskStatus, Workspace } from '../../../shared/t
 // MCP sur les PTY + l'état busy + le réveil de l'orchestrateur quand un worker signale la fin (report_task).
 
 const INJECT_ENTER_DELAY = 200 // ms : laisser claude consommer le paste avant l'Entrée séparée
+const RESET_REHYDRATE_DELAY = 1000 // ms : laisser /clear vider le contexte avant d'injecter la ré-hydration
+const DEFAULT_REHYDRATION =
+  "Reprise après reset du contexte. D'abord lis le curseur de reprise avec l'outil mémoire (read_memory « orchestrator-resume », ou list_memories s'il est absent). La conversation complète d'avant le reset est archivée et relisible via search_archive / read_archived_session (agent « orchestrator »). Reprends le fil à partir de là."
 
 const terminalBusy = new Map<string, string | null>() // terminalId -> taskId | null
 const terminalLastData = new Map<string, number>() // terminalId -> dernier flux (ts) — pour l'interruption
@@ -517,6 +521,48 @@ export function agentBroadcastCommand(
   if (terminalRef && targets.length) agentMailbox(workspaceId, 'orchestrateur', `\`${line}\` → ${terminalName(targets[0])}`)
   else agentMailbox(workspaceId, 'orchestrateur', `\`${line}\` → ${targets.length} worker(s)`)
   return { count: targets.length, command: line }
+}
+
+/**
+ * flush_archive (MCP) : force un sweep d'archive immédiat (bypass du throttle 2 min de maybeArchive). Sauve
+ * les transcripts de conversation en vol sous .oryon/archive/ (relisibles via les outils d'archive). Gzip en
+ * streaming, $0, fire-and-forget — aucune injection PTY (le caller MCP a déjà son accusé queued:true).
+ */
+export function agentFlushArchive(_workspaceId: string): void {
+  void sweepArchive().catch((e) => console.error('[oryon] flush_archive a échoué :', e))
+}
+
+/**
+ * reset_orchestrator (MCP, orchestrateur-only) : flush l'archive PUIS injecte `/clear` dans le PTY de
+ * l'orchestrateur lui-même (que broadcast_command/terminalIds excluent), enfin une ligne de ré-hydration
+ * ~1 s plus tard (le temps que /clear vide le contexte). Permet de repartir d'un contexte frais — peu
+ * coûteux — sans perdre la donnée : la conversation complète reste archivée et relisible (search_archive /
+ * read_archived_session) et le curseur de reprise vit dans la mémoire partagée (read_memory). Le sweep
+ * pré-/clear capture tout sauf le dernier tour, que le prochain sweep (tick/quit) ré-archive par dédup.
+ */
+export async function agentResetOrchestrator(
+  workspaceId: string,
+  rehydration: string | null,
+): Promise<void> {
+  const orchE = orchestratorTerminalId(workspaceId)
+  if (!orchE || !hasLiveTerminal(orchE)) {
+    console.warn('[oryon] reset_orchestrator : orchestrateur introuvable ou hors-ligne')
+    return
+  }
+  // 1) Flush best-effort AVANT le clear (capture l'historique jusqu'au tour précédent).
+  try {
+    await sweepArchive()
+  } catch (e) {
+    console.error('[oryon] reset_orchestrator : flush a échoué (on continue) :', e)
+  }
+  if (!hasLiveTerminal(orchE)) return
+  // 2) /clear vide le contexte (le system-prompt rôle + CLAUDE.md + MEMORY.md survivent au clear).
+  pasteLine(orchE, '/clear')
+  // 3) Ré-hydration après ~1 s (laisser /clear s'exécuter avant que la ligne n'arrive).
+  const line = oneLinePrompt(rehydration && rehydration.trim() ? rehydration : DEFAULT_REHYDRATION)
+  setTimeout(() => {
+    if (hasLiveTerminal(orchE)) pasteLine(orchE, line)
+  }, RESET_REHYDRATE_DELAY)
 }
 
 /** Envoie sur un canal IPC à toutes les fenêtres (single-window en pratique) → recâble le flux d'un PTY recréé. */

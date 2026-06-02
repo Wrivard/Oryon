@@ -7,7 +7,7 @@ import { getDb } from '../db'
 import { stripAnsi } from './orchestrator/mailbox'
 import { drainPendingMerges } from './orchestrator/merge-back'
 import { sweepArchive } from './archive'
-import { navigateBrowser, requestBrowserScreenshot } from '../ipc/browser.ipc'
+import { navigateBrowser, requestBrowserScreenshot, appendAppConsole } from '../ipc/browser.ipc'
 import {
   agentMailbox,
   setTaskStatus,
@@ -17,6 +17,8 @@ import {
   agentBroadcastCommand,
   agentRestartAgent,
   agentAddConnector,
+  agentFlushArchive,
+  agentResetOrchestrator,
   tickWatchdog,
 } from './orchestrator/router'
 
@@ -108,6 +110,11 @@ async function processCommand(path: string): Promise<void> {
       navigateBrowser(cmd.workspaceId, cmd.url)
     } else if (cmd.type === 'browser-screenshot') {
       requestBrowserScreenshot(cmd.workspaceId, cmd.reqId)
+    } else if (cmd.type === 'flush-archive') {
+      agentFlushArchive(cmd.workspaceId)
+    } else if (cmd.type === 'reset-orchestrator') {
+      appendAppConsole('info', '[reset] flush + /clear demandés sur l’orchestrateur', 'reset-orchestrator')
+      void agentResetOrchestrator(cmd.workspaceId, cmd.rehydration ?? null)
     }
     try {
       unlinkSync(path)
