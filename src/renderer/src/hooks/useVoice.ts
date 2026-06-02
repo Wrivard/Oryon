@@ -107,6 +107,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
     if (recRef.current || startingRef.current) return
     startingRef.current = true
     if (!tryAcquire('dictation')) {
+      console.log('[voice] start ABORT · verrou dictation occupé (command mode ou dictée précédente non libérée)')
       startingRef.current = false // micro tenu par le command mode : no-op gracieux
       return
     }
@@ -307,23 +308,36 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
     return () => window.bridge.voice.offToggle()
   }, [])
 
-  // Push-to-talk (mode 'hold') : keydown → démarrage, keyup → arrêt. On suit l'INTENTION (holdWantRef) pour gérer
-  // le tap très court : si la touche est relâchée PENDANT l'acquisition micro (start est asynchrone), on arrête dès
-  // que start a fini — sinon le micro resterait ouvert (le release est arrivé alors que recRef était encore null).
+  // Push-to-talk (mode 'hold') ROBUSTE : on suit l'INTENTION (holdWantRef = touche tenue ?) et on RÉCONCILIE
+  // l'enregistrement réel dessus, en boucle SINGLE-FLIGHT. Corrige « la dictée reste active après le relâchement » :
+  // si on relâche PENDANT le start asynchrone, l'ancien code appelait stop() alors que recRef était encore null
+  // (no-op), puis le start finissait → écoute bloquée. Ici, après chaque start/stop on RE-VÉRIFIE l'intention et on
+  // agit en conséquence ; le keyup (ou un double-down) finit donc toujours dans le bon état.
   useEffect(() => {
-    const onHold = async (down: boolean): Promise<void> => {
-      console.log('[voice] onHold ' + (down ? 'down' : 'up'))
-      if (down) {
-        if (holdWantRef.current) return // anti double-down défensif (l'anti auto-répétition clavier est gérée côté main)
-        holdWantRef.current = true
-        await startRef.current?.()
-        if (!holdWantRef.current) void stopRef.current?.() // relâché pendant le démarrage → arrêt immédiat
-      } else {
-        holdWantRef.current = false
-        void stopRef.current?.()
+    let reconciling = false
+    const reconcile = async (): Promise<void> => {
+      if (reconciling) return // une réconciliation est déjà en vol → elle re-bouclera sur l'intention courante
+      reconciling = true
+      try {
+        while (holdWantRef.current !== (recRef.current != null)) {
+          if (holdWantRef.current) {
+            await startRef.current?.()
+            if (recRef.current == null) break // start a échoué (verrou/permission) → ne pas boucler à l'infini
+          } else {
+            await stopRef.current?.()
+            if (recRef.current != null) break // anormal : stop n'a pas libéré → on s'arrête là
+          }
+        }
+      } finally {
+        reconciling = false
       }
     }
-    window.bridge.voice.onHold((down) => void onHold(down))
+    const onHold = (down: boolean): void => {
+      console.log('[voice] onHold ' + (down ? 'down' : 'up'))
+      holdWantRef.current = down
+      void reconcile()
+    }
+    window.bridge.voice.onHold(onHold)
     return () => window.bridge.voice.offHold()
   }, [])
 
