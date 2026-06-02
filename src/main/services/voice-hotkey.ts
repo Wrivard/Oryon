@@ -2,6 +2,7 @@ import { BrowserWindow, globalShortcut } from 'electron'
 import { appSetting } from '../ipc/settings.ipc'
 import { emitVoiceToggle, emitVoiceHold } from '../ipc/voice.ipc'
 import { appendAppConsole } from '../ipc/browser.ipc'
+import { startKeyPoller, stopKeyPoller, parseAccelToVk, type PollWatch } from './key-poller'
 import type { UiohookKeyboardEvent, UiohookKey as UiohookKeyMap } from 'uiohook-napi'
 
 // Hotkeys globales de dictée (toggle / hold) et de command mode, via uiohook-napi — un hook clavier BAS NIVEAU
@@ -159,10 +160,26 @@ export function registerVoiceHotkeys(): void {
   const mode = appSetting('voice.mode')
   const holdMode = mode !== 'toggle' // défaut = HOLD (push-to-talk) ; 'toggle' seulement si explicitement choisi. 'ptt' = ancien alias hold.
 
-  // uiohook pour TOGGLE *et* HOLD : son flag `pressed` (front montant uniquement) neutralise l'auto-répétition du
-  // keydown. globalShortcut ne l'expose pas → en toggle il se ré-déclenchait au repeat clavier Windows (~250 ms),
-  // coupant la dictée à ~256 ms. Le bug « toggle-off bloqué si un keyup est raté » est traité par l'auto-réparation
-  // REPRESS_STUCK_MS (onKeyDown). globalShortcut ne sert plus que de repli si uiohook est indisponible.
+  // PRÉFÉRENCE : polling GetAsyncKeyState (lit l'ÉTAT RÉEL des touches). C'est le SEUL moyen fiable de détecter le
+  // RELÂCHEMENT en hold sous Windows : getUserMedia (capture micro) casse le hook clavier global → uiohook perd les
+  // keyup (electron#33976 / uiohook#54). Le polling ne pose aucun hook → immunisé. Repli uiohook (hold) / globalShortcut.
+  stopKeyPoller()
+  const dictVk = parseAccelToVk(toggleAccel)
+  if (dictVk) {
+    const watches: PollWatch[] = [
+      {
+        ...dictVk,
+        label: 'dictée',
+        onDown: holdMode ? () => emitVoiceHold(true) : emitVoiceToggle,
+        onUp: holdMode ? () => emitVoiceHold(false) : undefined,
+      },
+    ]
+    const cmdVk = commandAccel && commandAccel !== toggleAccel ? parseAccelToVk(commandAccel) : null
+    if (cmdVk) watches.push({ ...cmdVk, label: 'commande', onDown: broadcastCommandKey })
+    if (startKeyPoller(watches)) return // polling actif → AUCUN hook uiohook = aucun bug getUserMedia
+  }
+
+  // Repli : koffi indisponible OU accélérateur non mappable en Virtual-Key → ancien chemin (hook uiohook, sinon globalShortcut).
   const uio = getUio()
   if (uio) registerViaUiohook(uio, toggleAccel, commandAccel, holdMode)
   else registerViaGlobalShortcut(toggleAccel, commandAccel)
@@ -253,6 +270,7 @@ export function getVoiceHotkeyConflicts(): { accel: string; mode: string }[] {
 
 /** Arrêt propre (will-quit) : stoppe le hook uiohook et libère tous les globalShortcut. */
 export function stopVoiceHotkeys(): void {
+  stopKeyPoller()
   if (uioApi) {
     try { if (hookStarted) uioApi.uIOhook.stop() } catch { /* ignore */ }
     try { if (listenersAttached) uioApi.uIOhook.removeAllListeners() } catch { /* ignore */ }
