@@ -230,7 +230,7 @@ export function VoiceGeneral() {
           <label className="flex flex-col gap-1.5">
             <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Déclenchement</span>
             <Segmented<'toggle' | 'hold'>
-              value={s['voice.mode'] === 'hold' || s['voice.mode'] === 'ptt' ? 'hold' : 'toggle'}
+              value={s['voice.mode'] === 'toggle' ? 'toggle' : 'hold'}
               options={[
                 { v: 'toggle', label: 'Bascule' },
                 { v: 'hold', label: 'Maintien (push-to-talk)' },

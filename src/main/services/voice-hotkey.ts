@@ -150,7 +150,7 @@ export function registerVoiceHotkeys(): void {
   const toggleAccel = appSetting('voice.hotkey.toggle') || appSetting('voice.hotkey') || 'CommandOrControl+Shift+Space'
   const commandAccel = appSetting('voice.hotkey.command') || 'CommandOrControl+Shift+.'
   const mode = appSetting('voice.mode')
-  const holdMode = mode === 'hold' || mode === 'ptt' // 'ptt' = ancienne valeur persistée (compat)
+  const holdMode = mode !== 'toggle' // défaut = HOLD (push-to-talk) ; 'toggle' seulement si explicitement choisi. 'ptt' = ancien alias hold.
 
   // uiohook pour TOGGLE *et* HOLD : son flag `pressed` (front montant uniquement) neutralise l'auto-répétition du
   // keydown. globalShortcut ne l'expose pas → en toggle il se ré-déclenchait au repeat clavier Windows (~250 ms),

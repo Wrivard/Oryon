@@ -111,7 +111,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
       // Mode 'hold' (push-to-talk) : l'utilisateur contrôle la durée en maintenant la touche → on DÉSACTIVE l'arrêt
       // auto sur silence (sinon une pause couperait la dictée avant le relâchement) → enregistrement sans limite
       // tant que la touche est tenue (le keyup déclenche l'arrêt via release()).
-      const holdMode = s['voice.mode'] === 'hold' || s['voice.mode'] === 'ptt'
+      const holdMode = s['voice.mode'] !== 'toggle' // défaut = HOLD (push-to-talk demandé) ; 'toggle' seulement si explicitement choisi
       const snap: Snapshot = {
         model: resolveModelId(s['voice.model'] || 'small'),
         source: sourceRef.current,
