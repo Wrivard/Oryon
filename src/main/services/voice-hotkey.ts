@@ -143,7 +143,9 @@ export function registerVoiceHotkeys(): void {
   const mode = appSetting('voice.mode')
   const holdMode = mode === 'hold' || mode === 'ptt' // 'ptt' = ancienne valeur persistée (compat)
 
-  const uio = getUio()
+  // uiohook UNIQUEMENT pour le HOLD (il a besoin du keyup). En TOGGLE, on reste sur globalShortcut (keydown seul) :
+  // fiable, sans le flag `pressed` qui reste coincé si uiohook rate un keyup (→ « le toggle off ne marche pas »).
+  const uio = holdMode ? getUio() : null
   if (uio) registerViaUiohook(uio, toggleAccel, commandAccel, holdMode)
   else registerViaGlobalShortcut(toggleAccel, commandAccel)
 }

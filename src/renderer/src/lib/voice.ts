@@ -46,6 +46,8 @@ const gpuDevice: Promise<'webgpu' | 'wasm'> = (async () => {
     return 'wasm'
   }
 })()
+// Diagnostic : log le backend ASR résolu au démarrage (webgpu = rapide ; wasm = CPU, transcription LENTE).
+void gpuDevice.then((d) => console.log('[voice] ASR backend résolu = ' + d)).catch(() => {})
 
 /** Backend ASR effectif résolu au chargement : 'webgpu' (rapide) ou 'wasm' (CPU mono-thread, nettement plus lent). */
 export function getAsrDevice(): Promise<'webgpu' | 'wasm'> {
