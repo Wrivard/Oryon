@@ -101,7 +101,7 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
     const onWheel = (e: WheelEvent): void => {
       const b = xterm.buffer.active
       console.log(
-        '[term] wheel · buf=' + b.type + ' len=' + b.length + ' rows=' + xterm.rows +
+        '[term:' + term.name + '] wheel · buf=' + b.type + ' len=' + b.length + ' rows=' + xterm.rows +
           ' baseY=' + b.baseY + ' viewY=' + b.viewportY + ' dY=' + Math.round(e.deltaY) + ' dM=' + e.deltaMode,
       )
       // On ne scrolle le viewport NOUS-MÊMES que s'il y a vraiment un scrollback à parcourir. Sinon (buffer alterné,
