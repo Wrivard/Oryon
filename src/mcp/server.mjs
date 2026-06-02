@@ -588,6 +588,45 @@ orchestratorTool(
   },
 )
 
+// ---- Continuité de l'orchestrateur : flush d'archive + reset de contexte (orchestrateur-only) ----
+
+orchestratorTool(
+  'flush_archive',
+  "Force un archivage immédiat des transcripts de conversation (.oryon/archive/), sans attendre le sweep périodique (throttle 2 min). Sauvegarde l'historique en vol — utile avant un reset_orchestrator ou une opération risquée. Relisible ensuite via list_archived_sessions / search_archive. Coût $0 (FS + gzip).",
+  {},
+  async () => {
+    const workspaceId = currentWorkspaceId()
+    if (!workspaceId) return text(JSON.stringify({ queued: false, error: 'workspace introuvable' }))
+    try {
+      const id = queueCommand({ type: 'flush-archive', workspaceId })
+      return text(JSON.stringify({ queued: true, id }))
+    } catch (e) {
+      return text(JSON.stringify({ queued: false, error: String(e) }))
+    }
+  },
+)
+
+orchestratorTool(
+  'reset_orchestrator',
+  "Repart d'un contexte FRAIS sans perdre la donnée : flush l'archive, puis injecte /clear dans TON propre terminal (l'orchestrateur), puis une ligne de ré-hydration ~1 s après. À appeler quand le contexte devient lourd (au lieu de laisser la compaction se déclencher) — APRÈS avoir écrit/màj le curseur de reprise en mémoire partagée (create_memory/update_memory « orchestrator-resume »). La conversation complète reste relisible (search_archive / read_archived_session, agent « orchestrator »). ⚠ Vide ta conversation courante : ne l'appelle que volontairement, en fin de tour.",
+  {
+    rehydration: z
+      .string()
+      .optional()
+      .describe('ligne injectée après /clear (défaut : « lis le curseur orchestrator-resume puis reprends »)'),
+  },
+  async ({ rehydration }) => {
+    const workspaceId = currentWorkspaceId()
+    if (!workspaceId) return text(JSON.stringify({ queued: false, error: 'workspace introuvable' }))
+    try {
+      const id = queueCommand({ type: 'reset-orchestrator', workspaceId, rehydration: rehydration ?? null })
+      return text(JSON.stringify({ queued: true, id }))
+    } catch (e) {
+      return text(JSON.stringify({ queued: false, error: String(e) }))
+    }
+  },
+)
+
 orchestratorTool(
   'mcp_health',
   "Diagnostique l'état du serveur MCP d'un worker (par name « Nell » / position « #2 ») via son log dédié : renvoie status connected|failed|unknown + dernière erreur + dernière ligne. Sers-t'en quand un worker semble ne plus répondre, AVANT de décider un restart_agent.",
