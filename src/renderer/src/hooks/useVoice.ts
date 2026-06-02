@@ -226,7 +226,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
         })
       }
       // Sonde latence (#2) : durée PURE de transcription (le gros du « long avant collage »). Visible via read_app_log.
-      console.log(`[voice] transcribe ${Math.round(performance.now() - _tx0)}ms · ${viaGroq ? 'Groq' : 'local ' + snap.model} · pcm ${pcm.length}`)
+      console.log(`[voice] transcribe ${Math.round(performance.now() - _tx0)}ms · ${viaGroq ? 'Groq' : 'local ' + snap.model} · pcm ${pcm.length} · raw="${text.slice(0, 80)}"`)
       if (runId !== runIdRef.current) return // annulé pendant la transcription (rel-7)
       setState('processing')
       const dicts = await loadDicts()
@@ -254,6 +254,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
           text = cli || light
         }
       }
+      console.log(`[voice] final="${text.slice(0, 80)}" (${text.length} car., post-traitement)`)
       if (text && runId === runIdRef.current) {
         onTextRef.current(text, snap.source)
         void window.bridge.voice.addHistory({

@@ -45,12 +45,15 @@ export async function transcribeWithGroq(
   language: string,
   apiKey: string,
   model = 'whisper-large-v3-turbo',
+  prompt = '',
 ): Promise<string> {
   const wav = encodeWav16(pcm16k, 16000)
   const form = new FormData()
   form.append('file', new Blob([wav], { type: 'audio/wav' }), 'audio.wav')
   form.append('model', model)
   if (language) form.append('language', language)
+  // Amorce Whisper (≤224 tokens) : oriente la langue (français QC) + fait reconnaître les noms propres / le jargon.
+  if (prompt) form.append('prompt', prompt)
   form.append('response_format', 'json')
   form.append('temperature', '0')
   const res = await fetch(GROQ_URL, {

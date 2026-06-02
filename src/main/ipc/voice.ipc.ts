@@ -226,9 +226,13 @@ export function registerVoiceIpc(): void {
       // 'french'|'english'|'' (valeurs app) → ISO-639-1 attendu par Groq.
       const lang = opts?.language === 'english' ? 'en' : opts?.language === 'french' ? 'fr' : ''
       const model = appSetting('voice.groqModel') || 'whisper-large-v3-turbo'
+      // Amorce Whisper : français QC + noms propres/jargon de l'utilisateur (vocabulaire + remplacements) →
+      // meilleure reconnaissance des termes du domaine (kua-coiffure, OryonBridge, Supabase, Next.js…).
+      const terms = [...new Set([...listVocab().map((v) => v.term), ...listReplacements().map((r) => r.replacement)])].filter(Boolean).slice(0, 40)
+      const prompt = ((lang === 'fr' ? 'Transcription en français québécois.' : '') + (terms.length ? ' ' + terms.join(', ') + '.' : '')).trim()
       try {
         const t0 = Date.now()
-        const text = await transcribeWithGroq(samples, lang, key, model)
+        const text = await transcribeWithGroq(samples, lang, key, model, prompt)
         console.log('[voice] Groq ' + model + ' · ' + (Date.now() - t0) + 'ms · ' + samples.length + ' samples → ' + text.length + ' chars')
         return { ok: true, text }
       } catch (e) {
