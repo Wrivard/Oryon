@@ -94,13 +94,17 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
     xterm.loadAddon(new WebLinksAddon())
     xterm.open(el)
 
-    // Molette : scroller le viewport (scrollback) nous-mêmes. Claude Code active le mouse-reporting, donc
-    // xterm transmet la molette au CLI (qui l'ignore) au lieu de scroller → « impossible de scroller ».
-    // On intercepte en phase CAPTURE (avant le handler de xterm sur ses enfants), on scrolle le scrollback,
-    // et on stoppe la propagation pour ne pas re-transmettre la molette au CLI. Exception : buffer ALTERNÉ
-    // (vrai TUI plein écran, ex. un pager `less`/`git log` lancé par l'agent) → on laisse l'app le gérer.
+    // Molette : scroller le viewport (scrollback) nous-mêmes (xterm transmet sinon la molette au CLI sous
+    // mouse-reporting). + DIAGNOSTIC TEMPORAIRE (v0.1.18) : on logue le mode de buffer (normal/alterné) et
+    // l'état du scrollback (len/rows/baseY/viewY) pour comprendre pourquoi le scroll échoue chez l'utilisateur.
+    const offBuf = xterm.buffer.onBufferChange((b) => console.log('[term] buffer → ' + b.type))
     const onWheel = (e: WheelEvent): void => {
-      if (xterm.buffer.active.type === 'alternate') return
+      const b = xterm.buffer.active
+      console.log(
+        '[term] wheel · buf=' + b.type + ' len=' + b.length + ' rows=' + xterm.rows +
+          ' baseY=' + b.baseY + ' viewY=' + b.viewportY + ' dY=' + Math.round(e.deltaY) + ' dM=' + e.deltaMode,
+      )
+      if (b.type === 'alternate') return // vrai TUI plein écran (pager) : l'app gère sa propre molette
       const lines = e.deltaMode === 1 ? e.deltaY : e.deltaMode === 2 ? e.deltaY * xterm.rows : e.deltaY / 16
       xterm.scrollLines(Math.round(lines) || (e.deltaY > 0 ? 1 : -1))
       e.preventDefault()
@@ -231,6 +235,7 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
       cancelAnimationFrame(raf)
       if (spawnTimer) clearTimeout(spawnTimer)
       el.removeEventListener('wheel', onWheel, true)
+      offBuf.dispose()
       ro.disconnect()
       window.bridge.terminals.offData(term.id)
       window.bridge.terminals.offExit(term.id)
