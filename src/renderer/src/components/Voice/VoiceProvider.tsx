@@ -75,7 +75,12 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
       // (data-oryon-term) — PAS focusedTerminalId, qui est le DERNIER terminal CLIQUÉ (périmé → collait dans le
       // mauvais terminal, ex. un worker au lieu de l'orchestrateur sélectionné). Workers ET orchestrateur sont
       // taggés (même composant <Terminal>). Hors d'un terminal (barre orchestrateur, champ normal, autre app) → Ctrl+V.
-      const fid = document.activeElement?.closest('[data-oryon-term]')?.getAttribute('data-oryon-term')
+      // Router vers le PTY UNIQUEMENT si Oryon a le focus OS (document.hasFocus). Sinon document.activeElement
+      // reflète le dernier élément focus DANS Oryon (souvent un terminal) même quand l'utilisateur est dans une
+      // AUTRE app → on écrirait dans le terminal Oryon au lieu de Ctrl+V dans l'app externe (« ça marche juste sur Oryon »).
+      const fid = document.hasFocus()
+        ? document.activeElement?.closest('[data-oryon-term]')?.getAttribute('data-oryon-term')
+        : null
       if (fid && useAppStore.getState().statuses[fid] !== 'exited') {
         console.log('[voice] cible système → écriture PTY terminal focus DOM ' + fid)
         window.bridge.terminals.write(fid, text)
