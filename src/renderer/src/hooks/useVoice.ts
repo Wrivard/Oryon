@@ -26,6 +26,7 @@ interface Snapshot {
   threshold?: number
   formatting: string
   privacy: boolean
+  engine: 'groq' | 'local'
 }
 
 interface Dicts {
@@ -123,6 +124,8 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
         threshold: num(s['voice.boostThreshold']),
         formatting: s['voice.formatting'] ?? 'light',
         privacy: (s['voice.privacy'] ?? '0') === '1',
+        // Moteur de transcription : Groq (cloud, rapide) par défaut ; 'local' = on-device uniquement.
+        engine: s['voice.engine'] === 'local' ? 'local' : 'groq',
       }
       snapRef.current = snap
       // Préfetch des dicos pendant l'écoute → post-traitement local instantané au stop (speed-7).
@@ -188,18 +191,38 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
         autoStop: true,
         formatting: 'light',
         privacy: false,
+        engine: 'groq' as const,
       }
       const durationMs = Date.now() - startedAt.current
       const _tx0 = performance.now()
-      let text = await transcribe(pcm, {
-        model: snap.model,
-        language: snap.language,
-        onProgress: (p) => {
-          if (isDownloadStatus(p.status)) setState((cur) => (cur === 'processing' ? 'downloading' : cur))
-        },
-      })
-      // Sonde latence (#2) : durée PURE de transcription (le gros du « long avant collage »). Visible en DevTools.
-      console.log(`[voice] transcribe ${Math.round(performance.now() - _tx0)}ms · modèle ${snap.model} · pcm ${pcm.length}`)
+      // Moteur Groq (défaut) : transcription cloud rapide. Repli LOCAL on-device si pas de clé / erreur / hors-ligne
+      // → la dictée ne casse jamais quand Groq est indisponible.
+      let text = ''
+      let viaGroq = false
+      if (snap.engine !== 'local') {
+        try {
+          const r = await window.bridge.voice.transcribeRemote(pcm, { language: snap.language })
+          if (r.ok && typeof r.text === 'string') {
+            text = r.text
+            viaGroq = true
+          } else if (r.reason === 'error') {
+            console.warn('[voice] Groq erreur → repli local : ' + (r.message ?? ''))
+          }
+        } catch (err) {
+          console.warn('[voice] Groq IPC indisponible → repli local : ' + ((err as Error)?.message ?? ''))
+        }
+      }
+      if (!viaGroq) {
+        text = await transcribe(pcm, {
+          model: snap.model,
+          language: snap.language,
+          onProgress: (p) => {
+            if (isDownloadStatus(p.status)) setState((cur) => (cur === 'processing' ? 'downloading' : cur))
+          },
+        })
+      }
+      // Sonde latence (#2) : durée PURE de transcription (le gros du « long avant collage »). Visible via read_app_log.
+      console.log(`[voice] transcribe ${Math.round(performance.now() - _tx0)}ms · ${viaGroq ? 'Groq' : 'local ' + snap.model} · pcm ${pcm.length}`)
       if (runId !== runIdRef.current) return // annulé pendant la transcription (rel-7)
       setState('processing')
       const dicts = await loadDicts()

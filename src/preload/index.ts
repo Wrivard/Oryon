@@ -124,6 +124,7 @@ const bridge: BridgeApi = {
     format: (text, level) => ipcRenderer.invoke('voice:format', text, level),
     command: (command, selection) => ipcRenderer.invoke('voice:command', command, selection),
     injectText: (text) => ipcRenderer.invoke('voice:injectText', text),
+    transcribeRemote: (pcm, opts) => ipcRenderer.invoke('voice:transcribeRemote', pcm, opts),
     onCommandKey: (cb) => {
       ipcRenderer.on('voice:command-key', () => cb())
     },

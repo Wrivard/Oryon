@@ -689,6 +689,11 @@ export interface BridgeApi {
     command: (command: string, selection: string) => Promise<string>
     /** Cible 'system' (voice.target, façon WisprFlow) : colle au curseur de l'app au premier plan (Windows, presse-papier + Ctrl+V). */
     injectText: (text: string) => Promise<{ ok: boolean; reason?: string }>
+    /** Transcription distante via Groq (moteur 'groq', clé côté main). { ok:false, reason:'no-key'|'error'|'empty' } → repli LOCAL on-device par l'appelant. */
+    transcribeRemote: (
+      pcm: Float32Array,
+      opts: { language?: string },
+    ) => Promise<{ ok: boolean; text?: string; reason?: string; message?: string }>
 
     /** Hotkey dédiée du command mode (main → renderer). */
     onCommandKey: (cb: () => void) => void

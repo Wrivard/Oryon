@@ -85,6 +85,8 @@ export function VoiceGeneral() {
   }
   const privacyOn = (s['voice.privacy'] ?? '0') === '1'
   const togglePrivacy = () => set('voice.privacy', privacyOn ? '0' : '1')
+  // Moteur de transcription (Groq cloud par défaut, local on-device en repli) → pilote l'affichage du bloc clé Groq.
+  const engine: 'groq' | 'local' = s['voice.engine'] === 'local' ? 'local' : 'groq'
 
   // Réglages hot-path (lus par useVoice au snapshot de capture). Encodages alignés sur useVoice.ts :
   // autoStop = valeur !== '0' (défaut on), silenceMs = ms brut, boostThreshold = flottant 0–1.
@@ -97,9 +99,55 @@ export function VoiceGeneral() {
       {/* 1 — Transcription */}
       <section>
         <SectionHeader icon={Mic} title="Transcription" />
+        {/* Moteur : Groq (cloud, rapide) par défaut ; local on-device en repli (pas de clé / hors-ligne / erreur). */}
+        <label className="mb-3 flex flex-col gap-1.5">
+          <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Moteur</span>
+          <Segmented<'groq' | 'local'>
+            value={engine}
+            options={[
+              { v: 'groq', label: 'Groq (cloud, rapide)' },
+              { v: 'local', label: 'Local (sur l’appareil)' },
+            ]}
+            onChange={(v) => set('voice.engine', v)}
+            disabled={!loaded}
+          />
+        </label>
+        {engine === 'groq' && (
+          <div className="mb-3 space-y-3 rounded-lg border border-border bg-bg-inset/40 p-3">
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Clé API Groq</span>
+              <input
+                type="password"
+                value={s['voice.groqApiKey'] ?? ''}
+                onChange={(e) => set('voice.groqApiKey', e.target.value)}
+                disabled={!loaded}
+                placeholder="gsk_…"
+                autoComplete="off"
+                spellCheck={false}
+                className={SELECT_CLS}
+              />
+              <span className="text-[11px] text-fg-subtle">
+                Clé gratuite sur <span className="text-fg-muted">console.groq.com</span> → API Keys. L’audio de dictée est
+                envoyé à Groq pour transcription. Sans clé valide, repli local automatique.
+              </span>
+            </label>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Modèle Groq</span>
+              <select
+                value={s['voice.groqModel'] || 'whisper-large-v3-turbo'}
+                onChange={(e) => set('voice.groqModel', e.target.value)}
+                disabled={!loaded}
+                className={SELECT_CLS}
+              >
+                <option value="whisper-large-v3-turbo">whisper-large-v3-turbo (rapide)</option>
+                <option value="whisper-large-v3">whisper-large-v3 (plus précis)</option>
+              </select>
+            </label>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Modèle Whisper</span>
+            <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Modèle local (repli)</span>
             <select value={s['voice.model'] || 'small'} onChange={(e) => set('voice.model', e.target.value)} disabled={!loaded} className={SELECT_CLS}>
               <option value="tiny">Tiny (très rapide)</option>
               <option value="base">Base</option>

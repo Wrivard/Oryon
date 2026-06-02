@@ -7,6 +7,7 @@ import { muteForDictation, restoreAfterDictation } from '../services/audio-mute'
 import { learnFromEdit } from '../services/orchestrator/learn'
 import { voiceCliOneShot } from '../services/orchestrator/cli'
 import { formatSystem, COMMAND_SYSTEM } from '../services/orchestrator/roles'
+import { transcribeWithGroq } from '../services/groq-stt'
 import { appSetting } from './settings.ipc'
 import type {
   VoiceReplacement,
@@ -208,6 +209,34 @@ export function registerVoiceIpc(): void {
   // (presse-papier + Ctrl+V, Windows seulement). Ne lève jamais — renvoie { ok, reason } au renderer pour le toast.
   ipcMain.handle('voice:injectText', (_e, text: string): Promise<{ ok: boolean; reason?: string }> =>
     injectText(str(text)),
+  )
+  // Transcription distante via Groq (moteur 'groq' = défaut, cf. voice.engine). La clé Groq reste côté main.
+  // Renvoie { ok:false, reason } sans lever → useVoice bascule alors en transcription LOCALE on-device (repli).
+  ipcMain.handle(
+    'voice:transcribeRemote',
+    async (
+      _e,
+      pcm: Float32Array,
+      opts: { language?: string },
+    ): Promise<{ ok: boolean; text?: string; reason?: string; message?: string }> => {
+      const key = (appSetting('voice.groqApiKey') ?? '').trim()
+      if (!key) return { ok: false, reason: 'no-key' }
+      const samples = pcm instanceof Float32Array ? pcm : new Float32Array(pcm as ArrayBufferLike)
+      if (samples.length === 0) return { ok: false, reason: 'empty' }
+      // 'french'|'english'|'' (valeurs app) → ISO-639-1 attendu par Groq.
+      const lang = opts?.language === 'english' ? 'en' : opts?.language === 'french' ? 'fr' : ''
+      const model = appSetting('voice.groqModel') || 'whisper-large-v3-turbo'
+      try {
+        const t0 = Date.now()
+        const text = await transcribeWithGroq(samples, lang, key, model)
+        console.log('[voice] Groq ' + model + ' · ' + (Date.now() - t0) + 'ms · ' + samples.length + ' samples → ' + text.length + ' chars')
+        return { ok: true, text }
+      } catch (e) {
+        const message = (e as Error)?.message ?? String(e)
+        console.error('[voice] Groq échec → repli local : ' + message)
+        return { ok: false, reason: 'error', message }
+      }
+    },
   )
   ipcMain.handle('voice:toggleVocabStar', (_e, id: string, starred: boolean): void => {
     getDb().prepare('UPDATE voice_vocab SET starred = ? WHERE id = ?').run(starred ? 1 : 0, id)
