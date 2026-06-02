@@ -1,7 +1,7 @@
 {
   "name": "oryon",
   "productName": "Oryon",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "description": "Oryon — Multi-agent Electron IDE piloting Claude Code CLI",
   "author": "Wrivard <wrivard@kua.quebec>",
   "homepage": "https://github.com/Wrivard/Oryon",
