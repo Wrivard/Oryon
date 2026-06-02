@@ -115,7 +115,10 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
         model: resolveModelId(s['voice.model'] || 'small'),
         source: sourceRef.current,
         language: s['voice.language'] ?? 'french',
-        autoStop: !holdMode && (s['voice.autoStopOnSilence'] ?? '1') !== '0',
+        // Arrêt-auto sur silence = OPT-IN (défaut OFF). Un seuil de silence ne peut PAS à la fois épargner les
+        // pauses naturelles ET être instantané à la fin (les 2 plaintes) → on arrête sur action EXPLICITE (re-appui
+        // du raccourci en toggle, relâchement en hold). Réactivable dans les réglages pour le mains-libres.
+        autoStop: !holdMode && (s['voice.autoStopOnSilence'] ?? '0') !== '0',
         silenceMs: num(s['voice.silenceMs']),
         threshold: num(s['voice.boostThreshold']),
         formatting: s['voice.formatting'] ?? 'light',
@@ -187,6 +190,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
         privacy: false,
       }
       const durationMs = Date.now() - startedAt.current
+      const _tx0 = performance.now()
       let text = await transcribe(pcm, {
         model: snap.model,
         language: snap.language,
@@ -194,6 +198,8 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
           if (isDownloadStatus(p.status)) setState((cur) => (cur === 'processing' ? 'downloading' : cur))
         },
       })
+      // Sonde latence (#2) : durée PURE de transcription (le gros du « long avant collage »). Visible en DevTools.
+      console.log(`[voice] transcribe ${Math.round(performance.now() - _tx0)}ms · modèle ${snap.model} · pcm ${pcm.length}`)
       if (runId !== runIdRef.current) return // annulé pendant la transcription (rel-7)
       setState('processing')
       const dicts = await loadDicts()
