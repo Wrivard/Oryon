@@ -71,23 +71,15 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
     // refusé) remonte en { ok:false, reason } → toast plutôt qu'une perte silencieuse.
     if (routedSource === 'system') {
       // Dans un TERMINAL Oryon (xterm), Ctrl+V ne colle PAS (xterm envoie ^V au shell) → on écrit DIRECTEMENT dans
-      // le PTY du terminal focus, comme la cible 'terminal'. Détection « un terminal est-il focus MAINTENANT ? » via
-      // le focus DOM dans un .xterm (focusedTerminalId seul serait périmé si on a cliqué un champ après un terminal).
-      // Sinon (champ normal, autre app) → collage système Ctrl+V au premier plan.
-      if (document.activeElement?.closest('.xterm')) {
-        const st = useAppStore.getState()
-        const fid = st.focusedTerminalId
-        const ws = st.activeWorkspaceId
-        const live =
-          fid != null &&
-          ws != null &&
-          st.statuses[fid] !== 'exited' &&
-          (st.terminalsByWorkspace[ws] ?? []).some((t) => t.id === fid)
-        if (fid && live) {
-          console.log('[voice] cible système → écriture PTY (terminal focus ' + fid + ' ; Ctrl+V ne colle pas dans xterm)')
-          window.bridge.terminals.write(fid, text)
-          return
-        }
+      // le PTY du terminal RÉELLEMENT focus. On lit l'id sur le conteneur <Terminal> qui contient le focus DOM
+      // (data-oryon-term) — PAS focusedTerminalId, qui est le DERNIER terminal CLIQUÉ (périmé → collait dans le
+      // mauvais terminal, ex. un worker au lieu de l'orchestrateur sélectionné). Workers ET orchestrateur sont
+      // taggés (même composant <Terminal>). Hors d'un terminal (barre orchestrateur, champ normal, autre app) → Ctrl+V.
+      const fid = document.activeElement?.closest('[data-oryon-term]')?.getAttribute('data-oryon-term')
+      if (fid && useAppStore.getState().statuses[fid] !== 'exited') {
+        console.log('[voice] cible système → écriture PTY terminal focus DOM ' + fid)
+        window.bridge.terminals.write(fid, text)
+        return
       }
       void window.bridge.voice.injectText(text).then((r) => {
         if (!r.ok)

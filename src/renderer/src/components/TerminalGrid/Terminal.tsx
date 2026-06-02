@@ -276,6 +276,7 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
   return (
     <div
       ref={containerRef}
+      data-oryon-term={term.id}
       onMouseDown={() => {
         refitRef.current()
         xtermRef.current?.focus()
