@@ -11,8 +11,8 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "rebuild": "electron-rebuild -f -w better-sqlite3",
-    "postinstall": "electron-rebuild -f -w better-sqlite3",
+    "rebuild": "electron-rebuild -f -o better-sqlite3",
+    "postinstall": "electron-rebuild -f -o better-sqlite3",
     "pack": "electron-vite build && electron-builder --dir",
     "dist": "electron-vite build && electron-builder",
     "dist:win": "electron-vite build && electron-builder --win",
@@ -40,6 +40,7 @@
     "lucide-react": "^0.460.0",
     "monaco-editor": "^0.52.2",
     "motion": "^12.40.0",
+    "uiohook-napi": "^1.5.5",
     "uuid": "^10.0.0",
     "zod": "^3.25.76"
   },

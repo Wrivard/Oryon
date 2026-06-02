@@ -70,6 +70,9 @@ export function VoiceGeneral() {
       toast.error("Échec de l'enregistrement.")
     }
   }
+  // Le déclenchement (bascule/maintien) change la sémantique de la hotkey côté main (keydown seul vs keydown+keyup)
+  // → on ré-enregistre à chaud pour l'appliquer sans redémarrage (comme VoiceHotkeys au changement de raccourci).
+  const setMode = (v: 'toggle' | 'hold') => void set('voice.mode', v).then(() => window.bridge.voice.reregisterHotkeys())
   const toggleWidget = async () => {
     const next = (s['voice.showWidget'] ?? '1') === '0'
     try {
@@ -161,6 +164,21 @@ export function VoiceGeneral() {
               <option value="terminal">Terminal (texte brut)</option>
               <option value="system">Système (colle dans l’app au premier plan)</option>
             </select>
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-[10px] uppercase tracking-wide text-fg-subtle">Déclenchement</span>
+            <Segmented<'toggle' | 'hold'>
+              value={s['voice.mode'] === 'hold' || s['voice.mode'] === 'ptt' ? 'hold' : 'toggle'}
+              options={[
+                { v: 'toggle', label: 'Bascule' },
+                { v: 'hold', label: 'Maintien (push-to-talk)' },
+              ]}
+              onChange={setMode}
+              disabled={!loaded}
+            />
+            <span className="text-[11px] text-fg-subtle">
+              Maintien : la dictée enregistre tant que le raccourci est pressé et s’arrête au relâchement (sans limite de durée).
+            </span>
           </label>
         </div>
       </section>

@@ -160,7 +160,7 @@ export interface VadOptions {
   silenceMs?: number // durée de silence avant auto-stop (défaut 600 — réactif ; réglable 400-2000 dans les réglages)
   minSpeechMs?: number // parole minimale avant d'armer l'auto-stop (anti silence initial)
   rmsThreshold?: number // plancher de bruit
-  maxDurationMs?: number // coupe de sécurité
+  maxDurationMs?: number // garde-fou anti-emballement mémoire — PAS une limite de dictée (généreux exprès : « sans limite »)
 }
 
 /**
@@ -247,7 +247,7 @@ async function acquireWarmMic(): Promise<{ stream: MediaStream; ac: AudioContext
 export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
   if (capturing) throw new Error('Capture déjà en cours')
   capturing = true
-  const { onSilence, silenceMs = 600, minSpeechMs = 350, rmsThreshold = 0.012, maxDurationMs = 30000 } = vad
+  const { onSilence, silenceMs = 600, minSpeechMs = 350, rmsThreshold = 0.012, maxDurationMs = 600000 } = vad
   // Tout le setup est gardé : si N'IMPORTE quelle étape échoue (permission, AudioContext, ScriptProcessor…),
   // on réinitialise `capturing` et on libère le micro — sinon le flag resterait bloqué à true (« capture déjà en cours »).
   try {

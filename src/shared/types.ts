@@ -696,6 +696,9 @@ export interface BridgeApi {
     /** Reçoit les démarrages/arrêts demandés par la hotkey globale ou le widget (main → renderer). */
     onToggle: (cb: () => void) => void
     offToggle: () => void
+    /** Push-to-talk (mode 'hold') : down:true au keydown (démarrer), down:false au keyup (arrêter). main → renderer. */
+    onHold: (cb: (down: boolean) => void) => void
+    offHold: () => void
     /** Widget → main : demande un toggle (rediffusé à la fenêtre principale). */
     requestToggle: () => void
     /** Fenêtre principale → main → widget : pousse l'état courant de la dictée. */
