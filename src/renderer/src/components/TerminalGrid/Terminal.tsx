@@ -93,6 +93,21 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
     xterm.loadAddon(new SearchAddon())
     xterm.loadAddon(new WebLinksAddon())
     xterm.open(el)
+
+    // Molette : scroller le viewport (scrollback) nous-mêmes. Claude Code active le mouse-reporting, donc
+    // xterm transmet la molette au CLI (qui l'ignore) au lieu de scroller → « impossible de scroller ».
+    // On intercepte en phase CAPTURE (avant le handler de xterm sur ses enfants), on scrolle le scrollback,
+    // et on stoppe la propagation pour ne pas re-transmettre la molette au CLI. Exception : buffer ALTERNÉ
+    // (vrai TUI plein écran, ex. un pager `less`/`git log` lancé par l'agent) → on laisse l'app le gérer.
+    const onWheel = (e: WheelEvent): void => {
+      if (xterm.buffer.active.type === 'alternate') return
+      const lines = e.deltaMode === 1 ? e.deltaY : e.deltaMode === 2 ? e.deltaY * xterm.rows : e.deltaY / 16
+      xterm.scrollLines(Math.round(lines) || (e.deltaY > 0 ? 1 : -1))
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    el.addEventListener('wheel', onWheel, { capture: true, passive: false })
+
     setStatus(term.id, 'spawning')
 
     // Garde fit/resize : le layout 8 panneaux ("eight") monte des cellules cachées / à 0px → fit.fit()
@@ -215,6 +230,7 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
     return () => {
       cancelAnimationFrame(raf)
       if (spawnTimer) clearTimeout(spawnTimer)
+      el.removeEventListener('wheel', onWheel, true)
       ro.disconnect()
       window.bridge.terminals.offData(term.id)
       window.bridge.terminals.offExit(term.id)
