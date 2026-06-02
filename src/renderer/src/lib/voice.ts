@@ -316,7 +316,7 @@ export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
       stop: async () => {
         cleanup()
         const total = chunks.reduce((n, c) => n + c.length, 0)
-        console.log('[voice] REC stop · recorded ' + Math.round(totalMs) + 'ms · samples ' + total)
+        console.log('[voice] REC stop · recorded ' + Math.round(totalMs) + 'ms · samples ' + total + ' · peakRms=' + peakRms.toFixed(4) + ' thr=' + rmsThreshold + ' sawSpeech=' + sawSpeech + ' speechMs=' + Math.round(speechMs))
         const merged = new Float32Array(total)
         let off = 0
         for (const c of chunks) {
@@ -325,7 +325,10 @@ export async function startRecording(vad: VadOptions = {}): Promise<Recorder> {
         }
         return resampleTo16k(merged, srcRate)
       },
-      hadSpeech: () => sawSpeech,
+      // « parole détectée » = ≥350 ms au-dessus du seuil VAD (0.012) OU un pic d'énergie clair (≥0.004) :
+      // le 2e terme rattrape les micros à faible gain (la parole réelle reste sous 0.012 → sawSpeech jamais
+      // armé → faux « Aucune parole détectée »). Seul un vrai silence (micro mort/muet, pic < 0.004) est rejeté.
+      hadSpeech: () => sawSpeech || peakRms >= 0.004,
     }
   } catch (e) {
     capturing = false
