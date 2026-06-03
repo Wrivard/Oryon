@@ -161,12 +161,46 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
       return true
     })
 
+    // === DIAG TEMP scroll (v0.1.36 — à retirer) : pourquoi le scrollback de l'orchestrateur reste à len==rows ?
+    // On compte par seconde les séquences d'effacement écran (ESC[J / ESC[2J), d'effacement SCROLLBACK (ESC[3J),
+    // de bascule écran alterné (ESC[?1049/47), et de positionnement curseur (ESC[H) émises par claude, + l'état
+    // du buffer (len/baseY). Décisif : 3J>0 = claude vide le scrollback ; home élevé + 3J=0 = redessin en place.
+    const isOrch = term.pane_index < 0
+    const ESC = String.fromCharCode(27)
+    const reEraseJ = new RegExp(ESC + '\\[[0-3]?J', 'g')
+    const re3J = new RegExp(ESC + '\\[3J', 'g')
+    const reAlt = new RegExp(ESC + '\\[\\?(?:1049|1047|47)[hl]', 'g')
+    const reHome = new RegExp(ESC + '\\[(?:\\d+;\\d+)?H', 'g')
+    let dT = 0
+    let dEraseJ = 0
+    let d3J = 0
+    let dAlt = 0
+    let dHome = 0
+    let dBytes = 0
+
     // Listeners AVANT le spawn (ne pas rater les premiers octets).
     let buf = ''
     let sawShell = false
     let sawClaude = false
     window.bridge.terminals.onData(term.id, (data) => {
       xterm.write(data)
+      if (isOrch) {
+        dEraseJ += (data.match(reEraseJ) || []).length
+        d3J += (data.match(re3J) || []).length
+        dAlt += (data.match(reAlt) || []).length
+        dHome += (data.match(reHome) || []).length
+        dBytes += data.length
+        const now = Date.now()
+        if (now - dT > 1000) {
+          const ab = xterm.buffer.active
+          console.log(
+            '[term:' + term.name + '] DIAG eraseJ=' + dEraseJ + ' 3J=' + d3J + ' alt=' + dAlt + ' home=' + dHome +
+              ' bytes=' + dBytes + ' buflen=' + ab.length + ' baseY=' + ab.baseY,
+          )
+          dT = now
+          dEraseJ = d3J = dAlt = dHome = dBytes = 0
+        }
+      }
       buf = (buf + data).slice(-4000)
       if (!sawShell && /(PS .*>|[$%>]\s?$)/m.test(buf)) {
         sawShell = true
@@ -214,9 +248,17 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
       }, slot * SPAWN_STAGGER_MS)
     })
 
+    // On ne resize le PTY (→ SIGWINCH → repaint ConPTY/claude, qui peut ÉCRASER le scrollback) QUE si les
+    // dimensions ont VRAIMENT changé : sinon une tempête de resize same-size (re-rendus du panneau) reset le
+    // scrollback en boucle (symptôme : orchestrateur len==rows, 0 historique). + log DIAG (v0.1.36).
+    let lastCols = xterm.cols
+    let lastRows = xterm.rows
     const ro = new ResizeObserver(() => {
       safeFit()
-      if (created && canFit()) {
+      if (created && canFit() && (xterm.cols !== lastCols || xterm.rows !== lastRows)) {
+        if (isOrch) console.log('[term:' + term.name + '] resize ' + lastCols + 'x' + lastRows + ' → ' + xterm.cols + 'x' + xterm.rows)
+        lastCols = xterm.cols
+        lastRows = xterm.rows
         window.bridge.terminals.resize(term.id, xterm.cols, xterm.rows)
         // Reste collé en bas : un redimensionnement (ex. plein écran) fait redessiner le TUI claude ;
         // sans ça le viewport ne suit pas et la ligne de saisie « ❯ » passe sous la zone visible.
