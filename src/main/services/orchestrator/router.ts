@@ -385,7 +385,7 @@ export async function agentAssignTask(
     taskId: task.id,
     agent: terminalName(id),
     attempt,
-    title: task.title,
+    title: task.title ?? undefined,
     fresh: !open,
     files: files && files.length ? files : undefined,
     worktreeSync: refreshed,
