@@ -27,6 +27,8 @@ import type { OrchestratorEvent, TaskStatus, Workspace } from '../../../shared/t
 
 const INJECT_ENTER_DELAY = 200 // ms : laisser claude consommer le paste avant l'Entrée séparée
 const RESET_REHYDRATE_DELAY = 1000 // ms : laisser /clear vider le contexte avant d'injecter la ré-hydration
+const RESUBMIT_ECHO_SETTLE_MS = 700 // R1 : laisser l'écho du collage du contrat retomber avant de juger l'activité
+const RESUBMIT_CHECK_MS = 1200 // R1 : fenêtre sans flux APRÈS l'écho ⇒ contrat resté au prompt (non soumis) ⇒ re-Entrée
 const DEFAULT_REHYDRATION =
   "Reprise après reset du contexte. D'abord lis le curseur de reprise avec l'outil mémoire (read_memory « orchestrator-resume », ou list_memories s'il est absent). La conversation complète d'avant le reset est archivée et relisible via search_archive / read_archived_session (agent « orchestrator »). Reprends le fil à partir de là."
 
@@ -34,6 +36,7 @@ const terminalBusy = new Map<string, string | null>() // terminalId -> taskId | 
 const terminalLastData = new Map<string, number>() // terminalId -> dernier flux (ts) — pour l'interruption
 const interrupting = new Set<string>() // terminaux en cours d'ESC (non réutilisables)
 const stallNotified = new Set<string>() // terminaux déjà signalés "silencieux" (watchdog WC) — anti-spam
+const terminalAssignedAt = new Map<string, number>() // R3 : ts du dernier dispatch → détecte un worker MORT-NÉ (jamais émis)
 const STALL_MS = 5 * 60_000 // worker busy sans flux depuis 5 min → surfacé à l'orchestrateur (JAMAIS tué)
 let observerInstalled = false
 
@@ -193,6 +196,32 @@ export async function agentAssignTask(
   const id = resolveWorker(workspaceId, terminalRef)
   const projectId = getOrCreateProjectId(ws.name, ws.project_path)
 
+  // O2 : projet NON-GIT = AUCUNE isolation (pas de worktree/branche → tous les workers partagent le MÊME dossier,
+  // pas de review-par-diff, pas de merge-back). On FORCE le séquentiel : refuser un 2e worker actif en parallèle
+  // (sinon N agents piétinent le même répertoire). Recommander `git init` pour le parallélisme + la review par diff.
+  if (!isGitRepo(ws.project_path)) {
+    const others = listTasks(workspaceId).filter(
+      (t) =>
+        (t.status === 'in-progress' || t.status === 'in-review') &&
+        t.assigned_terminal_id &&
+        t.assigned_terminal_id !== id,
+    )
+    if (others.length) {
+      const orchE = orchestratorTerminalId(workspaceId)
+      if (orchE && hasLiveTerminal(orchE)) {
+        pasteLine(
+          orchE,
+          oneLinePrompt(
+            `[oryon] ⚠ assign à ${terminalName(id)} REFUSÉ : projet NON-GIT = zéro isolation (dossier partagé). Travaille SÉQUENTIELLEMENT (un seul worker à la fois) ou \`git init\` le projet pour le parallélisme + la review par diff. Worker(s) actif(s) : ${others
+              .map((t) => terminalName(t.assigned_terminal_id as string))
+              .join(', ')}.`,
+          ),
+        )
+      }
+      return { terminal: terminalName(id), taskId: '' } // pas de dispatch
+    }
+  }
+
   // W6(b) : refuse un dispatch dont les fichiers chevauchent ceux RÉSERVÉS (claims) par une AUTRE task active.
   // Indirection file-de-commandes : impossible de renvoyer l'erreur au caller MCP → on réveille l'orchestrateur
   // (même pattern que la porte-à-preuves) et on N'envoie PAS la task. PAS de throw (sinon retry en boucle).
@@ -257,6 +286,7 @@ export async function agentAssignTask(
     updateTask(task.id, { status: 'in-progress', assigned_terminal_id: id })
   }
   terminalBusy.set(id, task.id)
+  terminalAssignedAt.set(id, Date.now()) // R3 : repère temporel pour détecter un worker mort-né
   stallNotified.delete(id) // re-dispatch → le watchdog pourra de nouveau signaler ce terminal
   // W6(b) : réserve les fichiers de l'assigné pour que le prochain assign parallèle voie le chevauchement.
   if (files && files.length) {
@@ -290,6 +320,17 @@ export async function agentAssignTask(
     ].join(' '),
   )
   pasteLine(id, prompt)
+  // R1 : filet anti-« busy zombie ». La race paste/Entrée fait que l'Entrée de pasteLine ne soumet parfois PAS
+  // → le contrat reste collé au prompt, le terminal paraît busy mais rien ne tourne. On distingue l'ÉCHO du
+  // collage (flux immédiat) du DÉMARRAGE de claude (flux continu) : après l'écho, si AUCUN nouveau flux, c'est
+  // que claude est resté au prompt → on renvoie une Entrée nue (soumet le buffer déjà correct ; inoffensif sinon).
+  setTimeout(() => {
+    if (!hasLiveTerminal(id)) return
+    const afterEcho = terminalLastData.get(id) ?? 0
+    setTimeout(() => {
+      if (hasLiveTerminal(id) && (terminalLastData.get(id) ?? 0) <= afterEcho) writeTerminal(id, '\r')
+    }, RESUBMIT_CHECK_MS)
+  }, RESUBMIT_ECHO_SETTLE_MS)
   // Si le worktree est resté périmé, préviens l'orchestrateur (signal actionnable, pas d'échec muet — W1).
   if (refreshed === 'conflict' || refreshed === 'dirty') {
     const orchE = orchestratorTerminalId(workspaceId)
@@ -435,7 +476,11 @@ export function tickWatchdog(): void {
   for (const [tid, busy] of terminalBusy) {
     if (!busy || stallNotified.has(tid) || interrupting.has(tid) || !hasLiveTerminal(tid)) continue
     const last = terminalLastData.get(tid)
-    if (last === undefined || now - last <= STALL_MS) continue // pas encore de flux (prompt en vol) → on attend
+    // R3 : référence = dernier flux, ou (worker MORT-NÉ : jamais émis un octet) l'instant du dispatch — pour ne
+    // plus rater un claude qui hang/crash au lancement sans rien écrire (avant : last===undefined → jamais flaggé).
+    const ref = last ?? terminalAssignedAt.get(tid)
+    if (ref === undefined || now - ref <= STALL_MS) continue
+    const deadOnArrival = last === undefined
     const wsId = (getDb().prepare('SELECT workspace_id FROM terminals WHERE id = ?').pluck().get(tid) as
       | string
       | undefined)
@@ -446,14 +491,12 @@ export function tickWatchdog(): void {
     const t = getTask(busy)
     const ws = getWorkspace(wsId)
     const ev = ws && isGitRepo(ws.project_path) ? branchEvidence(ws.project_path, name) : null
-    const mins = Math.round((now - last) / 60000)
+    const mins = Math.round((now - ref) / 60000)
     const evidence = ev ? ` [preuve: ${ev.ahead} commit(s), ${ev.filesChanged.length} fichier(s)]` : ''
-    pasteLine(
-      orch,
-      oneLinePrompt(
-        `[oryon watchdog] ${name} silencieux depuis ~${mins} min sur "${t?.title ?? ''}"${evidence}. Peut-être bloqué / en attente d'input / en boucle — inspecte (get_terminal_output ${name}) puis relance ou réassigne. (aucun kill automatique)`,
-      ),
-    )
+    const msg = deadOnArrival
+      ? `[oryon watchdog] ${name} n'a produit AUCUNE sortie depuis le dispatch (~${mins} min) sur "${t?.title ?? ''}" — claude a peut-être planté au lancement ou son serveur MCP est mort. Vérifie (get_terminal_output ${name} / mcp_health ${name}) puis restart_agent si besoin. (aucun kill automatique)`
+      : `[oryon watchdog] ${name} silencieux depuis ~${mins} min sur "${t?.title ?? ''}"${evidence}. Peut-être bloqué / en attente d'input / en boucle — inspecte (get_terminal_output ${name}) puis relance ou réassigne. (aucun kill automatique)`
+    pasteLine(orch, oneLinePrompt(msg))
     stallNotified.add(tid)
   }
 }
