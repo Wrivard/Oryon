@@ -100,3 +100,24 @@ C1-complet (threading explicite du taskId) ; C2-complet (rejet-au-report d'un wo
 dirty-suivi/non-suivi dans branchEvidence) ; Q4 (politique git worker allégée), Q5 (re-dispatch corps-seul),
 Q6 (récolte des bugs signalés) ; R5 (restart re-provisionne le worktree), R6 (claims TTL), R8 (persister pending
 merges), R9 (lock `~/.claude.json`) ; O3 (timing/heuristiques par écosystème) ; V2/V3.
+
+---
+
+## STATUT — VAGUE 2 (clairs wins, v0.1.41)
+Faits : **V2** broadcast saute les workers busy `37dca45` · **R5** restart re-provisionne le worktree (+junctions) `37dca45`
+· **Q5** re-dispatch corps-seul (rôle déjà en contexte) `37dca45` · **Q6** backlog des bugs signalés-non-corrigés `9f4177a`.
+
+RESTE (tail — diminishing returns, sur demande ; fix exact noté) :
+- **O3** timeout green-gate configurable : ajouter `timeoutMs` à `.oryon/verify.json` + le threader dans runTsc/
+  runShellVerify. (300s suffit à la quasi-totalité des repos ; ne compte que sur des repos ÉNORMES.)
+- **R8** persister la file `pending` de merges différés (merge-back.ts) — reconstruire au boot depuis les tasks
+  approved-but-unmerged. Edge : travail mergeable perdu si crash pendant un merge différé.
+- **C2-complet** rejeter "done" au report si SUIVI non commité — nécessite que branchEvidence distingue
+  dirty-suivi/non-suivi (worktrees.ts) puis étendre la porte report (router.ts). (Le `add -u` de C2-light couvre
+  déjà le gros : plus de junk non-suivi dans main.)
+- **R6** claims TTL/GC — R7 (release-on-death) couvre déjà le cas principal ; le TTL n'est qu'un backstop.
+
+NON FAITS (justifiés) : **R9** (c'est claude qui écrit `~/.claude.json`, pas Oryon → pas notre lock à poser ; le
+stagger 500 ms reste la mitigation) · **V3** (la ré-hydration est DÉJÀ dans le prompt de rôle) · **C1-complet**
+(threading explicite du taskId : invasif + dépend du worker ; le flag C1-light suffit au cas courant) · **Q4** (le
+prompt worker neutralise déjà push/merge de git-workflow ; bloat mineur).
