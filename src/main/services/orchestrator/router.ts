@@ -10,6 +10,7 @@ import {
 } from '../pty-manager'
 import { ensureClaudeReady, normalizeClaudeAutostart, enforceAgentSpawn } from '../claude-launcher'
 import { sweepArchive } from '../archive'
+import { recordOutcome } from './outcomes'
 import { buildProjectMcpConfigForPath, addConnector } from '../../ipc/settings.ipc'
 import { recordMailbox } from './mailbox'
 import { getOrCreateProjectId, createTask, listTasks, getTask, updateTask } from './task-store'
@@ -45,6 +46,7 @@ const terminalLastData = new Map<string, number>() // terminalId -> dernier flux
 const interrupting = new Set<string>() // terminaux en cours d'ESC (non réutilisables)
 const stallNotified = new Set<string>() // terminaux déjà signalés "silencieux" (watchdog WC) — anti-spam
 const terminalAssignedAt = new Map<string, number>() // R3 : ts du dernier dispatch → détecte un worker MORT-NÉ (jamais émis)
+const attemptByTask = new Map<string, number>() // capture : nb d'essais par task (assign/re-dispatch) pour outcomes.ndjson
 const STALL_MS = 5 * 60_000 // worker busy sans flux depuis 5 min → surfacé à l'orchestrateur (JAMAIS tué)
 let observerInstalled = false
 
@@ -155,10 +157,20 @@ export function initOrchestrator(): void {
         | string
         | undefined
       if (!wsId) return
+      const wsRow = getWorkspace(wsId)
       let touched = false
       for (const t of listTasks(wsId)) {
         if (t.assigned_terminal_id === id && (t.status === 'in-progress' || t.status === 'in-review')) {
           updateTask(t.id, { status: 'todo', assigned_terminal_id: null })
+          if (wsRow)
+            recordOutcome(wsRow.project_path, {
+              event: 'abandoned',
+              taskId: t.id,
+              agent: terminalName(id),
+              attempt: attemptByTask.get(t.id),
+              title: t.title ?? undefined,
+              reason: 'worker-exit',
+            })
           touched = true
         }
       }
@@ -178,6 +190,18 @@ export function setTaskStatus(taskId: string, status: TaskStatus): void {
   const t = getTask(taskId)
   if (!t) return
   updateTask(taskId, { status })
+  if (status === 'cancelled' && t.workspace_id) {
+    const wsC = getWorkspace(t.workspace_id)
+    if (wsC)
+      recordOutcome(wsC.project_path, {
+        event: 'cancelled',
+        taskId,
+        agent: t.assigned_terminal_id ? terminalName(t.assigned_terminal_id) : '?',
+        attempt: attemptByTask.get(taskId),
+        verdict: 'reject', // annulation manuelle = rejet du manager
+        title: t.title ?? undefined,
+      })
+  }
   if (status === 'complete' || status === 'cancelled' || status === 'todo') {
     freeTerminalForTask(taskId)
     // W6(b) : libère les claims de l'agent quand sa task quitte l'état actif (sinon claim fantôme).
@@ -320,6 +344,8 @@ export async function agentAssignTask(
   terminalBusy.set(id, task.id)
   terminalAssignedAt.set(id, Date.now()) // R3 : repère temporel pour détecter un worker mort-né
   stallNotified.delete(id) // re-dispatch → le watchdog pourra de nouveau signaler ce terminal
+  const attempt = (attemptByTask.get(task.id) ?? 0) + 1 // capture : essai courant (1 = frais, +1 par re-dispatch)
+  attemptByTask.set(task.id, attempt)
   // W6(b) : réserve les fichiers de l'assigné pour que le prochain assign parallèle voie le chevauchement.
   if (files && files.length) {
     for (const f of files) {
@@ -353,6 +379,17 @@ export async function agentAssignTask(
       ]
   const prompt = oneLinePrompt([`[task ${task.id}]`, instructions, staleNote, ...roleReminder].join(' '))
   pasteLine(id, prompt)
+  // CAPTURE : événement 'assigned' (outcomes.ndjson) — essai, frais vs re-dispatch, fichiers, état worktree.
+  recordOutcome(ws.project_path, {
+    event: 'assigned',
+    taskId: task.id,
+    agent: terminalName(id),
+    attempt,
+    title: task.title,
+    fresh: !open,
+    files: files && files.length ? files : undefined,
+    worktreeSync: refreshed,
+  })
   // R1 : filet anti-« busy zombie ». La race paste/Entrée fait que l'Entrée de pasteLine ne soumet parfois PAS
   // → le contrat reste collé au prompt, le terminal paraît busy mais rien ne tourne. On distingue l'ÉCHO du
   // collage (flux immédiat) du DÉMARRAGE de claude (flux continu) : après l'écho, si AUCUN nouveau flux, c'est
@@ -437,10 +474,33 @@ export async function agentReportTask(
         ),
       )
     }
+    if (ws)
+      recordOutcome(ws.project_path, {
+        event: 'rejected',
+        taskId: task.id,
+        agent: fromAgent ?? '?',
+        attempt: attemptByTask.get(task.id),
+        reason: 'empty-branch',
+        evidence: ev
+          ? { ahead: ev.ahead, filesChanged: ev.filesChanged.length, worktreeDirty: ev.worktreeDirty, mainDirty: ev.mainDirty, empty: ev.empty }
+          : undefined,
+      })
     return { ok: true, taskId: task.id }
   }
 
   if (task) updateTask(task.id, { status: blocked ? 'blocked' : 'in-review' }) // garde assigned_terminal_id → merge à l'approbation
+  if (task && ws)
+    recordOutcome(ws.project_path, {
+      event: 'reported',
+      taskId: task.id,
+      agent: fromAgent ?? '?',
+      attempt: attemptByTask.get(task.id),
+      report: blocked ? 'blocked' : 'done',
+      summary,
+      evidence: ev
+        ? { ahead: ev.ahead, filesChanged: ev.filesChanged.length, worktreeDirty: ev.worktreeDirty, mainDirty: ev.mainDirty, empty: ev.empty }
+        : undefined,
+    })
   if (termId) terminalBusy.set(termId, null)
   broadcast({
     type: 'mailbox',
@@ -564,11 +624,28 @@ export function agentApproveTask(taskId: string): { ok: boolean; message: string
         onDone: (m) => {
           updateTask(taskId, { status: 'complete' })
           void releaseClaimsByAgent(ws.project_path, agent) // W6(b) : la task est mergée → libère ses claims
+          recordOutcome(ws.project_path, {
+            event: 'approved',
+            taskId,
+            agent,
+            attempt: attemptByTask.get(taskId),
+            verdict: 'pass', // l'approbation EST l'adjudication du manager (= la vérité, pas l'auto-report)
+            mergeOutcome: 'merged',
+            mergeMessage: m,
+          })
+          attemptByTask.delete(taskId)
           emitTasks(wsId)
           agentMailbox(wsId, 'système', m)
         },
         onConflict: (m) => {
           updateTask(taskId, { status: 'in-review' })
+          recordOutcome(ws.project_path, {
+            event: /conflit|conflict/i.test(m) ? 'merge_conflict' : 'merge_deferred',
+            taskId,
+            agent,
+            attempt: attemptByTask.get(taskId),
+            mergeMessage: m,
+          })
           emitTasks(wsId)
           agentMailbox(wsId, 'système', m)
         },
