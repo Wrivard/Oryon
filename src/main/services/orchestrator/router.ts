@@ -13,7 +13,15 @@ import { sweepArchive } from '../archive'
 import { buildProjectMcpConfigForPath, addConnector } from '../../ipc/settings.ipc'
 import { recordMailbox } from './mailbox'
 import { getOrCreateProjectId, createTask, listTasks, getTask, updateTask } from './task-store'
-import { isGitRepo, worktreeDir, branchFor, refreshWorktreeToHead, branchEvidence } from '../worktrees'
+import {
+  isGitRepo,
+  worktreeDir,
+  branchFor,
+  refreshWorktreeToHead,
+  branchEvidence,
+  ensureWorktree,
+  provisionWorktreeDeps,
+} from '../worktrees'
 import { enqueueMergeBack } from './merge-back'
 import { verifyWorktree } from './green-gate'
 import { readClaims, claimFile, releaseClaimsByAgent } from '../../../shared/memory-core.mjs'
@@ -331,18 +339,19 @@ export async function agentAssignTask(
       : refreshed === 'dirty'
         ? 'NOTE: ton worktree a des changements non commités et n’a PAS été synchronisé sur main — réconcilie avant de dépendre de code déjà mergé.'
         : ''
-  const prompt = oneLinePrompt(
-    [
-      `[task ${task.id}]`,
-      instructions,
-      staleNote,
-      'You are a FOCUSED IMPLEMENTATION WORKER, not an orchestrator: do ONLY the task above — never orchestrate, never ask the user what to do, never wait for further direction.',
-      'Work EXCLUSIVELY inside your current git worktree (a full mirror of the repo). NEVER `cd` to another directory and never edit files outside this worktree — the main project tree and the other agents’ worktrees are OFF-LIMITS.',
-      'Touch only the files the task names; make surgical changes; respect repo conventions; never run destructive commands.',
-      'Do NOT read shared/session memory (it is orchestrator context, not your task). Use search_memories ONLY if the task explicitly asks you to.',
-      'When the task is GENUINELY finished: commit your changes to your branch, confirm with `git status`/`git diff` that the work is actually present, then call report_task with status "done" (or "blocked" if you truly cannot proceed) and a truthful one-line summary. NEVER report "done" unless the committed diff really contains the changes.',
-    ].join(' '),
-  )
+  // Q5 : sur un RE-DISPATCH (task ouverte réutilisée : boucle de feedback / retry), le worker a déjà le rôle en
+  // contexte (system-prompt durable + 1er dispatch) → on n'envoie QUE le corps du contrat (pas le rappel de rôle
+  // verbeux) pour éviter la confusion « bloc de rôle sans tâche » + le coût en tokens. Fresh task → rappel complet.
+  const roleReminder = open
+    ? []
+    : [
+        'You are a FOCUSED IMPLEMENTATION WORKER, not an orchestrator: do ONLY the task above — never orchestrate, never ask the user what to do, never wait for further direction.',
+        'Work EXCLUSIVELY inside your current git worktree (a full mirror of the repo). NEVER `cd` to another directory and never edit files outside this worktree — the main project tree and the other agents’ worktrees are OFF-LIMITS.',
+        'Touch only the files the task names; make surgical changes; respect repo conventions; never run destructive commands.',
+        'Do NOT read shared/session memory (it is orchestrator context, not your task). Use search_memories ONLY if the task explicitly asks you to.',
+        'When the task is GENUINELY finished: commit your changes to your branch, confirm with `git status`/`git diff` that the work is actually present, then call report_task with status "done" (or "blocked" if you truly cannot proceed) and a truthful one-line summary. NEVER report "done" unless the committed diff really contains the changes.',
+      ]
+  const prompt = oneLinePrompt([`[task ${task.id}]`, instructions, staleNote, ...roleReminder].join(' '))
   pasteLine(id, prompt)
   // R1 : filet anti-« busy zombie ». La race paste/Entrée fait que l'Entrée de pasteLine ne soumet parfois PAS
   // → le contrat reste collé au prompt, le terminal paraît busy mais rien ne tourne. On distingue l'ÉCHO du
@@ -593,12 +602,27 @@ export function agentBroadcastCommand(
   // sur le sommet, /effort max, pour que « mets-les en ultracode » fasse ce que l'utilisateur attend.
   const mapped = /^\/?(effort\s+)?(ultra|ultracode)$/i.test(command.trim()) ? '/effort max' : command
   const line = oneLinePrompt(mapped)
+  // V2 : un broadcast à TOUS saute les workers OCCUPÉS (busy) — leur injecter une ligne en plein tour
+  // déraillerait leur tâche. Un broadcast CIBLÉ (terminalRef) reste honoré (intention explicite de l'orchestrateur).
+  let busySkipped = 0
   const targets = terminalRef
     ? [resolveWorker(workspaceId, terminalRef)]
-    : terminalIds(workspaceId).filter((id) => hasLiveTerminal(id) && !interrupting.has(id))
+    : terminalIds(workspaceId).filter((id) => {
+        if (!hasLiveTerminal(id) || interrupting.has(id)) return false
+        if (terminalBusy.get(id)) {
+          busySkipped++
+          return false
+        }
+        return true
+      })
   for (const id of targets) pasteLine(id, line)
   if (terminalRef && targets.length) agentMailbox(workspaceId, 'orchestrateur', `\`${line}\` → ${terminalName(targets[0])}`)
-  else agentMailbox(workspaceId, 'orchestrateur', `\`${line}\` → ${targets.length} worker(s)`)
+  else
+    agentMailbox(
+      workspaceId,
+      'orchestrateur',
+      `\`${line}\` → ${targets.length} worker(s)${busySkipped ? ` (${busySkipped} occupé(s) ignoré(s))` : ''}`,
+    )
   return { count: targets.length, command: line }
 }
 
@@ -689,6 +713,18 @@ export function agentRestartAgent(workspaceId: string, terminalRef: string): voi
   if (hasLiveTerminal(id)) killTerminal(id)
   terminalBusy.set(id, null)
   stallNotified.delete(id)
+
+  // R5 : ré-établit le worktree de l'agent + ses junctions (node_modules/.claude/skills) AVANT de recréer le PTY.
+  // Sinon un restart consécutif à la disparition du worktree relancerait claude dans un cwd cassé. Idempotent si
+  // déjà présent. (La task in-progress, elle, a été remise en todo par l'exit-observer au kill ci-dessus — R7.)
+  if (row.worktree_path && isGitRepo(row.cwd)) {
+    try {
+      const wt = ensureWorktree(row.cwd, row.name)
+      provisionWorktreeDeps(row.cwd, wt)
+    } catch (e) {
+      tellOrch(`[oryon] ⚠ restart_agent : ré-provision du worktree de ${row.name} a échoué — ${(e as Error).message}`)
+    }
+  }
 
   // Reconstruit l'autostart EXACTEMENT comme terminals.ipc.ts (sinon le claude relancé n'aurait pas le serveur
   // oryon — soit tout le but du restart). Shell dans le worktree ; ancre MCP = projet principal (colonne cwd).
