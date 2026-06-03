@@ -209,19 +209,17 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
             ORYON_AGENT_NAME: term.name,
             ORYON_WORKSPACE_ID: term.workspace_id,
             ...(term.role ? { ORYON_AGENT_ROLE: term.role } : {}),
-            // Orchestrateur (pane_index < 0) : pour pouvoir SCROLLER l'historique (molette / PgUp). RACINE du bug :
-            // claude branche son rendu plein écran (écran alterné + souris + scroll) sur TERM_PROGRAM ; nos terminaux
-            // SONT xterm.js (= le terminal intégré de VS Code, que claude supporte), mais SANS TERM_PROGRAM reconnu
-            // claude DÉGRADE le plein écran (pas d'écran alterné → 0 scrollback, diag : alt=0). On s'annonce donc
-            // comme VS Code → claude prend son chemin xterm.js compatible. NO_FLICKER force le plein écran ;
-            // SCROLL_SPEED=3 (vim-like) car xterm.js envoie 1 cran par notch sans multiplicateur.
+            // Orchestrateur (pane_index < 0) : SCROLL de l'historique = rendu CLASSIQUE de claude (scrollback NATIF
+            // du terminal → scrollbar xterm, comme les workers). DISABLE_ALTERNATE_SCREEN force le classique quel que
+            // soit le réglage `tui` global : le PLEIN ÉCRAN de claude n'utilise PAS le scrollback natif (il a son
+            // propre scroll interne, qui ne s'engage pas dans notre xterm embarqué → 0 scroll). TERM_PROGRAM=vscode :
+            // claude reconnaît l'émulateur xterm.js (= terminal intégré VS Code) et rend le classique proprement.
             ...(term.pane_index < 0
               ? {
+                  CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1',
                   TERM_PROGRAM: 'vscode',
                   TERM_PROGRAM_VERSION: '1.96.0',
                   COLORTERM: 'truecolor',
-                  CLAUDE_CODE_NO_FLICKER: '1',
-                  CLAUDE_CODE_SCROLL_SPEED: '3',
                 }
               : {}),
           },
