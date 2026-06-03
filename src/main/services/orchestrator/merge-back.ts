@@ -59,9 +59,12 @@ async function integrate(job: MergeBackJob): Promise<void> {
     // 1) Committer le travail en attente du worktree (déjà revu). Commit MACHINE → --no-verify
     //    (un merge de swarm ne peut pas rester bloqué sur un hook pre-commit interactif ; déviation
     //    assumée vis-à-vis de la règle globale no-skip-hooks, à valider par le propriétaire).
-    await tryGit(worktree, ['add', '-A'])
-    const dirty = (await tryGit(worktree, ['status', '--porcelain'])) ?? ''
-    if (dirty.trim()) {
+    // C2 : `git add -u` (et NON `-A`) — capture les modifs de fichiers SUIVIS (travail que le worker a oublié de
+    // committer) mais JAMAIS les fichiers non suivis (artefacts de build, logs, junk hors-scope), qui ne doivent
+    // pas entrer dans MAIN sous le nom de l'agent sans revue. On ne commite que s'il y a réellement du staged.
+    await tryGit(worktree, ['add', '-u'])
+    const staged = (await tryGit(worktree, ['diff', '--cached', '--name-only'])) ?? ''
+    if (staged.trim()) {
       await git(worktree, ['commit', '-m', `agent ${agent}: ${task}`, '--no-verify'])
     }
     // 2) Rien à intégrer ? (branche à 0 commit d'avance sur HEAD)
