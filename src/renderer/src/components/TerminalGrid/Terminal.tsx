@@ -175,16 +175,6 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
       if (!sawClaude && /(Welcome to Claude Code|Claude Code v|esc to interrupt|│\s*>)/i.test(buf)) {
         sawClaude = true
         setStatus(term.id, 'claude_ready')
-        // claude `--continue` restaure le dernier prompt soumis (`lastPrompt`, stocké dans la session) dans la
-        // zone de saisie au resume. Pour l'orchestrateur — qui reprend (`--continue`) à CHAQUE redémarrage —
-        // ça laissait un brouillon fantôme : le « npm »/« run » qu'on voyait réapparaître seul et qui pouvait
-        // même se re-soumettre (→ nouveau lastPrompt = boucle auto-entretenue). Une fois claude prêt, on vide
-        // la ligne (Ctrl+E → fin de ligne, puis Ctrl+U → efface jusqu'au début) pour repartir d'une saisie
-        // vierge. Workers exclus : ils démarrent frais (jamais `--continue`), aucun brouillon à effacer.
-        if (term.pane_index < 0) {
-          const tid = term.id
-          setTimeout(() => window.bridge.terminals.write(tid, '\x05\x15'), 800)
-        }
       }
     })
     window.bridge.terminals.onExit(term.id, () => setStatus(term.id, 'exited'))
