@@ -2,7 +2,7 @@
 // `claude` ni aucun process (coût $0 préservé, aucune var d'auth touchée). Sert F2 (décision de reprise au
 // spawn) ET l'archivage des conversations (services/archive.ts).
 
-import { readdirSync, statSync, readFileSync, appendFileSync } from 'fs'
+import { readdirSync, statSync, readFileSync, writeFileSync, renameSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
@@ -34,14 +34,15 @@ export function hasClaudeSession(cwd: string): boolean {
  * claude persiste dans le transcript des enregistrements `{type:'last-prompt', lastPrompt, leafUuid, sessionId}`
  * et, au redémarrage avec `--continue`, ré-injecte CE texte dans la zone de saisie puis le soumet tout seul.
  * Pour l'orchestrateur (qui reprend à CHAQUE relance), un prompt fantôme (« npm »/« run ») se ré-injectait et
- * se re-soumettait en boucle (chaque soumission ré-écrivant le lastPrompt → auto-entretenu). Constat empirique :
- * le fantôme survivait à des milliers de lignes de conversation → claude restaure le DERNIER enregistrement
- * `last-prompt`, indépendamment de la feuille. On le neutralise donc en AJOUTANT (append-only — aucune
- * réécriture des données existantes, donc zéro risque de corrompre l'historique) un dernier enregistrement vide,
- * ancré sur la feuille de conversation courante (couvre aussi une éventuelle correspondance par feuille).
+ * se re-soumettait en boucle. Constat empirique (v0.1.45) : AJOUTER un record vide ne suffit PAS — claude
+ * restaure le dernier `lastPrompt` NON VIDE (les records vides sont ignorés), ou en choisit un par feuille. On
+ * RÉÉCRIT donc en place TOUS les records `last-prompt` non vides en `lastPrompt:''` → plus aucun brouillon non
+ * vide à restaurer, quelle que soit la logique de lecture de claude.
  *
- * À appeler APRÈS avoir tué l'ancien claude (sinon course d'écriture sur le transcript). Best-effort absolu :
- * toute erreur est avalée — ne doit JAMAIS bloquer le spawn d'un terminal.
+ * Sûreté : seules les lignes dont le `type` PARSÉ vaut `last-prompt` sont modifiées (toutes les autres — messages,
+ * snapshots — recopiées octet pour octet) ; garde sur le nombre de lignes ; écriture atomique (tmp + rename).
+ * À appeler APRÈS avoir tué l'ancien claude (transcript fermé → pas de course / verrou Windows). Best-effort
+ * absolu : toute erreur est avalée — ne doit JAMAIS bloquer le spawn d'un terminal.
  */
 export function clearClaudeLastPrompt(cwd: string): void {
   try {
@@ -55,29 +56,26 @@ export function clearClaudeLastPrompt(cwd: string): void {
     }
     if (!newest) return
     const raw = readFileSync(newest.p, 'utf8')
-    let leafUuid: string | null = null
-    let sessionId: string | null = null
-    let lastPromptText = ''
-    for (const line of raw.split('\n')) {
-      if (!line) continue
-      let o: { type?: string; uuid?: string; sessionId?: string; lastPrompt?: string }
+    const lines = raw.split('\n')
+    let changed = false
+    const out = lines.map((line) => {
+      if (!line.includes('"type":"last-prompt"')) return line // pré-filtre : recopie verbatim
       try {
-        o = JSON.parse(line)
+        const o = JSON.parse(line) as { type?: string; lastPrompt?: string }
+        if (o.type === 'last-prompt' && typeof o.lastPrompt === 'string' && o.lastPrompt !== '') {
+          o.lastPrompt = ''
+          changed = true
+          return JSON.stringify(o)
+        }
       } catch {
-        continue
+        /* ligne non-JSON (ou substring fortuit dans un message) → recopie verbatim */
       }
-      if (typeof o.sessionId === 'string') sessionId = o.sessionId
-      // Feuille = dernier message réel (user/assistant) portant un uuid — c'est ce que `--continue` reprend.
-      if ((o.type === 'user' || o.type === 'assistant') && typeof o.uuid === 'string') leafUuid = o.uuid
-      if (o.type === 'last-prompt' && typeof o.lastPrompt === 'string') lastPromptText = o.lastPrompt
-    }
-    // Déjà vide (ou rien à ancrer) → ne rien empiler.
-    if (!leafUuid || !sessionId || lastPromptText === '') return
-    const sep = raw === '' || raw.endsWith('\n') ? '' : '\n'
-    appendFileSync(
-      newest.p,
-      sep + JSON.stringify({ type: 'last-prompt', lastPrompt: '', leafUuid, sessionId }) + '\n',
-    )
+      return line
+    })
+    if (!changed || out.length !== lines.length) return // rien à neutraliser / garde-fou intégrité
+    const tmp = `${newest.p}.oryon-clearlp.tmp`
+    writeFileSync(tmp, out.join('\n'))
+    renameSync(tmp, newest.p)
   } catch {
     /* best-effort : ne JAMAIS bloquer le spawn */
   }
