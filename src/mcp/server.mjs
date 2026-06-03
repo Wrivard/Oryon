@@ -15,6 +15,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync } fr
 import { join } from 'node:path'
 import * as memory from '../shared/memory-core.mjs'
 import * as archive from './archive-read.mjs'
+import * as outcomes from './outcomes-read.mjs'
 
 const APPDATA =
   process.env.APPDATA ||
@@ -322,6 +323,24 @@ server.tool(
         2,
       ),
     ),
+)
+
+// ---- Feedback / RH : scorecards de perf des workers + KPIs équipe (orchestrateur-only, lecture seule, $0) ----
+// Dérivés du journal d'outcomes (.oryon/outcomes.ndjson, écrit par le main). La VÉRITÉ = TES verdicts d'approbation,
+// pas l'auto-report des workers (biais d'optimisme). Consulte AVANT d'assigner + pour calibrer la review.
+
+server.tool(
+  'worker_scorecard',
+  "Scorecards de perf par worker (analogie RH), dérivées du journal d'outcomes (.oryon/outcomes.ndjson). Par worker : tasksAttempted, approvalRate, firstPassApprovalRate, avgAttempts, blocked, evidenceGateRejections, mergeConflicts, abandoned, dernière activité. Consulte-le AVANT d'assigner (gros/risqué → worker au meilleur track record ; faible → review plus serrée). Vide tant qu'aucune task n'a tourné sous cette version.",
+  {},
+  async () => text(JSON.stringify(outcomes.workerScorecards(PROJECT_DIR), null, 2)),
+)
+
+server.tool(
+  'team_metrics',
+  "KPIs d'équipe (analogie dashboard manager) dérivés du journal d'outcomes : débit (events/tasks distinctes), re-dispatch rate, taux d'approbation, rejets evidence-gate, conflits/defers de merge, blocked, abandons. Pour suivre la santé du process dans le temps.",
+  {},
+  async () => text(JSON.stringify(outcomes.teamMetrics(PROJECT_DIR), null, 2)),
 )
 
 // ---- Orchestration : tâches et mailbox (MCP→main via file de commandes) ----
