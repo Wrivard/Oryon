@@ -137,7 +137,31 @@ export function initOrchestrator(): void {
   addExitObserver((id) => {
     terminalBusy.delete(id)
     terminalLastData.delete(id)
+    terminalAssignedAt.delete(id)
     stallNotified.delete(id)
+    // R7 : un terminal qui MEURT laissait sa task in-progress orpheline (zombie dans le board) ET, sur
+    // restart_agent (kill→recreate), la task restait collée au worker mort (P1-4). On la REMET en todo +
+    // libère ses claims → requeue propre, réassignable. Event-driven (à la mort réelle) = pas de race transitoire.
+    try {
+      const wsId = getDb().prepare('SELECT workspace_id FROM terminals WHERE id = ?').pluck().get(id) as
+        | string
+        | undefined
+      if (!wsId) return
+      let touched = false
+      for (const t of listTasks(wsId)) {
+        if (t.assigned_terminal_id === id && (t.status === 'in-progress' || t.status === 'in-review')) {
+          updateTask(t.id, { status: 'todo', assigned_terminal_id: null })
+          touched = true
+        }
+      }
+      if (touched) {
+        const ws = getWorkspace(wsId)
+        if (ws && isGitRepo(ws.project_path)) void releaseClaimsByAgent(ws.project_path, terminalName(id))
+        emitTasks(wsId)
+      }
+    } catch {
+      /* best-effort : la mort d'un terminal ne doit jamais throw dans l'observer */
+    }
   })
 }
 
@@ -458,6 +482,11 @@ export async function agentReportTask(
           .join(', ')}${ev.filesChanged.length > 12 ? ` (+${ev.filesChanged.length - 12})` : ''}.`
       if (ev.mainDirty) evidence += ' ⚠ TRONC PRINCIPAL SALE — contamination possible (un worker a peut-être édité MAIN)'
     }
+    // C1 : sur un projet git, si le rapport n'a PAS pu être rattaché à un worker connu (fromAgent manquant/
+    // inconnu → ev null), la porte à preuves est court-circuitée → on le FLAG au lieu de gober la prose en silence.
+    if (!ev && ws && isGitRepo(ws.project_path))
+      evidence =
+        ' ⚠ AUCUNE preuve git (rapport non rattaché à un worker connu — fromAgent manquant/inconnu) : ne te fie PAS à la prose, vérifie le worktree manuellement.'
     const wake = oneLinePrompt(
       `[oryon] ${fromAgent ?? 'un worker'} a terminé "${task?.title ?? ''}" (${status})${tid}: ${summary}.${evidence}${gateNote}${mismatch}${wt} Vérifie le diff puis approve_task si OK, sinon réassigne avec un feedback précis.`,
     )
