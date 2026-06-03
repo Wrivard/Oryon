@@ -408,6 +408,13 @@ export async function agentReportTask(
     let evidence = ''
     if (ev) {
       evidence = ` [preuve: ${ev.ahead} commit(s), ${ev.filesChanged.length} fichier(s)${ev.worktreeDirty ? ', worktree non commité' : ''}${ev.empty ? ' ⚠ BRANCHE VIDE' : ''}]`
+      // V1 : la LISTE des fichiers (cap 12) directement dans la wake-line — l'orchestrateur juge le périmètre
+      // (et repère un hors-scope) sans round-trip `git diff`. Les chemins sont déjà calculés par branchEvidence.
+      if (ev.filesChanged.length)
+        evidence += ` Fichiers: ${ev.filesChanged
+          .slice(0, 12)
+          .map((f) => f.replace(/\\/g, '/'))
+          .join(', ')}${ev.filesChanged.length > 12 ? ` (+${ev.filesChanged.length - 12})` : ''}.`
       if (ev.mainDirty) evidence += ' ⚠ TRONC PRINCIPAL SALE — contamination possible (un worker a peut-être édité MAIN)'
     }
     const wake = oneLinePrompt(
