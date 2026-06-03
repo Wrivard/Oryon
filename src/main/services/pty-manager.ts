@@ -2,26 +2,6 @@ import * as pty from '@lydell/node-pty'
 import os from 'os'
 import { shellIntegrationArgs, baseShellArgs } from './shell-integration'
 import { appSetting } from '../ipc/settings.ipc'
-import { appendFileSync } from 'fs'
-import { join } from 'path'
-
-// === DIAG TEMP — capture byte-level du resume de l'ORCHESTRATEUR pour localiser la source du "npm"/"run".
-// Logge l'autostart + IN (écritures PTY) + OUT (sortie PTY) des ~6 premières secondes dans
-// ~/.oryon-orch-capture.log. À RETIRER une fois la source confirmée. ===
-const ORCH_CAP = join(os.homedir(), '.oryon-orch-capture.log')
-let orchCapId: string | null = null
-let orchCapUntil = 0
-function orchCap(tag: string, data: string): void {
-  try {
-    if (data === '\x1b[I' || data === '\x1b[O') return // bruit : événements de focus
-    const stack = tag.startsWith('IN')
-      ? ' | src=' + (new Error().stack || '').split('\n').slice(3, 6).map((s) => s.trim()).join(' <- ')
-      : ''
-    appendFileSync(ORCH_CAP, `[${tag}] ${JSON.stringify(data).slice(0, 400)}${stack}\n`)
-  } catch {
-    /* ignore */
-  }
-}
 
 interface Term {
   id: string
@@ -87,13 +67,6 @@ export function createTerminal(opts: CreateTerminalOpts): string {
   // Double mount (StrictMode) / réouverture : on repart proprement.
   if (terms.has(opts.id)) killTerminal(opts.id)
 
-  // DIAG TEMP : armer la capture byte-level pour l'orchestrateur (6 s à partir du spawn).
-  if (opts.env?.ORYON_AGENT_ROLE === 'orchestrator') {
-    orchCapId = opts.id
-    orchCapUntil = Date.now() + 20000
-    orchCap('SPAWN', `id=${opts.id} cwd=${opts.cwd} autostart=${opts.autostart ?? '(none)'}`)
-  }
-
   // Intégration shell (command-blocks, OSC 133) — activée par défaut, désactivable via réglage.
   // Dans les deux cas on garde -NoProfile pour PowerShell (garde-fou $0 : pas de ré-injection de clé API).
   const shellArgs =
@@ -112,7 +85,6 @@ export function createTerminal(opts: CreateTerminalOpts): string {
   // ses handlers asynchrones ne doivent ni écrire dans le nouveau, ni le supprimer de la map.
   proc.onData((data) => {
     if (terms.get(opts.id)?.proc !== proc) return
-    if (opts.id === orchCapId && Date.now() < orchCapUntil) orchCap('OUT', data)
     opts.onData(data)
     for (const o of dataObservers) o(opts.id, data)
   })
@@ -131,10 +103,7 @@ export function createTerminal(opts: CreateTerminalOpts): string {
     // entre-temps, on n'écrit pas dans l'ancien (évite un double-lancement de claude).
     setTimeout(() => {
       const t = terms.get(opts.id)
-      if (t && t.proc === proc) {
-        if (opts.id === orchCapId && Date.now() < orchCapUntil) orchCap('IN-autostart', `${opts.autostart}\r`)
-        t.proc.write(`${opts.autostart}\r`)
-      }
+      if (t && t.proc === proc) t.proc.write(`${opts.autostart}\r`)
     }, 400)
   }
 
@@ -142,7 +111,6 @@ export function createTerminal(opts: CreateTerminalOpts): string {
 }
 
 export function writeTerminal(id: string, data: string): void {
-  if (id === orchCapId && Date.now() < orchCapUntil) orchCap('IN', data)
   terms.get(id)?.proc.write(data)
 }
 
