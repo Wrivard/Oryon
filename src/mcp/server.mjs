@@ -48,6 +48,26 @@ function mcpLog(line) {
   }
 }
 
+// R4 : HEARTBEAT — chaque serveur MCP réécrit périodiquement l'horodatage courant dans mcp-<nom>.hb. Si le
+// serveur MEURT après un boot réussi (« busy zombie » : claude vivant, serveur MCP enfant mort), le .hb cesse
+// d'être mis à jour → mcp_health le voit 'stale' (avant : resté 'connected' à vie, limite assumée). $0 (FS seul).
+const MCP_HB = DEFAULT_AUTHOR ? join(STATE_DIR, `mcp-${DEFAULT_AUTHOR}.hb`) : null
+const HEARTBEAT_MS = 20_000
+const HEARTBEAT_STALE_MS = 60_000 // ~3 battements manqués → 'stale'
+if (MCP_HB) {
+  const beat = () => {
+    try {
+      mkdirSync(STATE_DIR, { recursive: true })
+      writeFileSync(MCP_HB, String(Date.now()))
+    } catch {
+      /* best-effort */
+    }
+  }
+  beat()
+  const hb = setInterval(beat, HEARTBEAT_MS)
+  if (hb.unref) hb.unref() // ne pas maintenir le process en vie juste pour le heartbeat
+}
+
 // Role-gate (F2) : un WORKER ne doit PAS LIRE la mémoire partagée — c'est le contexte orchestrateur/session,
 // et des workers s'en servaient pour se prendre pour l'orchestrateur (« qu'est-ce que je dois faire ? »).
 // Les outils de LECTURE mémoire ne sont exposés qu'au rôle 'orchestrator' (fail-safe : un rôle absent =
@@ -629,7 +649,7 @@ orchestratorTool(
 
 orchestratorTool(
   'mcp_health',
-  "Diagnostique l'état du serveur MCP d'un worker (par name « Nell » / position « #2 ») via son log dédié : renvoie status connected|failed|unknown + dernière erreur + dernière ligne. Sers-t'en quand un worker semble ne plus répondre, AVANT de décider un restart_agent.",
+  "Diagnostique l'état du serveur MCP d'un worker (par name « Nell » / position « #2 ») via son log + heartbeat dédiés : renvoie status connected|stale|failed|unknown (stale = heartbeat expiré = MCP probablement MORT après un boot réussi, le « busy zombie ») + heartbeatAgeMs + dernière erreur. Sers-t'en quand un worker semble ne plus répondre, AVANT de décider un restart_agent.",
   { terminal: z.string().describe('name ou #position du worker') },
   async ({ terminal }) => {
     const t = resolveWorkerTerminal(terminal)
@@ -639,12 +659,28 @@ orchestratorTool(
     const lines = log.split('\n').filter(Boolean)
     const failed = lines.some((l) => /ÉCHEC connexion/.test(l))
     const connected = lines.some((l) => /connecté/.test(l))
-    const status = failed ? 'failed' : connected ? 'connected' : 'unknown'
+    // R4 : fraîcheur du heartbeat → détecte un MCP mort APRÈS un boot réussi (busy zombie). Si le .hb a cessé
+    // d'être mis à jour, le serveur MCP n'est plus vivant, même si le log montrait 'connecté'.
+    let hbAgeMs = null
+    try {
+      const hbPath = join(STATE_DIR, `mcp-${t.name}.hb`)
+      if (existsSync(hbPath)) hbAgeMs = Date.now() - (parseInt(readFileSync(hbPath, 'utf8').trim(), 10) || 0)
+    } catch {
+      /* pas de .hb (worker sur une version sans heartbeat) → on retombe sur connected/failed */
+    }
+    const stale = hbAgeMs !== null && hbAgeMs > HEARTBEAT_STALE_MS
+    const status = failed ? 'failed' : stale ? 'stale' : connected ? 'connected' : 'unknown'
     const lastError = [...lines].reverse().find((l) => /ÉCHEC|error|exception/i.test(l)) ?? null
-    // Note : sans heartbeat, un MCP qui meurt APRÈS un boot réussi reste vu 'connected' (limite assumée).
     return text(
       JSON.stringify(
-        { terminal: t.name, status, lastError, lastLine: lines[lines.length - 1] ?? null, logLines: lines.length },
+        {
+          terminal: t.name,
+          status,
+          heartbeatAgeMs: hbAgeMs,
+          lastError,
+          lastLine: lines[lines.length - 1] ?? null,
+          logLines: lines.length,
+        },
         null,
         2,
       ),
