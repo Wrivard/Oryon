@@ -38,6 +38,7 @@ const INJECT_ENTER_DELAY = 200 // ms : laisser claude consommer le paste avant l
 const RESET_REHYDRATE_DELAY = 1000 // ms : laisser /clear vider le contexte avant d'injecter la ré-hydration
 const RESUBMIT_ECHO_SETTLE_MS = 700 // R1 : laisser l'écho du collage du contrat retomber avant de juger l'activité
 const RESUBMIT_CHECK_MS = 1200 // R1 : fenêtre sans flux APRÈS l'écho ⇒ contrat resté au prompt (non soumis) ⇒ re-Entrée
+const RETRY_CAP = 3 // R2 : au-delà, une task re-dispatchée BOUCLE → on flague l'orchestrateur (stop / escalade utilisateur)
 const DEFAULT_REHYDRATION =
   "Reprise après reset du contexte. D'abord lis le curseur de reprise avec l'outil mémoire (read_memory « orchestrator-resume », ou list_memories s'il est absent). La conversation complète d'avant le reset est archivée et relisible via search_archive / read_archived_session (agent « orchestrator »). Reprends le fil à partir de là."
 
@@ -390,6 +391,19 @@ export async function agentAssignTask(
     files: files && files.length ? files : undefined,
     worktreeSync: refreshed,
   })
+  // R2 : cap de retry — au-delà de RETRY_CAP re-dispatchs, la task BOUCLE (worker bloqué OU contrat à revoir).
+  // On FLAGGE fort l'orchestrateur pour qu'il STOPPE (change de worker / redécoupe / consulte l'utilisateur) ;
+  // pas de refus dur (il peut avoir une bonne raison).
+  if (open && attempt >= RETRY_CAP) {
+    const orchE = orchestratorTerminalId(workspaceId)
+    if (orchE && hasLiveTerminal(orchE))
+      pasteLine(
+        orchE,
+        oneLinePrompt(
+          `[oryon] ⚠ la task "${task.title ?? task.id}" a été re-dispatchée ${attempt}× (cap ${RETRY_CAP}) à ${terminalName(id)} — elle BOUCLE. STOP : change de worker, redécoupe le contrat, ou consulte l'utilisateur. Ne ré-essaie pas à l'identique.`,
+        ),
+      )
+  }
   // R1 : filet anti-« busy zombie ». La race paste/Entrée fait que l'Entrée de pasteLine ne soumet parfois PAS
   // → le contrat reste collé au prompt, le terminal paraît busy mais rien ne tourne. On distingue l'ÉCHO du
   // collage (flux immédiat) du DÉMARRAGE de claude (flux continu) : après l'écho, si AUCUN nouveau flux, c'est
