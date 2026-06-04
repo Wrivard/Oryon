@@ -218,19 +218,34 @@ export function DocsPanel() {
   const [reimporting, setReimporting] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  // Import déclenché par un AGENT (events de progression alors que ce panneau n'importe pas) → indicateur ambiant.
+  const [agentImporting, setAgentImporting] = useState(false)
+  // Compteur de version du contenu : incrémenté à chaque reload (mount / docs:changed) → re-déclenche la recherche
+  // même quand le CONTENU change sans changer le nombre de docs (re-import).
+  const [docsVersion, setDocsVersion] = useState(0)
 
   const viewerRef = useRef<HTMLDivElement>(null)
   const pendingAnchor = useRef<{ slug: string; anchor: string; title: string } | null>(null)
   const importingRef = useRef(false) // gate : n'afficher la progression que pour un import lancé ICI
 
-  const reload = async () => setDocs(await window.bridge.docs.list())
+  const reload = async () => {
+    setDocs(await window.bridge.docs.list())
+    setDocsVersion((v) => v + 1)
+  }
 
   // Montage + abonnements live (docs:changed = écritures UI/agents ; docs:import-progress = progression).
   useEffect(() => {
     void reload()
-    window.bridge.docs.onChanged(() => void reload())
+    window.bridge.docs.onChanged(() => {
+      setAgentImporting(false) // une écriture terminée (agent ou UI) clôt l'indicateur ambiant
+      void reload()
+    })
     window.bridge.docs.onProgress((p) => {
-      if (!importingRef.current) return
+      if (!importingRef.current) {
+        // Import lancé par un agent (pas ce panneau) : pas de vue progression modale, juste un badge ambiant.
+        setAgentImporting(p.phase !== 'done' && p.phase !== 'error')
+        return
+      }
       setProgress((prev) => [...prev, p])
       if (p.phase === 'error') setImportFailed(p.error || p.message)
     })
@@ -250,7 +265,7 @@ export function DocsPanel() {
       void window.bridge.docs.search(search, { limit: 30 }).then(setHits).catch(() => setHits([]))
     }, 200)
     return () => clearTimeout(t)
-  }, [search, docs.length])
+  }, [search, docsVersion])
 
   // Saut vers la section après ouverture d'un résultat de recherche (sinon scroll en haut).
   useEffect(() => {
@@ -399,7 +414,7 @@ export function DocsPanel() {
         <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-bg-deep/80 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-2 rounded-lg border-2 border-dashed border-accent px-8 py-6 text-accent">
             <Upload size={24} />
-            <span className="text-[13px] font-medium">Dépose tes fichiers .md / .txt</span>
+            <span className="text-[13px] font-medium">Dépose tes fichiers .md / .mdx / .txt</span>
           </div>
         </div>
       )}
@@ -409,6 +424,11 @@ export function DocsPanel() {
         <span className="flex items-center gap-1.5 text-[12px] font-medium text-fg">
           <BookOpen size={13} className="text-accent" /> Docs
         </span>
+        {agentImporting && (
+          <span title="Un agent importe une doc…" className="flex shrink-0 items-center gap-1 text-[10px] text-accent">
+            <Loader2 size={11} className="animate-spin" /> Import…
+          </span>
+        )}
         <div className="relative ml-1 flex-1">
           <Search size={12} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-fg-subtle" />
           <input
@@ -426,6 +446,14 @@ export function DocsPanel() {
           <Plus size={12} /> Importer
         </button>
       </div>
+
+      {/* Bannière ambiante non-modale : un AGENT importe une doc (la vue courante reste interactive). */}
+      {agentImporting && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-border bg-accent-soft px-2.5 py-1 text-[11px] text-accent">
+          <Loader2 size={12} className="shrink-0 animate-spin" />
+          <span>Import en cours… (déclenché par un agent)</span>
+        </div>
+      )}
 
       <div className="flex min-h-0 flex-1">
         {/* Sidebar docSets */}
@@ -635,7 +663,7 @@ export function DocsPanel() {
                 </button>
               </form>
               <button onClick={() => setShowPaste((s) => !s)} className="text-[11px] text-fg-subtle hover:text-fg">
-                ou colle du markdown / dépose des fichiers .md
+                ou colle du markdown / dépose des fichiers .md / .mdx / .txt
               </button>
               {showPaste && (
                 <div className="w-full max-w-md space-y-2 text-left">
