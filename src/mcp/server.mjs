@@ -11,7 +11,7 @@ import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotoc
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { z } from 'zod'
-import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import * as memory from '../shared/memory-core.mjs'
 import * as archive from './archive-read.mjs'
@@ -337,12 +337,12 @@ server.tool(
   {
     tag: z.string().optional().describe('filtre par tag (insensible à la casse) ; absent = toutes'),
   },
-  async ({ tag }) => text(JSON.stringify(docs.listDocs({ tag }), null, 2)),
+  async ({ tag }) => text(JSON.stringify(docs.listDocs({ tag }))),
 )
 
 server.tool(
   'search_docs',
-  "Recherche lexicale top-k dans les SECTIONS des docs importées : trouve la bonne section sans lire toute la doc. Filtre optionnel par docSlug (une seule doc) ou tag. Renvoie ≤ limit résultats (défaut 8) classés par score : docSlug, title, breadcrumb, anchor, sourceUrl, snippet (±200 chars, fence-safe), chunkId. Récupère ensuite le markdown complet d'une section via fetch_doc_section (docSlug + anchor).",
+  "Recherche lexicale top-k dans les SECTIONS des docs importées : trouve la bonne section sans lire toute la doc. Filtre optionnel par docSlug (une seule doc) ou tag. Renvoie ≤ limit résultats (défaut 8) classés par score, ligne LEAN : docSlug, breadcrumb (finit par le titre de la section), anchor, snippet (±200 chars, fence-safe), chunkId. Récupère le markdown complet (et le sourceUrl) d'une section via fetch_doc_section (docSlug + anchor).",
   {
     query: z.string().describe('mots-clés (substring, insensible à la casse)'),
     docSlug: z.string().optional().describe('restreint à un seul docSet (cf. list_docs) ; absent = tous'),
@@ -350,19 +350,19 @@ server.tool(
     limit: z.number().optional().describe('nb max de sections (défaut 8)'),
   },
   async ({ query, docSlug, tag, limit }) =>
-    text(JSON.stringify(docs.searchDocs({ query, docSlug, tag, limit: limit ?? 8 }), null, 2)),
+    text(JSON.stringify(docs.searchDocs({ query, docSlug, tag, limit: limit ?? 8 }))),
 )
 
 server.tool(
   'fetch_doc_section',
-  "Renvoie le markdown COMPLET d'une section de doc (par docSlug + anchor, cf. search_docs) : joint les chunks du même heading, blocs code intacts, tronqué à maxChars (défaut 12000) sans couper un fence. Renvoie { docSlug, title, breadcrumb, sourceUrl, markdown } ou { error } si l'ancre est introuvable.",
+  "Renvoie le markdown COMPLET d'une section de doc (par docSlug + anchor, cf. search_docs) : joint les chunks du même heading, blocs code intacts, tronqué à maxChars (défaut 6000, couvre >99 % des sections) sans couper un fence. Renvoie { docSlug, title, breadcrumb, sourceUrl, markdown } ou { error } si l'ancre est introuvable.",
   {
     docSlug: z.string().describe('slug du docSet (cf. list_docs / search_docs)'),
     anchor: z.string().describe('ancre de la section (cf. search_docs)'),
-    maxChars: z.number().optional().describe('troncature en caractères (défaut 12000)'),
+    maxChars: z.number().optional().describe('troncature en caractères (défaut 6000)'),
   },
   async ({ docSlug, anchor, maxChars }) =>
-    text(JSON.stringify(docs.fetchSection({ docSlug, anchor, maxChars: maxChars ?? 12000 }), null, 2)),
+    text(JSON.stringify(docs.fetchSection({ docSlug, anchor, maxChars: maxChars ?? 6000 }))),
 )
 
 // import_doc : ÉCRITURE (≠ les 3 lectures ci-dessus, non-gatées) → GATÉ orchestrateur. L'import vit dans le
@@ -395,10 +395,18 @@ orchestratorTool(
     }
     const okPath = join(STATE_DIR, 'docs-import', `${reqId}.json`)
     const errPath = join(STATE_DIR, 'docs-import', `${reqId}.err`)
+    // Retire le fichier-résultat dès lecture (best-effort) pour ne pas le laisser fuiter dans docs-import/
+    // (le main balaie aussi les orphelins > 1 h, mais on nettoie au plus tôt).
+    const cleanupResult = () => {
+      try { unlinkSync(okPath) } catch { /* absent / déjà retiré */ }
+      try { unlinkSync(errPath) } catch { /* absent / déjà retiré */ }
+    }
     for (let i = 0; i < DOCS_IMPORT_POLL_TRIES; i++) {
       if (existsSync(okPath)) {
         try {
-          return text(JSON.stringify({ ok: true, ...JSON.parse(readFileSync(okPath, 'utf8')) }, null, 2))
+          const payload = JSON.parse(readFileSync(okPath, 'utf8'))
+          cleanupResult()
+          return text(JSON.stringify({ ok: true, ...payload }))
         } catch {
           /* fichier pas encore complètement écrit → retente */
         }
@@ -410,6 +418,7 @@ orchestratorTool(
         } catch {
           /* ignore */
         }
+        cleanupResult()
         return text(JSON.stringify({ ok: false, error: m }))
       }
       await new Promise((r) => setTimeout(r, DOCS_IMPORT_POLL_MS))
@@ -640,12 +649,14 @@ orchestratorTool(
     instructions: z.string().describe('contrat auto-suffisant : objectif + fichiers IN/OUT-scope + definition-of-done. Cap 3-5 items couplés / fichiers disjoints, sinon SPLIT en plusieurs assign.'),
     title: z.string().optional().describe('titre court (sinon dérivé des instructions)'),
     files: z.array(z.string()).optional().describe('fichiers (relatifs) que ce worker va éditer → réservés (claim) ; un assign dont les fichiers chevauchent une task active est REFUSÉ.'),
+    docSlug: z.string().optional().describe('slug d\'une doc importée pertinente (cf. list_docs) → injecté au contrat pour que le worker la cherche directement (search_docs scopé).'),
+    readOnly: z.boolean().optional().describe('tâche de consultation, aucun commit attendu → skippe l\'evidence-gate « branche vide » au report.'),
   },
-  async ({ terminal, instructions, title, files }) => {
+  async ({ terminal, instructions, title, files, docSlug, readOnly }) => {
     const workspaceId = currentWorkspaceId()
     if (!workspaceId) return text(JSON.stringify({ queued: false, error: 'workspace introuvable (Oryon tourne ?)' }))
     try {
-      const id = queueCommand({ type: 'assign-task', workspaceId, terminal, instructions, title: title ?? null, files: files ?? null })
+      const id = queueCommand({ type: 'assign-task', workspaceId, terminal, instructions, title: title ?? null, files: files ?? null, docSlug: docSlug ?? null, readOnly: readOnly ?? null })
       return text(JSON.stringify({ queued: true, id, terminal }))
     } catch (e) {
       return text(JSON.stringify({ queued: false, error: String(e) }))
