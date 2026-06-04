@@ -17,13 +17,11 @@ export interface DocListEntry {
 }
 export function listDocs(opts?: { tag?: string }): DocListEntry[]
 
-/** Résultat de recherche (top-k sections, snippet ±200 chars code-fence-safe). */
+/** Résultat de recherche LEAN (SPEC-A, top-k sections, snippet ±200 chars code-fence-safe) : pas de title (= fin du breadcrumb) ni sourceUrl (cf. fetchSection). */
 export interface DocSearchHit {
   docSlug: string
-  title: string
   breadcrumb: string
   anchor: string
-  sourceUrl: string
   snippet: string
   chunkId: number
   score: number

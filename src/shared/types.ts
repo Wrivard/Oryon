@@ -366,13 +366,11 @@ export interface DocSetDetail {
   existed: boolean
 }
 
-/** Résultat de recherche lexicale top-k (jumeau MemorySearchHit). */
+/** Résultat de recherche lexicale top-k LEAN (SPEC-A) : pas de title (= fin du breadcrumb) ni sourceUrl (cf. fetch_doc_section). */
 export interface DocSearchHit {
   docSlug: string
-  title: string
   breadcrumb: string
   anchor: string
-  sourceUrl: string
   snippet: string
   chunkId: number
   score: number

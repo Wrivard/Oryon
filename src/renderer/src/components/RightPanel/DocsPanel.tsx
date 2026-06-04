@@ -192,7 +192,7 @@ function timeAgo(ms: number): string {
 }
 /** Repli si l'ancre exacte n'existe pas dans le rendu : 1er heading dont le texte matche le titre du hit. */
 function findHeadingByText(root: HTMLElement, title: string): Element | null {
-  const t = title.trim().toLowerCase()
+  const t = (title || '').trim().toLowerCase()
   if (!t) return null
   for (const el of root.querySelectorAll('[data-anchor]')) if ((el.textContent || '').trim().toLowerCase() === t) return el
   return null
@@ -298,7 +298,7 @@ export function DocsPanel() {
   }
 
   const openHit = async (hit: DocSearchHit) => {
-    pendingAnchor.current = { slug: hit.docSlug, anchor: hit.anchor, title: hit.title }
+    pendingAnchor.current = { slug: hit.docSlug, anchor: hit.anchor, title: hit.breadcrumb.split(' > ').pop() || '' }
     setSelected(hit.docSlug)
     setSearch('')
     setDetail(null)
@@ -593,7 +593,7 @@ export function DocsPanel() {
                             </>
                           )}
                         </div>
-                        <div className="mt-0.5 truncate text-[12.5px] font-medium text-fg">{h.title || h.breadcrumb || 'Section'}</div>
+                        <div className="mt-0.5 truncate text-[12.5px] font-medium text-fg">{h.breadcrumb.split(' > ').pop() || h.breadcrumb || 'Section'}</div>
                         {h.snippet && <p className="mt-1 line-clamp-3 text-[11px] leading-relaxed text-fg-muted">{h.snippet}</p>}
                       </button>
                     )
