@@ -54,6 +54,25 @@ export default function WorkspaceRail({ onCollapse }: Props) {
 
   return (
     <div className="flex h-full w-[220px] flex-col bg-bg-panel">
+      {/* Navigation — liens du haut, SÉPARÉS des workspaces (section extensible : on en ajoutera d'autres). */}
+      <nav className="shrink-0 space-y-0.5 border-b border-border p-1.5">
+        <button
+          onClick={() => setCalendarMode(true)}
+          className={cn(
+            'group relative flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left outline-none',
+            'transition-colors duration-fast ease-out',
+            calendarMode ? 'bg-active' : 'hover:bg-hover',
+          )}
+        >
+          {calendarMode && <span className="absolute inset-y-1 left-0 w-0.5 rounded-full bg-accent" />}
+          <CalendarDays size={14} className={cn('shrink-0', calendarMode ? 'text-fg' : 'text-fg-muted group-hover:text-fg')} />
+          <span className={cn('flex-1 truncate text-[13px]', calendarMode ? 'text-fg' : 'text-fg-muted group-hover:text-fg')}>
+            Calendar
+          </span>
+        </button>
+        {/* ↑ futurs liens de navigation ici */}
+      </nav>
+
       {/* Header */}
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-border pl-3 pr-1.5">
         <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg-subtle">Workspaces</span>
@@ -67,27 +86,8 @@ export default function WorkspaceRail({ onCollapse }: Props) {
         </div>
       </div>
 
-      {/* Liste */}
+      {/* Liste des workspaces */}
       <div className="flex-1 overflow-y-auto p-1.5">
-        {/* Entrée Calendar — au-dessus des workspaces ; bascule la zone centrale sur le calendrier.
-            Cliquer un workspace appelle setActiveWorkspace qui remet calendarMode=false (désélection mutuelle). */}
-        <button
-          onClick={() => setCalendarMode(true)}
-          className={cn(
-            'group relative mb-1 flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left outline-none',
-            'transition-colors duration-fast ease-out',
-            calendarMode ? 'bg-active' : 'hover:bg-hover',
-          )}
-        >
-          {calendarMode && <span className="absolute inset-y-1 left-0 w-0.5 rounded-full bg-accent" />}
-          <CalendarDays
-            size={14}
-            className={cn('shrink-0', calendarMode ? 'text-fg' : 'text-fg-muted group-hover:text-fg')}
-          />
-          <span className={cn('flex-1 truncate text-[13px]', calendarMode ? 'text-fg' : 'text-fg-muted group-hover:text-fg')}>
-            Calendar
-          </span>
-        </button>
         {workspaces.length === 0 ? (
           <div className="mt-8 px-3 text-center">
             <p className="text-xs text-fg-muted">Aucun workspace</p>
