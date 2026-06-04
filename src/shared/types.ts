@@ -376,6 +376,35 @@ export interface DocSearchHit {
   score: number
 }
 
+// ── Google Calendar (feature Calendar, read-only v1) ─────────────────────────────────────────────────────
+/** Un événement normalisé (depuis l'API Google Calendar) pour la vue Calendar. */
+export interface CalendarEvent {
+  id: string
+  calendarId: string
+  title: string
+  start: string // ISO 8601 (dateTime ; ou date seule si allDay)
+  end: string // ISO 8601
+  allDay: boolean
+  location?: string
+  description?: string
+  color?: string // couleur résolue (event colorId, sinon couleur du calendrier)
+  htmlLink?: string
+}
+/** État de la connexion Google OAuth. */
+export interface CalendarAuthStatus {
+  connected: boolean
+  hasCredentials: boolean // Client ID/Secret enregistrés ?
+  email?: string
+  error?: string
+}
+/** Un calendrier de l'utilisateur (Google calendarList). */
+export interface CalendarListEntry {
+  id: string
+  summary: string
+  primary?: boolean
+  backgroundColor?: string
+}
+
 /** Erreur par-page d'un import (remontée inline, jamais silencieuse). */
 export interface DocImportError {
   url: string
@@ -711,6 +740,24 @@ export interface BridgeApi {
     /** Progression d'un import en cours (phases probe/crawl/fetch/chunk/done + erreurs par-page). */
     onProgress: (cb: (p: DocsImportProgress) => void) => void
     offProgress: () => void
+  }
+  /** Google Calendar (read-only, OAuth PKCE Desktop) : connexion + events affichés dans la vue Calendar. */
+  calendar: {
+    /** État de connexion OAuth (connecté ? identifiants enregistrés ? email ? dernière erreur ?). */
+    status: () => Promise<CalendarAuthStatus>
+    /** Enregistre les identifiants du client OAuth Google (Client ID + Secret, type Desktop), chiffrés au repos. */
+    setCredentials: (clientId: string, clientSecret: string) => Promise<{ ok: boolean }>
+    /** Lance le flow OAuth (navigateur système + loopback) ; résout quand le compte est connecté. */
+    connect: () => Promise<CalendarAuthStatus>
+    /** Déconnecte : purge les tokens. */
+    disconnect: () => Promise<{ ok: boolean }>
+    /** Calendriers de l'utilisateur (id, nom, primary, couleur). */
+    listCalendars: () => Promise<CalendarListEntry[]>
+    /** Events sur une fenêtre [timeMin,timeMax] (ISO) ; tous les calendriers, ou un seul via calendarId. */
+    events: (opts: { timeMin: string; timeMax: string; calendarId?: string }) => Promise<CalendarEvent[]>
+    /** Connexion/déconnexion changée (main → renderer) → rafraîchir la vue. */
+    onChanged: (cb: () => void) => void
+    offChanged: () => void
   }
   settings: {
     /** Réglages app-global (clé/valeur). */

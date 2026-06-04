@@ -51,6 +51,10 @@ interface AppStore {
   bumpCount: (workspaceId: string, delta: number) => void
   /** Active/éteint la pastille d'activité d'un workspace (swarm de fond). No-op si inchangé. */
   setWorkspaceActivity: (id: string, active: boolean) => void
+
+  /** Vue Calendar active (entrée du rail au-dessus des workspaces) : true = grand calendrier, false = grilles terminaux. */
+  calendarMode: boolean
+  setCalendarMode: (enabled: boolean) => void
 }
 
 export const useAppStore = create<AppStore>((set) => ({
@@ -63,6 +67,7 @@ export const useAppStore = create<AppStore>((set) => ({
   maximizedTerminalId: null,
   terminalCounts: {},
   workspaceActivity: {},
+  calendarMode: false,
   tasks: [],
   mailbox: [],
   projectVocab: [],
@@ -132,4 +137,5 @@ export const useAppStore = create<AppStore>((set) => ({
     })),
   setWorkspaceActivity: (id, active) =>
     set((s) => (s.workspaceActivity[id] === active ? {} : { workspaceActivity: { ...s.workspaceActivity, [id]: active } })),
+  setCalendarMode: (calendarMode) => set({ calendarMode }),
 }))

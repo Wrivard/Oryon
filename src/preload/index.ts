@@ -196,6 +196,18 @@ const bridge: BridgeApi = {
     },
     offProgress: () => ipcRenderer.removeAllListeners('docs:import-progress'),
   },
+  calendar: {
+    status: () => ipcRenderer.invoke('calendar:status'),
+    setCredentials: (clientId, clientSecret) => ipcRenderer.invoke('calendar:setCredentials', clientId, clientSecret),
+    connect: () => ipcRenderer.invoke('calendar:connect'),
+    disconnect: () => ipcRenderer.invoke('calendar:disconnect'),
+    listCalendars: () => ipcRenderer.invoke('calendar:listCalendars'),
+    events: (opts) => ipcRenderer.invoke('calendar:events', opts),
+    onChanged: (cb) => {
+      ipcRenderer.on('calendar:changed', () => cb())
+    },
+    offChanged: () => ipcRenderer.removeAllListeners('calendar:changed'),
+  },
   source: {
     status: (projectPath) => ipcRenderer.invoke('source:status', projectPath),
     diff: (projectPath, file) => ipcRenderer.invoke('source:diff', projectPath, file),
