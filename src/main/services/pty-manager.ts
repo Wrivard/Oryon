@@ -72,7 +72,9 @@ export function createTerminal(opts: CreateTerminalOpts): string {
   const shellArgs =
     appSetting('terminal.shellIntegration') === '0' ? baseShellArgs(DEFAULT_SHELL) : shellIntegrationArgs(DEFAULT_SHELL)
   const proc = pty.spawn(DEFAULT_SHELL, shellArgs, {
-    name: 'xterm-color',
+    // xterm-256color (et non l'ancien xterm-color, terminfo réduit) : terminfo standard et complet (256 couleurs,
+    // écran alterné) — celui qu'attendent xterm.js et le rendu plein écran de claude.
+    name: 'xterm-256color',
     cwd: opts.cwd,
     cols: Math.max(2, opts.cols),
     rows: Math.max(1, opts.rows),

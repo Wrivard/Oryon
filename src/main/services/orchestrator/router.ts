@@ -10,10 +10,19 @@ import {
 } from '../pty-manager'
 import { ensureClaudeReady, normalizeClaudeAutostart, enforceAgentSpawn } from '../claude-launcher'
 import { sweepArchive } from '../archive'
+import { recordOutcome } from './outcomes'
 import { buildProjectMcpConfigForPath, addConnector } from '../../ipc/settings.ipc'
 import { recordMailbox } from './mailbox'
 import { getOrCreateProjectId, createTask, listTasks, getTask, updateTask } from './task-store'
-import { isGitRepo, worktreeDir, branchFor, refreshWorktreeToHead, branchEvidence } from '../worktrees'
+import {
+  isGitRepo,
+  worktreeDir,
+  branchFor,
+  refreshWorktreeToHead,
+  branchEvidence,
+  ensureWorktree,
+  provisionWorktreeDeps,
+} from '../worktrees'
 import { enqueueMergeBack } from './merge-back'
 import { verifyWorktree } from './green-gate'
 import { readClaims, claimFile, releaseClaimsByAgent } from '../../../shared/memory-core.mjs'
@@ -27,6 +36,9 @@ import type { OrchestratorEvent, TaskStatus, Workspace } from '../../../shared/t
 
 const INJECT_ENTER_DELAY = 200 // ms : laisser claude consommer le paste avant l'Entrée séparée
 const RESET_REHYDRATE_DELAY = 1000 // ms : laisser /clear vider le contexte avant d'injecter la ré-hydration
+const RESUBMIT_ECHO_SETTLE_MS = 700 // R1 : laisser l'écho du collage du contrat retomber avant de juger l'activité
+const RESUBMIT_CHECK_MS = 1200 // R1 : fenêtre sans flux APRÈS l'écho ⇒ contrat resté au prompt (non soumis) ⇒ re-Entrée
+const RETRY_CAP = 3 // R2 : au-delà, une task re-dispatchée BOUCLE → on flague l'orchestrateur (stop / escalade utilisateur)
 const DEFAULT_REHYDRATION =
   "Reprise après reset du contexte. D'abord lis le curseur de reprise avec l'outil mémoire (read_memory « orchestrator-resume », ou list_memories s'il est absent). La conversation complète d'avant le reset est archivée et relisible via search_archive / read_archived_session (agent « orchestrator »). Reprends le fil à partir de là."
 
@@ -34,6 +46,8 @@ const terminalBusy = new Map<string, string | null>() // terminalId -> taskId | 
 const terminalLastData = new Map<string, number>() // terminalId -> dernier flux (ts) — pour l'interruption
 const interrupting = new Set<string>() // terminaux en cours d'ESC (non réutilisables)
 const stallNotified = new Set<string>() // terminaux déjà signalés "silencieux" (watchdog WC) — anti-spam
+const terminalAssignedAt = new Map<string, number>() // R3 : ts du dernier dispatch → détecte un worker MORT-NÉ (jamais émis)
+const attemptByTask = new Map<string, number>() // capture : nb d'essais par task (assign/re-dispatch) pour outcomes.ndjson
 const STALL_MS = 5 * 60_000 // worker busy sans flux depuis 5 min → surfacé à l'orchestrateur (JAMAIS tué)
 let observerInstalled = false
 
@@ -134,7 +148,41 @@ export function initOrchestrator(): void {
   addExitObserver((id) => {
     terminalBusy.delete(id)
     terminalLastData.delete(id)
+    terminalAssignedAt.delete(id)
     stallNotified.delete(id)
+    // R7 : un terminal qui MEURT laissait sa task in-progress orpheline (zombie dans le board) ET, sur
+    // restart_agent (kill→recreate), la task restait collée au worker mort (P1-4). On la REMET en todo +
+    // libère ses claims → requeue propre, réassignable. Event-driven (à la mort réelle) = pas de race transitoire.
+    try {
+      const wsId = getDb().prepare('SELECT workspace_id FROM terminals WHERE id = ?').pluck().get(id) as
+        | string
+        | undefined
+      if (!wsId) return
+      const wsRow = getWorkspace(wsId)
+      let touched = false
+      for (const t of listTasks(wsId)) {
+        if (t.assigned_terminal_id === id && (t.status === 'in-progress' || t.status === 'in-review')) {
+          updateTask(t.id, { status: 'todo', assigned_terminal_id: null })
+          if (wsRow)
+            recordOutcome(wsRow.project_path, {
+              event: 'abandoned',
+              taskId: t.id,
+              agent: terminalName(id),
+              attempt: attemptByTask.get(t.id),
+              title: t.title ?? undefined,
+              reason: 'worker-exit',
+            })
+          touched = true
+        }
+      }
+      if (touched) {
+        const ws = getWorkspace(wsId)
+        if (ws && isGitRepo(ws.project_path)) void releaseClaimsByAgent(ws.project_path, terminalName(id))
+        emitTasks(wsId)
+      }
+    } catch {
+      /* best-effort : la mort d'un terminal ne doit jamais throw dans l'observer */
+    }
   })
 }
 
@@ -143,6 +191,18 @@ export function setTaskStatus(taskId: string, status: TaskStatus): void {
   const t = getTask(taskId)
   if (!t) return
   updateTask(taskId, { status })
+  if (status === 'cancelled' && t.workspace_id) {
+    const wsC = getWorkspace(t.workspace_id)
+    if (wsC)
+      recordOutcome(wsC.project_path, {
+        event: 'cancelled',
+        taskId,
+        agent: t.assigned_terminal_id ? terminalName(t.assigned_terminal_id) : '?',
+        attempt: attemptByTask.get(taskId),
+        verdict: 'reject', // annulation manuelle = rejet du manager
+        title: t.title ?? undefined,
+      })
+  }
   if (status === 'complete' || status === 'cancelled' || status === 'todo') {
     freeTerminalForTask(taskId)
     // W6(b) : libère les claims de l'agent quand sa task quitte l'état actif (sinon claim fantôme).
@@ -192,6 +252,32 @@ export async function agentAssignTask(
   if (!ws) throw new Error(`Workspace ${workspaceId} introuvable`)
   const id = resolveWorker(workspaceId, terminalRef)
   const projectId = getOrCreateProjectId(ws.name, ws.project_path)
+
+  // O2 : projet NON-GIT = AUCUNE isolation (pas de worktree/branche → tous les workers partagent le MÊME dossier,
+  // pas de review-par-diff, pas de merge-back). On FORCE le séquentiel : refuser un 2e worker actif en parallèle
+  // (sinon N agents piétinent le même répertoire). Recommander `git init` pour le parallélisme + la review par diff.
+  if (!isGitRepo(ws.project_path)) {
+    const others = listTasks(workspaceId).filter(
+      (t) =>
+        (t.status === 'in-progress' || t.status === 'in-review') &&
+        t.assigned_terminal_id &&
+        t.assigned_terminal_id !== id,
+    )
+    if (others.length) {
+      const orchE = orchestratorTerminalId(workspaceId)
+      if (orchE && hasLiveTerminal(orchE)) {
+        pasteLine(
+          orchE,
+          oneLinePrompt(
+            `[oryon] ⚠ assign à ${terminalName(id)} REFUSÉ : projet NON-GIT = zéro isolation (dossier partagé). Travaille SÉQUENTIELLEMENT (un seul worker à la fois) ou \`git init\` le projet pour le parallélisme + la review par diff. Worker(s) actif(s) : ${others
+              .map((t) => terminalName(t.assigned_terminal_id as string))
+              .join(', ')}.`,
+          ),
+        )
+      }
+      return { terminal: terminalName(id), taskId: '' } // pas de dispatch
+    }
+  }
 
   // W6(b) : refuse un dispatch dont les fichiers chevauchent ceux RÉSERVÉS (claims) par une AUTRE task active.
   // Indirection file-de-commandes : impossible de renvoyer l'erreur au caller MCP → on réveille l'orchestrateur
@@ -257,7 +343,10 @@ export async function agentAssignTask(
     updateTask(task.id, { status: 'in-progress', assigned_terminal_id: id })
   }
   terminalBusy.set(id, task.id)
+  terminalAssignedAt.set(id, Date.now()) // R3 : repère temporel pour détecter un worker mort-né
   stallNotified.delete(id) // re-dispatch → le watchdog pourra de nouveau signaler ce terminal
+  const attempt = (attemptByTask.get(task.id) ?? 0) + 1 // capture : essai courant (1 = frais, +1 par re-dispatch)
+  attemptByTask.set(task.id, attempt)
   // W6(b) : réserve les fichiers de l'assigné pour que le prochain assign parallèle voie le chevauchement.
   if (files && files.length) {
     for (const f of files) {
@@ -277,19 +366,55 @@ export async function agentAssignTask(
       : refreshed === 'dirty'
         ? 'NOTE: ton worktree a des changements non commités et n’a PAS été synchronisé sur main — réconcilie avant de dépendre de code déjà mergé.'
         : ''
-  const prompt = oneLinePrompt(
-    [
-      `[task ${task.id}]`,
-      instructions,
-      staleNote,
-      'You are a FOCUSED IMPLEMENTATION WORKER, not an orchestrator: do ONLY the task above — never orchestrate, never ask the user what to do, never wait for further direction.',
-      'Work EXCLUSIVELY inside your current git worktree (a full mirror of the repo). NEVER `cd` to another directory and never edit files outside this worktree — the main project tree and the other agents’ worktrees are OFF-LIMITS.',
-      'Touch only the files the task names; make surgical changes; respect repo conventions; never run destructive commands.',
-      'Do NOT read shared/session memory (it is orchestrator context, not your task). Use search_memories ONLY if the task explicitly asks you to.',
-      'When the task is GENUINELY finished: commit your changes to your branch, confirm with `git status`/`git diff` that the work is actually present, then call report_task with status "done" (or "blocked" if you truly cannot proceed) and a truthful one-line summary. NEVER report "done" unless the committed diff really contains the changes.',
-    ].join(' '),
-  )
+  // Q5 : sur un RE-DISPATCH (task ouverte réutilisée : boucle de feedback / retry), le worker a déjà le rôle en
+  // contexte (system-prompt durable + 1er dispatch) → on n'envoie QUE le corps du contrat (pas le rappel de rôle
+  // verbeux) pour éviter la confusion « bloc de rôle sans tâche » + le coût en tokens. Fresh task → rappel complet.
+  const roleReminder = open
+    ? []
+    : [
+        'You are a FOCUSED IMPLEMENTATION WORKER, not an orchestrator: do ONLY the task above — never orchestrate, never ask the user what to do, never wait for further direction.',
+        'Work EXCLUSIVELY inside your current git worktree (a full mirror of the repo). NEVER `cd` to another directory and never edit files outside this worktree — the main project tree and the other agents’ worktrees are OFF-LIMITS.',
+        'Touch only the files the task names; make surgical changes; respect repo conventions; never run destructive commands.',
+        'Do NOT read shared/session memory (it is orchestrator context, not your task). Use search_memories ONLY if the task explicitly asks you to.',
+        'When the task is GENUINELY finished: commit your changes to your branch, confirm with `git status`/`git diff` that the work is actually present, then call report_task with status "done" (or "blocked" if you truly cannot proceed) and a truthful one-line summary. NEVER report "done" unless the committed diff really contains the changes.',
+      ]
+  const prompt = oneLinePrompt([`[task ${task.id}]`, instructions, staleNote, ...roleReminder].join(' '))
   pasteLine(id, prompt)
+  // CAPTURE : événement 'assigned' (outcomes.ndjson) — essai, frais vs re-dispatch, fichiers, état worktree.
+  recordOutcome(ws.project_path, {
+    event: 'assigned',
+    taskId: task.id,
+    agent: terminalName(id),
+    attempt,
+    title: task.title ?? undefined,
+    fresh: !open,
+    files: files && files.length ? files : undefined,
+    worktreeSync: refreshed,
+  })
+  // R2 : cap de retry — au-delà de RETRY_CAP re-dispatchs, la task BOUCLE (worker bloqué OU contrat à revoir).
+  // On FLAGGE fort l'orchestrateur pour qu'il STOPPE (change de worker / redécoupe / consulte l'utilisateur) ;
+  // pas de refus dur (il peut avoir une bonne raison).
+  if (open && attempt >= RETRY_CAP) {
+    const orchE = orchestratorTerminalId(workspaceId)
+    if (orchE && hasLiveTerminal(orchE))
+      pasteLine(
+        orchE,
+        oneLinePrompt(
+          `[oryon] ⚠ la task "${task.title ?? task.id}" a été re-dispatchée ${attempt}× (cap ${RETRY_CAP}) à ${terminalName(id)} — elle BOUCLE. STOP : change de worker, redécoupe le contrat, ou consulte l'utilisateur. Ne ré-essaie pas à l'identique.`,
+        ),
+      )
+  }
+  // R1 : filet anti-« busy zombie ». La race paste/Entrée fait que l'Entrée de pasteLine ne soumet parfois PAS
+  // → le contrat reste collé au prompt, le terminal paraît busy mais rien ne tourne. On distingue l'ÉCHO du
+  // collage (flux immédiat) du DÉMARRAGE de claude (flux continu) : après l'écho, si AUCUN nouveau flux, c'est
+  // que claude est resté au prompt → on renvoie une Entrée nue (soumet le buffer déjà correct ; inoffensif sinon).
+  setTimeout(() => {
+    if (!hasLiveTerminal(id)) return
+    const afterEcho = terminalLastData.get(id) ?? 0
+    setTimeout(() => {
+      if (hasLiveTerminal(id) && (terminalLastData.get(id) ?? 0) <= afterEcho) writeTerminal(id, '\r')
+    }, RESUBMIT_CHECK_MS)
+  }, RESUBMIT_ECHO_SETTLE_MS)
   // Si le worktree est resté périmé, préviens l'orchestrateur (signal actionnable, pas d'échec muet — W1).
   if (refreshed === 'conflict' || refreshed === 'dirty') {
     const orchE = orchestratorTerminalId(workspaceId)
@@ -363,10 +488,33 @@ export async function agentReportTask(
         ),
       )
     }
+    if (ws)
+      recordOutcome(ws.project_path, {
+        event: 'rejected',
+        taskId: task.id,
+        agent: fromAgent ?? '?',
+        attempt: attemptByTask.get(task.id),
+        reason: 'empty-branch',
+        evidence: ev
+          ? { ahead: ev.ahead, filesChanged: ev.filesChanged.length, worktreeDirty: ev.worktreeDirty, mainDirty: ev.mainDirty, empty: ev.empty }
+          : undefined,
+      })
     return { ok: true, taskId: task.id }
   }
 
   if (task) updateTask(task.id, { status: blocked ? 'blocked' : 'in-review' }) // garde assigned_terminal_id → merge à l'approbation
+  if (task && ws)
+    recordOutcome(ws.project_path, {
+      event: 'reported',
+      taskId: task.id,
+      agent: fromAgent ?? '?',
+      attempt: attemptByTask.get(task.id),
+      report: blocked ? 'blocked' : 'done',
+      summary,
+      evidence: ev
+        ? { ahead: ev.ahead, filesChanged: ev.filesChanged.length, worktreeDirty: ev.worktreeDirty, mainDirty: ev.mainDirty, empty: ev.empty }
+        : undefined,
+    })
   if (termId) terminalBusy.set(termId, null)
   broadcast({
     type: 'mailbox',
@@ -408,8 +556,20 @@ export async function agentReportTask(
     let evidence = ''
     if (ev) {
       evidence = ` [preuve: ${ev.ahead} commit(s), ${ev.filesChanged.length} fichier(s)${ev.worktreeDirty ? ', worktree non commité' : ''}${ev.empty ? ' ⚠ BRANCHE VIDE' : ''}]`
+      // V1 : la LISTE des fichiers (cap 12) directement dans la wake-line — l'orchestrateur juge le périmètre
+      // (et repère un hors-scope) sans round-trip `git diff`. Les chemins sont déjà calculés par branchEvidence.
+      if (ev.filesChanged.length)
+        evidence += ` Fichiers: ${ev.filesChanged
+          .slice(0, 12)
+          .map((f) => f.replace(/\\/g, '/'))
+          .join(', ')}${ev.filesChanged.length > 12 ? ` (+${ev.filesChanged.length - 12})` : ''}.`
       if (ev.mainDirty) evidence += ' ⚠ TRONC PRINCIPAL SALE — contamination possible (un worker a peut-être édité MAIN)'
     }
+    // C1 : sur un projet git, si le rapport n'a PAS pu être rattaché à un worker connu (fromAgent manquant/
+    // inconnu → ev null), la porte à preuves est court-circuitée → on le FLAG au lieu de gober la prose en silence.
+    if (!ev && ws && isGitRepo(ws.project_path))
+      evidence =
+        ' ⚠ AUCUNE preuve git (rapport non rattaché à un worker connu — fromAgent manquant/inconnu) : ne te fie PAS à la prose, vérifie le worktree manuellement.'
     const wake = oneLinePrompt(
       `[oryon] ${fromAgent ?? 'un worker'} a terminé "${task?.title ?? ''}" (${status})${tid}: ${summary}.${evidence}${gateNote}${mismatch}${wt} Vérifie le diff puis approve_task si OK, sinon réassigne avec un feedback précis.`,
     )
@@ -428,7 +588,11 @@ export function tickWatchdog(): void {
   for (const [tid, busy] of terminalBusy) {
     if (!busy || stallNotified.has(tid) || interrupting.has(tid) || !hasLiveTerminal(tid)) continue
     const last = terminalLastData.get(tid)
-    if (last === undefined || now - last <= STALL_MS) continue // pas encore de flux (prompt en vol) → on attend
+    // R3 : référence = dernier flux, ou (worker MORT-NÉ : jamais émis un octet) l'instant du dispatch — pour ne
+    // plus rater un claude qui hang/crash au lancement sans rien écrire (avant : last===undefined → jamais flaggé).
+    const ref = last ?? terminalAssignedAt.get(tid)
+    if (ref === undefined || now - ref <= STALL_MS) continue
+    const deadOnArrival = last === undefined
     const wsId = (getDb().prepare('SELECT workspace_id FROM terminals WHERE id = ?').pluck().get(tid) as
       | string
       | undefined)
@@ -439,14 +603,12 @@ export function tickWatchdog(): void {
     const t = getTask(busy)
     const ws = getWorkspace(wsId)
     const ev = ws && isGitRepo(ws.project_path) ? branchEvidence(ws.project_path, name) : null
-    const mins = Math.round((now - last) / 60000)
+    const mins = Math.round((now - ref) / 60000)
     const evidence = ev ? ` [preuve: ${ev.ahead} commit(s), ${ev.filesChanged.length} fichier(s)]` : ''
-    pasteLine(
-      orch,
-      oneLinePrompt(
-        `[oryon watchdog] ${name} silencieux depuis ~${mins} min sur "${t?.title ?? ''}"${evidence}. Peut-être bloqué / en attente d'input / en boucle — inspecte (get_terminal_output ${name}) puis relance ou réassigne. (aucun kill automatique)`,
-      ),
-    )
+    const msg = deadOnArrival
+      ? `[oryon watchdog] ${name} n'a produit AUCUNE sortie depuis le dispatch (~${mins} min) sur "${t?.title ?? ''}" — claude a peut-être planté au lancement ou son serveur MCP est mort. Vérifie (get_terminal_output ${name} / mcp_health ${name}) puis restart_agent si besoin. (aucun kill automatique)`
+      : `[oryon watchdog] ${name} silencieux depuis ~${mins} min sur "${t?.title ?? ''}"${evidence}. Peut-être bloqué / en attente d'input / en boucle — inspecte (get_terminal_output ${name}) puis relance ou réassigne. (aucun kill automatique)`
+    pasteLine(orch, oneLinePrompt(msg))
     stallNotified.add(tid)
   }
 }
@@ -476,11 +638,28 @@ export function agentApproveTask(taskId: string): { ok: boolean; message: string
         onDone: (m) => {
           updateTask(taskId, { status: 'complete' })
           void releaseClaimsByAgent(ws.project_path, agent) // W6(b) : la task est mergée → libère ses claims
+          recordOutcome(ws.project_path, {
+            event: 'approved',
+            taskId,
+            agent,
+            attempt: attemptByTask.get(taskId),
+            verdict: 'pass', // l'approbation EST l'adjudication du manager (= la vérité, pas l'auto-report)
+            mergeOutcome: 'merged',
+            mergeMessage: m,
+          })
+          attemptByTask.delete(taskId)
           emitTasks(wsId)
           agentMailbox(wsId, 'système', m)
         },
         onConflict: (m) => {
           updateTask(taskId, { status: 'in-review' })
+          recordOutcome(ws.project_path, {
+            event: /conflit|conflict/i.test(m) ? 'merge_conflict' : 'merge_deferred',
+            taskId,
+            agent,
+            attempt: attemptByTask.get(taskId),
+            mergeMessage: m,
+          })
           emitTasks(wsId)
           agentMailbox(wsId, 'système', m)
         },
@@ -514,12 +693,27 @@ export function agentBroadcastCommand(
   // sur le sommet, /effort max, pour que « mets-les en ultracode » fasse ce que l'utilisateur attend.
   const mapped = /^\/?(effort\s+)?(ultra|ultracode)$/i.test(command.trim()) ? '/effort max' : command
   const line = oneLinePrompt(mapped)
+  // V2 : un broadcast à TOUS saute les workers OCCUPÉS (busy) — leur injecter une ligne en plein tour
+  // déraillerait leur tâche. Un broadcast CIBLÉ (terminalRef) reste honoré (intention explicite de l'orchestrateur).
+  let busySkipped = 0
   const targets = terminalRef
     ? [resolveWorker(workspaceId, terminalRef)]
-    : terminalIds(workspaceId).filter((id) => hasLiveTerminal(id) && !interrupting.has(id))
+    : terminalIds(workspaceId).filter((id) => {
+        if (!hasLiveTerminal(id) || interrupting.has(id)) return false
+        if (terminalBusy.get(id)) {
+          busySkipped++
+          return false
+        }
+        return true
+      })
   for (const id of targets) pasteLine(id, line)
   if (terminalRef && targets.length) agentMailbox(workspaceId, 'orchestrateur', `\`${line}\` → ${terminalName(targets[0])}`)
-  else agentMailbox(workspaceId, 'orchestrateur', `\`${line}\` → ${targets.length} worker(s)`)
+  else
+    agentMailbox(
+      workspaceId,
+      'orchestrateur',
+      `\`${line}\` → ${targets.length} worker(s)${busySkipped ? ` (${busySkipped} occupé(s) ignoré(s))` : ''}`,
+    )
   return { count: targets.length, command: line }
 }
 
@@ -610,6 +804,18 @@ export function agentRestartAgent(workspaceId: string, terminalRef: string): voi
   if (hasLiveTerminal(id)) killTerminal(id)
   terminalBusy.set(id, null)
   stallNotified.delete(id)
+
+  // R5 : ré-établit le worktree de l'agent + ses junctions (node_modules/.claude/skills) AVANT de recréer le PTY.
+  // Sinon un restart consécutif à la disparition du worktree relancerait claude dans un cwd cassé. Idempotent si
+  // déjà présent. (La task in-progress, elle, a été remise en todo par l'exit-observer au kill ci-dessus — R7.)
+  if (row.worktree_path && isGitRepo(row.cwd)) {
+    try {
+      const wt = ensureWorktree(row.cwd, row.name)
+      provisionWorktreeDeps(row.cwd, wt)
+    } catch (e) {
+      tellOrch(`[oryon] ⚠ restart_agent : ré-provision du worktree de ${row.name} a échoué — ${(e as Error).message}`)
+    }
+  }
 
   // Reconstruit l'autostart EXACTEMENT comme terminals.ipc.ts (sinon le claude relancé n'aurait pas le serveur
   // oryon — soit tout le but du restart). Shell dans le worktree ; ancre MCP = projet principal (colonne cwd).

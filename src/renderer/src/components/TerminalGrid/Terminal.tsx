@@ -209,14 +209,33 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
             ORYON_AGENT_NAME: term.name,
             ORYON_WORKSPACE_ID: term.workspace_id,
             ...(term.role ? { ORYON_AGENT_ROLE: term.role } : {}),
+            // Orchestrateur (pane_index < 0) : SCROLL de l'historique = rendu CLASSIQUE de claude (scrollback NATIF
+            // du terminal → scrollbar xterm, comme les workers). DISABLE_ALTERNATE_SCREEN force le classique quel que
+            // soit le réglage `tui` global : le PLEIN ÉCRAN de claude n'utilise PAS le scrollback natif (il a son
+            // propre scroll interne, qui ne s'engage pas dans notre xterm embarqué → 0 scroll). TERM_PROGRAM=vscode :
+            // claude reconnaît l'émulateur xterm.js (= terminal intégré VS Code) et rend le classique proprement.
+            ...(term.pane_index < 0
+              ? {
+                  CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN: '1',
+                  TERM_PROGRAM: 'vscode',
+                  TERM_PROGRAM_VERSION: '1.96.0',
+                  COLORTERM: 'truecolor',
+                }
+              : {}),
           },
         })
       }, slot * SPAWN_STAGGER_MS)
     })
 
+    // On ne resize le PTY (→ SIGWINCH → repaint ConPTY/claude) QUE si les dimensions ont VRAIMENT changé :
+    // un resize same-size redessine le TUI pour rien (et peut faire sauter le viewport).
+    let lastCols = xterm.cols
+    let lastRows = xterm.rows
     const ro = new ResizeObserver(() => {
       safeFit()
-      if (created && canFit()) {
+      if (created && canFit() && (xterm.cols !== lastCols || xterm.rows !== lastRows)) {
+        lastCols = xterm.cols
+        lastRows = xterm.rows
         window.bridge.terminals.resize(term.id, xterm.cols, xterm.rows)
         // Reste collé en bas : un redimensionnement (ex. plein écran) fait redessiner le TUI claude ;
         // sans ça le viewport ne suit pas et la ligne de saisie « ❯ » passe sous la zone visible.

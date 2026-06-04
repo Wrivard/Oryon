@@ -15,6 +15,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync } fr
 import { join } from 'node:path'
 import * as memory from '../shared/memory-core.mjs'
 import * as archive from './archive-read.mjs'
+import * as outcomes from './outcomes-read.mjs'
 
 const APPDATA =
   process.env.APPDATA ||
@@ -46,6 +47,26 @@ function mcpLog(line) {
   } catch {
     /* best-effort : ne JAMAIS casser le serveur pour un log */
   }
+}
+
+// R4 : HEARTBEAT — chaque serveur MCP réécrit périodiquement l'horodatage courant dans mcp-<nom>.hb. Si le
+// serveur MEURT après un boot réussi (« busy zombie » : claude vivant, serveur MCP enfant mort), le .hb cesse
+// d'être mis à jour → mcp_health le voit 'stale' (avant : resté 'connected' à vie, limite assumée). $0 (FS seul).
+const MCP_HB = DEFAULT_AUTHOR ? join(STATE_DIR, `mcp-${DEFAULT_AUTHOR}.hb`) : null
+const HEARTBEAT_MS = 20_000
+const HEARTBEAT_STALE_MS = 60_000 // ~3 battements manqués → 'stale'
+if (MCP_HB) {
+  const beat = () => {
+    try {
+      mkdirSync(STATE_DIR, { recursive: true })
+      writeFileSync(MCP_HB, String(Date.now()))
+    } catch {
+      /* best-effort */
+    }
+  }
+  beat()
+  const hb = setInterval(beat, HEARTBEAT_MS)
+  if (hb.unref) hb.unref() // ne pas maintenir le process en vie juste pour le heartbeat
 }
 
 // Role-gate (F2) : un WORKER ne doit PAS LIRE la mémoire partagée — c'est le contexte orchestrateur/session,
@@ -302,6 +323,24 @@ server.tool(
         2,
       ),
     ),
+)
+
+// ---- Feedback / RH : scorecards de perf des workers + KPIs équipe (orchestrateur-only, lecture seule, $0) ----
+// Dérivés du journal d'outcomes (.oryon/outcomes.ndjson, écrit par le main). La VÉRITÉ = TES verdicts d'approbation,
+// pas l'auto-report des workers (biais d'optimisme). Consulte AVANT d'assigner + pour calibrer la review.
+
+server.tool(
+  'worker_scorecard',
+  "Scorecards de perf par worker (analogie RH), dérivées du journal d'outcomes (.oryon/outcomes.ndjson). Par worker : tasksAttempted, approvalRate, firstPassApprovalRate, avgAttempts, blocked, evidenceGateRejections, mergeConflicts, abandoned, dernière activité. Consulte-le AVANT d'assigner (gros/risqué → worker au meilleur track record ; faible → review plus serrée). Vide tant qu'aucune task n'a tourné sous cette version.",
+  {},
+  async () => text(JSON.stringify(outcomes.workerScorecards(PROJECT_DIR), null, 2)),
+)
+
+server.tool(
+  'team_metrics',
+  "KPIs d'équipe (analogie dashboard manager) dérivés du journal d'outcomes : débit (events/tasks distinctes), re-dispatch rate, taux d'approbation, rejets evidence-gate, conflits/defers de merge, blocked, abandons. Pour suivre la santé du process dans le temps.",
+  {},
+  async () => text(JSON.stringify(outcomes.teamMetrics(PROJECT_DIR), null, 2)),
 )
 
 // ---- Orchestration : tâches et mailbox (MCP→main via file de commandes) ----
@@ -588,9 +627,48 @@ orchestratorTool(
   },
 )
 
+// ---- Continuité de l'orchestrateur : flush d'archive + reset de contexte (orchestrateur-only) ----
+
+orchestratorTool(
+  'flush_archive',
+  "Force un archivage immédiat des transcripts de conversation (.oryon/archive/), sans attendre le sweep périodique (throttle 2 min). Sauvegarde l'historique en vol — utile avant un reset_orchestrator ou une opération risquée. Relisible ensuite via list_archived_sessions / search_archive. Coût $0 (FS + gzip).",
+  {},
+  async () => {
+    const workspaceId = currentWorkspaceId()
+    if (!workspaceId) return text(JSON.stringify({ queued: false, error: 'workspace introuvable' }))
+    try {
+      const id = queueCommand({ type: 'flush-archive', workspaceId })
+      return text(JSON.stringify({ queued: true, id }))
+    } catch (e) {
+      return text(JSON.stringify({ queued: false, error: String(e) }))
+    }
+  },
+)
+
+orchestratorTool(
+  'reset_orchestrator',
+  "Repart d'un contexte FRAIS sans perdre la donnée : flush l'archive, puis injecte /clear dans TON propre terminal (l'orchestrateur), puis une ligne de ré-hydration ~1 s après. À appeler quand le contexte devient lourd (au lieu de laisser la compaction se déclencher) — APRÈS avoir écrit/màj le curseur de reprise en mémoire partagée (create_memory/update_memory « orchestrator-resume »). La conversation complète reste relisible (search_archive / read_archived_session, agent « orchestrator »). ⚠ Vide ta conversation courante : ne l'appelle que volontairement, en fin de tour.",
+  {
+    rehydration: z
+      .string()
+      .optional()
+      .describe('ligne injectée après /clear (défaut : « lis le curseur orchestrator-resume puis reprends »)'),
+  },
+  async ({ rehydration }) => {
+    const workspaceId = currentWorkspaceId()
+    if (!workspaceId) return text(JSON.stringify({ queued: false, error: 'workspace introuvable' }))
+    try {
+      const id = queueCommand({ type: 'reset-orchestrator', workspaceId, rehydration: rehydration ?? null })
+      return text(JSON.stringify({ queued: true, id }))
+    } catch (e) {
+      return text(JSON.stringify({ queued: false, error: String(e) }))
+    }
+  },
+)
+
 orchestratorTool(
   'mcp_health',
-  "Diagnostique l'état du serveur MCP d'un worker (par name « Nell » / position « #2 ») via son log dédié : renvoie status connected|failed|unknown + dernière erreur + dernière ligne. Sers-t'en quand un worker semble ne plus répondre, AVANT de décider un restart_agent.",
+  "Diagnostique l'état du serveur MCP d'un worker (par name « Nell » / position « #2 ») via son log + heartbeat dédiés : renvoie status connected|stale|failed|unknown (stale = heartbeat expiré = MCP probablement MORT après un boot réussi, le « busy zombie ») + heartbeatAgeMs + dernière erreur. Sers-t'en quand un worker semble ne plus répondre, AVANT de décider un restart_agent.",
   { terminal: z.string().describe('name ou #position du worker') },
   async ({ terminal }) => {
     const t = resolveWorkerTerminal(terminal)
@@ -600,12 +678,28 @@ orchestratorTool(
     const lines = log.split('\n').filter(Boolean)
     const failed = lines.some((l) => /ÉCHEC connexion/.test(l))
     const connected = lines.some((l) => /connecté/.test(l))
-    const status = failed ? 'failed' : connected ? 'connected' : 'unknown'
+    // R4 : fraîcheur du heartbeat → détecte un MCP mort APRÈS un boot réussi (busy zombie). Si le .hb a cessé
+    // d'être mis à jour, le serveur MCP n'est plus vivant, même si le log montrait 'connecté'.
+    let hbAgeMs = null
+    try {
+      const hbPath = join(STATE_DIR, `mcp-${t.name}.hb`)
+      if (existsSync(hbPath)) hbAgeMs = Date.now() - (parseInt(readFileSync(hbPath, 'utf8').trim(), 10) || 0)
+    } catch {
+      /* pas de .hb (worker sur une version sans heartbeat) → on retombe sur connected/failed */
+    }
+    const stale = hbAgeMs !== null && hbAgeMs > HEARTBEAT_STALE_MS
+    const status = failed ? 'failed' : stale ? 'stale' : connected ? 'connected' : 'unknown'
     const lastError = [...lines].reverse().find((l) => /ÉCHEC|error|exception/i.test(l)) ?? null
-    // Note : sans heartbeat, un MCP qui meurt APRÈS un boot réussi reste vu 'connected' (limite assumée).
     return text(
       JSON.stringify(
-        { terminal: t.name, status, lastError, lastLine: lines[lines.length - 1] ?? null, logLines: lines.length },
+        {
+          terminal: t.name,
+          status,
+          heartbeatAgeMs: hbAgeMs,
+          lastError,
+          lastLine: lines[lines.length - 1] ?? null,
+          logLines: lines.length,
+        },
         null,
         2,
       ),
