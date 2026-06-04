@@ -1,0 +1,232 @@
+/*
+ * Overrides react-big-calendar → thème sombre Oryon. Tout est SCOPÉ sous `.oryon-calendar`
+ * pour ne jamais fuir sur le reste de l'app (le CSS de base de rbc est importé globalement).
+ * Tokens : var(--bg*), var(--fg*), var(--border*), var(--accent*), var(--radius*), var(--ease-out).
+ */
+
+.oryon-calendar {
+  height: 100%;
+}
+.oryon-calendar .rbc-calendar {
+  height: 100%;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+}
+
+/* ── Cadre des vues (carte flottante, coins arrondis concentriques) ───────────────── */
+.oryon-calendar .rbc-month-view,
+.oryon-calendar .rbc-time-view,
+.oryon-calendar .rbc-agenda-view {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--bg-panel);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+/* ── En-têtes de colonnes (jours de la semaine) ──────────────────────────────────── */
+.oryon-calendar .rbc-header {
+  padding: 8px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-subtle);
+  border-bottom: 1px solid var(--border);
+  min-height: auto;
+}
+.oryon-calendar .rbc-header + .rbc-header {
+  border-left: 1px solid var(--border);
+}
+.oryon-calendar .rbc-header a,
+.oryon-calendar .rbc-header span {
+  color: inherit;
+}
+
+/* ── Grille mois ─────────────────────────────────────────────────────────────────── */
+.oryon-calendar .rbc-month-row + .rbc-month-row {
+  border-top: 1px solid var(--border);
+}
+.oryon-calendar .rbc-day-bg + .rbc-day-bg {
+  border-left: 1px solid var(--border);
+}
+.oryon-calendar .rbc-off-range-bg {
+  background: var(--bg-deep);
+}
+.oryon-calendar .rbc-off-range {
+  color: var(--fg-subtle);
+  opacity: 0.5;
+}
+.oryon-calendar .rbc-today {
+  background-color: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* Numéro de date (coin de chaque cellule) */
+.oryon-calendar .rbc-date-cell {
+  padding: 4px 7px 0 0;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.oryon-calendar .rbc-button-link {
+  color: inherit;
+  transition: color 150ms var(--ease-out);
+}
+.oryon-calendar .rbc-date-cell:hover .rbc-button-link {
+  color: var(--fg);
+}
+/* Aujourd'hui : pastille accent sur le numéro */
+.oryon-calendar .rbc-date-cell.rbc-now .rbc-button-link {
+  display: inline-flex;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+/* ── Événements ──────────────────────────────────────────────────────────────────── */
+.oryon-calendar .rbc-event,
+.oryon-calendar .rbc-day-slot .rbc-event {
+  border: 0;
+  border-left: 2px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--fg);
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  box-shadow: none;
+  transition: filter 150ms var(--ease-out);
+}
+.oryon-calendar .rbc-event:hover {
+  filter: brightness(1.14);
+}
+.oryon-calendar .rbc-event:focus {
+  outline: none;
+  box-shadow: 0 0 0 1.5px var(--accent);
+}
+.oryon-calendar .rbc-event.rbc-selected {
+  box-shadow: 0 0 0 1.5px var(--accent);
+  filter: brightness(1.14);
+}
+.oryon-calendar .rbc-event-label {
+  font-size: 9.5px;
+  color: var(--fg-subtle);
+}
+.oryon-calendar .rbc-row-segment {
+  padding: 0 2px 2px;
+}
+/* « +N de plus » */
+.oryon-calendar .rbc-show-more {
+  background: transparent;
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 0 4px;
+}
+.oryon-calendar .rbc-show-more:hover {
+  color: var(--accent-hover);
+  text-decoration: none;
+}
+
+/* ── Vue temps (semaine / jour) ──────────────────────────────────────────────────── */
+.oryon-calendar .rbc-time-view .rbc-header {
+  border-bottom: none;
+}
+.oryon-calendar .rbc-time-header.rbc-overflowing,
+.oryon-calendar .rbc-time-header-content {
+  border-color: var(--border);
+}
+.oryon-calendar .rbc-time-content {
+  border-top: 1px solid var(--border);
+}
+.oryon-calendar .rbc-time-content > * + * > * {
+  border-left: 1px solid var(--border);
+}
+.oryon-calendar .rbc-timeslot-group {
+  border-bottom: 1px solid var(--border);
+  min-height: 44px;
+}
+.oryon-calendar .rbc-time-slot {
+  border-top: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+}
+.oryon-calendar .rbc-day-slot .rbc-time-slot {
+  border-top: none;
+}
+.oryon-calendar .rbc-label,
+.oryon-calendar .rbc-time-gutter .rbc-timeslot-group {
+  color: var(--fg-subtle);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+.oryon-calendar .rbc-time-gutter {
+  border-color: var(--border);
+}
+.oryon-calendar .rbc-time-header-gutter,
+.oryon-calendar .rbc-allday-cell {
+  border-color: var(--border);
+}
+.oryon-calendar .rbc-day-slot .rbc-event {
+  border-left-width: 3px;
+}
+.oryon-calendar .rbc-day-slot .rbc-event-content {
+  font-size: 11px;
+}
+/* Indicateur d'heure courante : ligne accent + pastille */
+.oryon-calendar .rbc-current-time-indicator {
+  height: 1px;
+  background: var(--accent);
+}
+.oryon-calendar .rbc-current-time-indicator::before {
+  content: '';
+  position: absolute;
+  left: -3px;
+  top: -3px;
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: var(--accent);
+}
+
+/* ── Popup « +N de plus » (overlay natif rbc) ────────────────────────────────────── */
+.oryon-calendar .rbc-overlay,
+.rbc-overlay {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+}
+.rbc-overlay-header {
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 600;
+  margin: -6px -6px 6px;
+  padding: 8px 10px;
+}
+
+/* ── Scrollbars (vue temps) ──────────────────────────────────────────────────────── */
+.oryon-calendar ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.oryon-calendar ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.oryon-calendar ::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.oryon-calendar ::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-subtle);
+  background-clip: padding-box;
+}
