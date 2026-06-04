@@ -8,6 +8,8 @@ import { stripAnsi } from './orchestrator/mailbox'
 import { drainPendingMerges } from './orchestrator/merge-back'
 import { sweepArchive } from './archive'
 import { navigateBrowser, requestBrowserScreenshot, appendAppConsole } from '../ipc/browser.ipc'
+import { importDoc } from './docs-import'
+import * as docsImportCmd from './docs-import-command.mjs'
 import {
   agentMailbox,
   setTaskStatus,
@@ -110,6 +112,15 @@ async function processCommand(path: string): Promise<void> {
       navigateBrowser(cmd.workspaceId, cmd.url)
     } else if (cmd.type === 'browser-screenshot') {
       requestBrowserScreenshot(cmd.workspaceId, cmd.reqId)
+    } else if (cmd.type === 'docs-import') {
+      // Import déclenché par l'outil MCP `import_doc` (orchestrateur). L'issue est déposée sous
+      // mcp-state/docs-import/<reqId>.{json,err} par runDocsImport, où l'outil la relit en polling.
+      await docsImportCmd.runDocsImport({
+        stateDir: dir,
+        reqId: cmd.reqId,
+        args: { url: cmd.url ?? undefined, markdown: cmd.markdown ?? undefined, label: cmd.label ?? undefined },
+        importDoc,
+      })
     } else if (cmd.type === 'flush-archive') {
       agentFlushArchive(cmd.workspaceId)
     } else if (cmd.type === 'reset-orchestrator') {
