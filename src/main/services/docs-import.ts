@@ -78,6 +78,52 @@ interface FetchResult {
 }
 
 // ── HTTP borné ───────────────────────────────────────────────────────────────────────────────────────────
+/**
+ * Lit le corps en STREAMING, plafonné en OCTETS (et non en code-units UTF-16) : on accumule les octets et on
+ * ABORT dès le dépassement du cap — au lieu de `res.text()` qui matérialise tout le corps en mémoire avant de
+ * slicer (un serveur sans content-length pouvait livrer un corps géant). Le slice par `.length` mécomptait aussi
+ * les octets (un caractère multi-octets = 1 code-unit mais 2-4 octets). Repli sur text() si pas de ReadableStream.
+ */
+async function readBodyCapped(res: Response, maxBytes: number): Promise<string> {
+  const body = res.body
+  if (!body) {
+    const t = await res.text()
+    const bytes = new TextEncoder().encode(t)
+    return bytes.length > maxBytes ? new TextDecoder('utf-8').decode(bytes.subarray(0, maxBytes)) : t
+  }
+  const reader = body.getReader()
+  const chunks: Uint8Array[] = []
+  let kept = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value || value.length === 0) continue
+      const remaining = maxBytes - kept
+      if (value.length >= remaining) {
+        chunks.push(value.subarray(0, remaining))
+        kept += remaining
+        await reader.cancel().catch(() => {}) // dépassement du cap → abort du reste du flux
+        break
+      }
+      chunks.push(value)
+      kept += value.length
+    }
+  } finally {
+    try {
+      reader.releaseLock()
+    } catch {
+      /* déjà relâché (cancel) */
+    }
+  }
+  const merged = new Uint8Array(kept)
+  let off = 0
+  for (const c of chunks) {
+    merged.set(c, off)
+    off += c.length
+  }
+  return new TextDecoder('utf-8').decode(merged)
+}
 /** Fetch texte avec timeout + plafond d'octets. Lève sur abort/réseau ; l'appelant filtre via res.ok. */
 async function fetchText(
   url: string,
@@ -94,11 +140,7 @@ async function fetchText(
     if (declared && declared > maxBytes) {
       return { ok: false, status: res.status, text: '', contentType, headers: res.headers, finalUrl: res.url || url }
     }
-    let text = ''
-    if (res.ok) {
-      text = await res.text()
-      if (text.length > maxBytes) text = text.slice(0, maxBytes)
-    }
+    const text = res.ok ? await readBodyCapped(res, maxBytes) : ''
     return { ok: res.ok, status: res.status, text, contentType, headers: res.headers, finalUrl: res.url || url }
   } finally {
     clearTimeout(timer)
@@ -519,7 +561,20 @@ async function writeDocSet(args: {
   chunks: Chunk[]
   pageCount: number
 }): Promise<DocsImportResult> {
-  const slug = core.slugFor(args.title) as string
+  let slug = core.slugFor(args.title) as string
+  // Re-import STABLE : si un docSet existe DÉJÀ pour cette même source web, réutilise SON slug pour l'écraser
+  // en place. Sinon un changement de titre source (donc de slug dérivé) créerait un 2e dossier et ORPHELINERAIT
+  // l'ancien. La dédup se fait par sourceUrl (clé stable, contrairement au titre). Pas de short-circuit sur le
+  // contentHash : un re-import doit re-chunker même si la source est identique (applique un nouveau chunker).
+  if (args.sourceUrl) {
+    try {
+      const idx = (await core.readIndex()) as Array<{ slug?: string; sourceUrl?: string }>
+      const existing = idx.find((e) => e.sourceUrl && e.sourceUrl === args.sourceUrl)
+      if (existing?.slug) slug = existing.slug
+    } catch {
+      /* index illisible : on retombe sur le slug dérivé du titre */
+    }
+  }
   const w = (await withSlugLock(slug, () =>
     core.writeDocSet({
       slug,

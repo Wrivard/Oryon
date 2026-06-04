@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { mkdirSync, writeFileSync, renameSync, readFileSync, unlinkSync } from 'fs'
+import { mkdirSync, writeFileSync, renameSync, readFileSync, unlinkSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import chokidar from 'chokidar'
 import { addDataObserver } from './pty-manager'
@@ -50,6 +50,33 @@ function stateDir(): string {
   return join(app.getPath('userData'), 'mcp-state')
 }
 
+// Sweep des issues d'import (docs-import/<reqId>.{json,err}) : l'outil MCP `import_doc` les relit en polling
+// COURT puis le main les unlink après lecture. Une issue survivant > 1 h = orpheline (poll abandonné / crash) →
+// on la balaie. Throttle 10 min : inutile de stat le dossier à chaque tick 2 s.
+const DOCS_IMPORT_TTL_MS = 60 * 60_000
+let lastDocsImportSweep = 0
+function maybeSweepDocsImport(): void {
+  if (Date.now() - lastDocsImportSweep < 600_000) return
+  lastDocsImportSweep = Date.now()
+  const importDir = join(dir, docsImportCmd.DOCS_IMPORT_SUBDIR)
+  let files: string[]
+  try {
+    files = readdirSync(importDir)
+  } catch {
+    return // dossier absent (aucun import déclenché) : rien à balayer
+  }
+  const now = Date.now()
+  for (const f of files) {
+    if (!/\.(json|err)$/.test(f)) continue
+    const p = join(importDir, f)
+    try {
+      if (now - statSync(p).mtimeMs > DOCS_IMPORT_TTL_MS) unlinkSync(p)
+    } catch {
+      /* déjà supprimé / illisible : ignore */
+    }
+  }
+}
+
 function writeMeta(): void {
   const db = getDb()
   const terminalsRaw = db
@@ -94,7 +121,16 @@ async function processCommand(path: string): Promise<void> {
     } else if (cmd.type === 'update-task-status') {
       setTaskStatus(cmd.taskId, cmd.status)
     } else if (cmd.type === 'assign-task') {
-      await agentAssignTask(cmd.workspaceId, cmd.terminal, cmd.instructions, cmd.title ?? undefined, cmd.files ?? undefined)
+      // SPEC-B : achemine docSlug (doc de référence) + readOnly (tâche de consultation) vers le router.
+      await agentAssignTask(
+        cmd.workspaceId,
+        cmd.terminal,
+        cmd.instructions,
+        cmd.title ?? undefined,
+        cmd.files ?? undefined,
+        cmd.docSlug ?? undefined,
+        cmd.readOnly ?? undefined,
+      )
     } else if (cmd.type === 'report-task') {
       await agentReportTask(cmd.workspaceId, cmd.fromAgent ?? null, cmd.status, cmd.summary ?? '', {
         filesChanged: cmd.filesChanged ?? null,
@@ -129,8 +165,9 @@ async function processCommand(path: string): Promise<void> {
     }
     try {
       unlinkSync(path)
+      processedCommands.delete(path) // fichier réellement supprimé → libère l'entrée du Set (sinon il fuit indéfiniment)
     } catch {
-      /* ignore : déjà supprimé */
+      /* ignore : déjà supprimé (on garde l'entrée pour ne pas re-traiter un résidu) */
     }
   } catch (e) {
     console.error('[mcp-export] commande échouée :', path, e)
@@ -169,6 +206,7 @@ export function initMcpExport(): void {
     void drainPendingMerges()
     tickWatchdog() // WC : surface (sans tuer) les workers busy silencieux > 5 min
     maybeArchive()
+    maybeSweepDocsImport() // balaie les issues d'import orphelines (> 1 h), throttle interne 10 min
   }, 2000)
 
   addDataObserver((terminalId, data) => {
