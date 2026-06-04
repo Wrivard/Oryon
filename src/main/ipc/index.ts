@@ -10,6 +10,7 @@ import { registerSkillsIpc } from './skills.ipc'
 import { registerVoiceIpc } from './voice.ipc'
 import { registerMemoryIpc } from './memory.ipc'
 import { registerDocsIpc } from './docs.ipc'
+import { registerCalendarIpc } from './calendar.ipc'
 import { registerUpdaterIpc } from './updater.ipc'
 import { registerAppIpc } from './app.ipc'
 
@@ -27,5 +28,6 @@ export function registerIpcHandlers() {
   registerVoiceIpc()
   registerMemoryIpc()
   registerDocsIpc()
+  registerCalendarIpc()
   registerUpdaterIpc()
 }
