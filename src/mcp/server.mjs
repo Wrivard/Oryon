@@ -365,6 +365,66 @@ server.tool(
     text(JSON.stringify(docs.fetchSection({ docSlug, anchor, maxChars: maxChars ?? 12000 }), null, 2)),
 )
 
+// import_doc : ÉCRITURE (≠ les 3 lectures ci-dessus, non-gatées) → GATÉ orchestrateur. L'import vit dans le
+// process principal (fetch réseau + turndown, hors de ce serveur Node pur) : on émet une commande 'docs-import'
+// (⚠ AUSSI routée dans mcp-export.processCommand, sinon no-op silencieux) avec un reqId, puis on POLLE l'issue
+// déposée par le main sous docs-import/<reqId>.json (succès) ou .err (échec) — même request-response que
+// browser_screenshot. Un gros crawl qui dépasse le délai rend la main en { pending:true } (l'import continue).
+const DOCS_IMPORT_POLL_MS = 500
+const DOCS_IMPORT_POLL_TRIES = 180 // ~90 s avant de répondre 'pending' (la plupart des imports finissent bien avant)
+
+orchestratorTool(
+  'import_doc',
+  "Importe une doc tierce dans le store GLOBAL (~/.oryon/docs) pour la rendre cherchable ensuite via search_docs / fetch_doc_section. Fournis `url` (on sonde son llms.txt, sinon page .md / llms-full.txt / crawl sitemap) OU `markdown` (texte déjà en main). Renvoie le docSet créé { slug, title, origin, chunkCount, pageCount, errors } une fois l'import fini ; un gros crawl qui dépasse ~90 s renvoie { pending:true } (l'import continue côté app — relis sous peu via list_docs / search_docs). WRITE, orchestrateur-only.",
+  {
+    url: z.string().optional().describe('URL de la doc à importer (sonde llms.txt → page .md → llms-full.txt → sitemap)'),
+    markdown: z.string().optional().describe('markdown déjà en main à importer directement (origin "paste")'),
+    label: z.string().optional().describe('titre lisible optionnel (sinon dérivé du 1er H1 / de l\'URL)'),
+  },
+  async ({ url, markdown, label }) => {
+    if (!String(url || '').trim() && !String(markdown || '').trim()) {
+      return text(JSON.stringify({ ok: false, error: 'Fournis une url ou du markdown à importer.' }))
+    }
+    const workspaceId = currentWorkspaceId()
+    if (!workspaceId) return text(JSON.stringify({ ok: false, error: 'workspace introuvable (Oryon tourne ?)' }))
+    const reqId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+    try {
+      queueCommand({ type: 'docs-import', workspaceId, reqId, url: url ?? null, markdown: markdown ?? null, label: label ?? null })
+    } catch (e) {
+      return text(JSON.stringify({ ok: false, error: String(e) }))
+    }
+    const okPath = join(STATE_DIR, 'docs-import', `${reqId}.json`)
+    const errPath = join(STATE_DIR, 'docs-import', `${reqId}.err`)
+    for (let i = 0; i < DOCS_IMPORT_POLL_TRIES; i++) {
+      if (existsSync(okPath)) {
+        try {
+          return text(JSON.stringify({ ok: true, ...JSON.parse(readFileSync(okPath, 'utf8')) }, null, 2))
+        } catch {
+          /* fichier pas encore complètement écrit → retente */
+        }
+      }
+      if (existsSync(errPath)) {
+        let m = 'import échoué'
+        try {
+          m = readFileSync(errPath, 'utf8')
+        } catch {
+          /* ignore */
+        }
+        return text(JSON.stringify({ ok: false, error: m }))
+      }
+      await new Promise((r) => setTimeout(r, DOCS_IMPORT_POLL_MS))
+    }
+    return text(
+      JSON.stringify({
+        ok: true,
+        pending: true,
+        reqId,
+        hint: 'Import volumineux toujours en cours (gros crawl ?). Vérifie le résultat sous peu via list_docs / search_docs.',
+      }),
+    )
+  },
+)
+
 // ---- Feedback / RH : scorecards de perf des workers + KPIs équipe (orchestrateur-only, lecture seule, $0) ----
 // Dérivés du journal d'outcomes (.oryon/outcomes.ndjson, écrit par le main). La VÉRITÉ = TES verdicts d'approbation,
 // pas l'auto-report des workers (biais d'optimisme). Consulte AVANT d'assigner + pour calibrer la review.
