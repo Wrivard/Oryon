@@ -164,6 +164,7 @@ export function initOrchestrator(): void {
       for (const t of listTasks(wsId)) {
         if (t.assigned_terminal_id === id && (t.status === 'in-progress' || t.status === 'in-review')) {
           updateTask(t.id, { status: 'todo', assigned_terminal_id: null })
+          readOnlyByTask.delete(t.id) // SPEC-B : worker mort → purge le flag read-only (sinon fuite mémoire)
           if (wsRow)
             recordOutcome(wsRow.project_path, {
               event: 'abandoned',
@@ -206,6 +207,7 @@ export function setTaskStatus(taskId: string, status: TaskStatus): void {
   }
   if (status === 'complete' || status === 'cancelled' || status === 'todo') {
     freeTerminalForTask(taskId)
+    readOnlyByTask.delete(taskId) // SPEC-B : task quitte l'état actif → purge le flag read-only
     // W6(b) : libère les claims de l'agent quand sa task quitte l'état actif (sinon claim fantôme).
     if (t.assigned_terminal_id && t.workspace_id) {
       const ws = getWorkspace(t.workspace_id)
@@ -220,6 +222,7 @@ export function stopSwarm(workspaceId: string): void {
   for (const t of listTasks(workspaceId)) {
     if (t.status === 'in-progress' || t.status === 'in-review') {
       updateTask(t.id, { status: 'todo', assigned_terminal_id: null })
+      readOnlyByTask.delete(t.id) // SPEC-B : stop → purge le flag read-only
     }
   }
   for (const id of terminalIds(workspaceId)) {

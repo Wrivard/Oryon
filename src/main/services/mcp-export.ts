@@ -1,4 +1,4 @@
-import { app } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { mkdirSync, writeFileSync, renameSync, readFileSync, unlinkSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import chokidar from 'chokidar'
@@ -156,6 +156,11 @@ async function processCommand(path: string): Promise<void> {
         reqId: cmd.reqId,
         args: { url: cmd.url ?? undefined, markdown: cmd.markdown ?? undefined, label: cmd.label ?? undefined },
         importDoc,
+        // Rediffuse la progression au renderer (vue panneau Docs) : sinon l'indicateur d'import déclenché par un
+        // AGENT ne s'allume jamais (le panneau n'écoute que docs:import-progress, jusqu'ici émis par l'IPC UI seul).
+        onProgress: (p) => {
+          for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed()) w.webContents.send('docs:import-progress', p)
+        },
       })
     } else if (cmd.type === 'flush-archive') {
       agentFlushArchive(cmd.workspaceId)
@@ -222,6 +227,13 @@ export function initMcpExport(): void {
   } catch {
     /* ignore */
   }
-  commandWatcher = chokidar.watch(join(commandsDir, '*.json'), { awaitWriteFinish: true })
+  // Balaie les commandes résiduelles d'un run précédent (app fermée mid-traitement, ex. un long docs-import) :
+  // les rejouer au boot serait incorrect (état périmé) — on les supprime, et ignoreInitial empêche tout replay.
+  try {
+    for (const f of readdirSync(commandsDir)) if (f.endsWith('.json')) unlinkSync(join(commandsDir, f))
+  } catch {
+    /* dossier vide / illisible : rien à balayer */
+  }
+  commandWatcher = chokidar.watch(join(commandsDir, '*.json'), { awaitWriteFinish: true, ignoreInitial: true })
   commandWatcher.on('add', processCommand)
 }

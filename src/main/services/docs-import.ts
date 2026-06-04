@@ -562,18 +562,28 @@ async function writeDocSet(args: {
   pageCount: number
 }): Promise<DocsImportResult> {
   let slug = core.slugFor(args.title) as string
-  // Re-import STABLE : si un docSet existe DÉJÀ pour cette même source web, réutilise SON slug pour l'écraser
-  // en place. Sinon un changement de titre source (donc de slug dérivé) créerait un 2e dossier et ORPHELINERAIT
-  // l'ancien. La dédup se fait par sourceUrl (clé stable, contrairement au titre). Pas de short-circuit sur le
-  // contentHash : un re-import doit re-chunker même si la source est identique (applique un nouveau chunker).
-  if (args.sourceUrl) {
-    try {
-      const idx = (await core.readIndex()) as Array<{ slug?: string; sourceUrl?: string }>
-      const existing = idx.find((e) => e.sourceUrl && e.sourceUrl === args.sourceUrl)
-      if (existing?.slug) slug = existing.slug
-    } catch {
-      /* index illisible : on retombe sur le slug dérivé du titre */
+  // Re-import STABLE + anti-collision (une seule lecture d'index) :
+  // (1) un docSet existe DÉJÀ pour cette même source web → réutilise SON slug (écrase en place ; un changement de
+  //     titre ne crée pas d'orphelin). Dédup par sourceUrl (clé stable). Pas de short-circuit contentHash : un
+  //     re-import doit re-chunker (applique le nouveau chunker).
+  // (2) sinon, si le slug dérivé du titre COLLISIONNE avec un AUTRE docSet (titres sluggifiant pareil : non-ASCII
+  //     → "doc", ponctuation, ou paste de même titre) → désambiguïse (slug-2…) pour NE PAS écraser silencieusement
+  //     l'autre docSet (sinon rebuildIndex n'en garderait qu'un → perte de données muette).
+  try {
+    const idx = (await core.readIndex()) as Array<{ slug?: string; sourceUrl?: string }>
+    const existing = args.sourceUrl ? idx.find((e) => e.sourceUrl && e.sourceUrl === args.sourceUrl) : undefined
+    if (existing?.slug) {
+      slug = existing.slug
+    } else {
+      const taken = new Set(idx.map((e) => e.slug).filter(Boolean) as string[])
+      if (taken.has(slug)) {
+        let n = 2
+        while (taken.has(`${slug}-${n}`)) n++
+        slug = `${slug}-${n}`
+      }
     }
+  } catch {
+    /* index illisible : on retombe sur le slug dérivé du titre */
   }
   const w = (await withSlugLock(slug, () =>
     core.writeDocSet({
@@ -643,6 +653,18 @@ export async function importDoc(argsIn: DocsImportArgs, onProgress: Emit = () =>
       /* l'UI ne doit jamais casser l'import */
     }
   }
+  // Garantit un événement TERMINAL : tout échec émet phase:'error' AVANT de relancer, sinon un consommateur de
+  // progression (ex. le badge d'import déclenché par un agent) resterait bloqué « en cours » sur un import raté.
+  try {
+    return await importDocCore(argsIn, emit)
+  } catch (e) {
+    const msg = String((e && (e as Error).message) || e || 'import échoué')
+    emit({ phase: 'error', message: msg, error: msg })
+    throw e
+  }
+}
+
+async function importDocCore(argsIn: DocsImportArgs, emit: Emit): Promise<DocsImportResult> {
   const markdown = (argsIn.markdown || '').trim()
   const label = (argsIn.label || '').trim()
   const url = (argsIn.url || '').trim()
