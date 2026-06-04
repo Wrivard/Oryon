@@ -9,7 +9,9 @@
 //                                          contentHash, pageCount, chunkCount, tags[], description }
 //   ~/.oryon/docs/<slug>/chunks.ndjson  — 1 ligne/section { docSlug, chunkId, title, breadcrumb, anchor,
 //                                          tags[], sourceUrl, text, charLen }
-import { readFileSync, existsSync } from 'node:fs'
+// Cache mémoire clé par mtime (statSync cheap avant relecture) : on ne re-parse un .ndjson que si son fichier
+// a changé. Les chunks sont pré-traités au chargement (champs minuscule pré-calculés) pour un hot-path rapide.
+import { readFileSync, existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -42,6 +44,57 @@ function readNdjson(path) {
   return out
 }
 
+/** mtimeMs du fichier (cheap), ou -1 si absent/illisible (= clé de cache stable pour "pas de fichier"). */
+function statMtime(path) {
+  try {
+    return statSync(path).mtimeMs
+  } catch {
+    return -1
+  }
+}
+
+// --- Cache mémoire clé par mtime : on ne re-parse que si le fichier a changé. ---
+const chunksCache = new Map() // slug -> { mtimeMs, chunks: PreppedChunk[] }
+let indexCache = { mtimeMs: -2, docs: [] } // -2 ≠ -1 (absent) → 1er appel force la lecture
+
+/** Pré-traite un chunk pour le hot-path : minuscules pré-calculées (réutilisées scoring + snippet). */
+function prepChunk(c, slug) {
+  const text = String(c.text || '')
+  return {
+    docSlug: c.docSlug || slug,
+    chunkId: c.chunkId,
+    title: c.title || '',
+    breadcrumb: c.breadcrumb || '',
+    anchor: c.anchor || '',
+    sourceUrl: c.sourceUrl || '',
+    text,
+    titleLc: String(c.title || '').toLowerCase(),
+    metaLc: (String(c.breadcrumb || '') + ' ' + (Array.isArray(c.tags) ? c.tags.join(' ') : '')).toLowerCase(),
+    textLc: text.toLowerCase(),
+  }
+}
+
+/** Chunks pré-traités d'un docSet, depuis le cache si le mtime n'a pas changé. */
+function loadChunks(slug) {
+  const path = chunksPath(slug)
+  const mtimeMs = statMtime(path)
+  const cached = chunksCache.get(slug)
+  if (cached && cached.mtimeMs === mtimeMs) return cached.chunks
+  const chunks = readNdjson(path).map((c) => prepChunk(c, slug))
+  chunksCache.set(slug, { mtimeMs, chunks })
+  return chunks
+}
+
+/** Lignes de l'index, depuis le cache si le mtime n'a pas changé. */
+function loadIndex() {
+  const path = indexPath()
+  const mtimeMs = statMtime(path)
+  if (indexCache.mtimeMs === mtimeMs) return indexCache.docs
+  const docs = readNdjson(path)
+  indexCache = { mtimeMs, docs }
+  return docs
+}
+
 /** Plages [start,end) des blocs code triple-backtick (fence non fermée → jusqu'à la fin). Sert au fence-safe. */
 function fenceRanges(text) {
   const ranges = []
@@ -70,24 +123,30 @@ function sanitizeTerms(query) {
     .filter(Boolean)
 }
 
-/** Score d'un chunk vs termes — algo de memory-core.searchMemories : titre +10 / breadcrumb+tags +5 /
- *  corps +3 + bonus fréquence min(6,count), sommé par terme (substring insensible à la casse). */
+/** Score d'un chunk pré-traité vs termes — algo de memory-core.searchMemories : titre +10 / breadcrumb+tags +5 /
+ *  corps +3 + bonus fréquence min(6,count), sommé par terme (substring insensible à la casse, minuscules pré-calc).
+ *  Comptage de fréquence via indexOf (non-allouant) plutôt que split. */
 function scoreChunk(c, terms) {
-  const title = String(c.title || '').toLowerCase()
-  const meta = (String(c.breadcrumb || '') + ' ' + (Array.isArray(c.tags) ? c.tags.join(' ') : '')).toLowerCase()
-  const text = String(c.text || '').toLowerCase()
   let score = 0
   for (const term of terms) {
-    if (title.includes(term)) score += 10
-    if (meta.includes(term)) score += 5
-    if (text.includes(term)) score += 3 + Math.min(6, text.split(term).length - 1)
+    if (c.titleLc.includes(term)) score += 10
+    if (c.metaLc.includes(term)) score += 5
+    const tl = c.textLc
+    let i = tl.indexOf(term)
+    if (i >= 0) {
+      let count = 0
+      while (i >= 0) {
+        count++
+        i = tl.indexOf(term, i + term.length)
+      }
+      score += 3 + Math.min(6, count)
+    }
   }
   return score
 }
 
-/** Index du 1er hit (n'importe quel terme) dans un texte. { idx:-1 } si aucun. */
-function firstHit(text, terms) {
-  const lower = text.toLowerCase()
+/** Index du 1er hit (n'importe quel terme) dans un texte DÉJÀ minuscule. { idx:-1 } si aucun. */
+function firstHit(lower, terms) {
   let idx = -1
   let len = 0
   for (const term of terms) {
@@ -100,11 +159,12 @@ function firstHit(text, terms) {
   return { idx, len }
 }
 
-/** Snippet ±200 chars autour du 1er hit, JAMAIS coupé dans un bloc code (la fenêtre s'étend aux frontières du fence). */
-function snippetFor(text, terms) {
-  const t = String(text || '')
+/** Snippet ±200 chars autour du 1er hit, JAMAIS coupé dans un bloc code (la fenêtre s'étend aux frontières du fence).
+ *  Opère sur un chunk pré-traité (texte minuscule réutilisé). */
+function snippetFor(c, terms) {
+  const t = c.text
   if (!t) return ''
-  const { idx, len } = firstHit(t, terms)
+  const { idx, len } = firstHit(c.textLc, terms)
   let start = idx < 0 ? 0 : Math.max(0, idx - SNIPPET_RADIUS)
   let end = idx < 0 ? Math.min(t.length, SNIPPET_RADIUS * 2) : Math.min(t.length, idx + len + SNIPPET_RADIUS)
   for (const f of fenceRanges(t)) {
@@ -133,12 +193,26 @@ function truncateNoFence(text, cap) {
   return s.replace(/[ \t\r\n]+$/, '') + '\n…[tronqué]'
 }
 
-/** Liste les docSets importés (lit index.ndjson), récents d'abord. opts: { tag? } (filtre tag insensible casse). */
+/** Insère `item` dans `arr` (petit, trié ASCENDANT par score) en gardant l'ordre. Coût négligeable à k≤8. */
+function insertSorted(arr, item) {
+  let lo = 0
+  let hi = arr.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (arr[mid].score < item.score) lo = mid + 1
+    else hi = mid
+  }
+  arr.splice(lo, 0, item)
+}
+
+/** Liste les docSets importés (lit index.ndjson via cache), récents d'abord. opts: { tag? } (filtre tag insensible casse). */
 export function listDocs({ tag } = {}) {
-  let docs = readNdjson(indexPath())
+  let docs = loadIndex()
   if (tag) {
     const t = String(tag).toLowerCase()
     docs = docs.filter((d) => Array.isArray(d.tags) && d.tags.some((x) => String(x).toLowerCase() === t))
+  } else {
+    docs = docs.slice() // copie : ne pas muter l'array caché via .sort()
   }
   return docs.sort((a, b) => (b.fetchedAt || 0) - (a.fetchedAt || 0))
 }
@@ -146,40 +220,58 @@ export function listDocs({ tag } = {}) {
 /**
  * Recherche lexicale top-k sur les sections. opts: { query, docSlug?, tag?, limit=8 }. Scanne tous les
  * chunks.ndjson (ou un seul docSet si docSlug ; restreint aux docSets taggés si tag), score façon
- * searchMemories. Renvoie [{ docSlug, title, breadcrumb, anchor, sourceUrl, snippet, chunkId, score }].
+ * searchMemories. Top-k maintenu PENDANT le scan (pas d'accumulation des chunks score>0) ; snippet calculé
+ * APRÈS le slice. Renvoie la ligne LEAN [{ docSlug, breadcrumb, anchor, snippet, chunkId, score }] (SPEC-A :
+ * title retiré — redondant avec la fin du breadcrumb ; sourceUrl retiré — conservé dans fetchSection).
  */
 export function searchDocs({ query, docSlug, tag, limit = 8 } = {}) {
   const terms = sanitizeTerms(query)
   if (!terms.length) return []
+  const k = Math.max(0, limit)
+  if (k === 0) return []
   const slugs = docSlug ? [String(docSlug)] : listDocs({ tag }).map((d) => d.slug).filter(Boolean)
-  const results = []
+  // top-k pendant le scan : `top` trié ASCENDANT par score, taille ≤ k ; `threshold` = score min à battre une fois plein.
+  const top = []
+  let threshold = -Infinity
   for (const slug of slugs) {
-    for (const c of readNdjson(chunksPath(slug))) {
+    for (const c of loadChunks(slug)) {
       const score = scoreChunk(c, terms)
       if (score <= 0) continue
-      results.push({
-        docSlug: c.docSlug || slug,
-        title: c.title || '',
-        breadcrumb: c.breadcrumb || '',
-        anchor: c.anchor || '',
-        sourceUrl: c.sourceUrl || '',
-        snippet: snippetFor(c.text, terms),
-        chunkId: c.chunkId,
-        score,
-      })
+      if (top.length < k) {
+        insertSorted(top, { c, score })
+        if (top.length === k) threshold = top[0].score
+      } else if (score > threshold) {
+        top.shift()
+        insertSorted(top, { c, score })
+        threshold = top[0].score
+      }
     }
   }
-  return results.sort((a, b) => b.score - a.score).slice(0, Math.max(0, limit))
+  // `top` ascendant → renvoie descendant ; snippet calculé seulement pour les k retenus.
+  const out = []
+  for (let i = top.length - 1; i >= 0; i--) {
+    const { c, score } = top[i]
+    out.push({
+      docSlug: c.docSlug,
+      breadcrumb: c.breadcrumb,
+      anchor: c.anchor,
+      snippet: snippetFor(c, terms),
+      chunkId: c.chunkId,
+      score,
+    })
+  }
+  return out
 }
 
 /**
- * Markdown complet d'UNE section. opts: { docSlug, anchor, maxChars=12000 }. Joint les chunks de même anchor
- * (= même heading, incl. sous-morceaux), ordre chunkId, tronqué à maxChars sans couper un fence.
- * Renvoie { docSlug, title, breadcrumb, sourceUrl, markdown } ou { error }.
+ * Markdown complet d'UNE section. opts: { docSlug, anchor, maxChars=6000 }. Joint les chunks de même anchor
+ * (= même heading, incl. sous-morceaux), ordre chunkId, tronqué à maxChars sans couper un fence (6000 couvre
+ * >99 % des sections ; l'appelant peut surcharger). Renvoie { docSlug, title, breadcrumb, sourceUrl, markdown }
+ * ou { error }.
  */
-export function fetchSection({ docSlug, anchor, maxChars = 12000 } = {}) {
+export function fetchSection({ docSlug, anchor, maxChars = 6000 } = {}) {
   if (!docSlug || !anchor) return { error: 'docSlug et anchor requis' }
-  const matching = readNdjson(chunksPath(docSlug)).filter((c) => c.anchor === anchor)
+  const matching = loadChunks(docSlug).filter((c) => c.anchor === anchor)
   if (!matching.length) return { error: `Section introuvable (docSlug="${docSlug}", anchor="${anchor}"). Vérifie via search_docs.` }
   matching.sort((a, b) => (a.chunkId || 0) - (b.chunkId || 0))
   const first = matching[0]
