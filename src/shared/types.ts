@@ -326,6 +326,85 @@ export interface MemorySearchHit {
   score: number
 }
 
+// ---- Oryon Docs (Phase 4) : doc tierce importée ($0), lecture seule + retrieval lexical (jumeau Mémoire/Archive) ----
+/** Origine d'ingestion d'un docSet (du plus propre au plus large). */
+export type DocOrigin = 'llmstxt' | 'md' | 'llms-full' | 'sitemap' | 'paste' | 'files'
+
+/** Ligne d'index d'un docSet (≈ meta.json) — store GLOBAL ~/.oryon/docs/index.ndjson. */
+export interface DocSet {
+  slug: string
+  title: string
+  sourceUrl: string
+  origin: DocOrigin
+  fetchedAt: number // epoch ms
+  contentHash: string
+  pageCount: number
+  chunkCount: number
+  tags: string[]
+  description: string
+}
+
+/** Section indexée (unité de retrieval) d'un docSet. */
+export interface DocChunk {
+  docSlug: string
+  chunkId: number
+  title: string
+  breadcrumb: string
+  anchor: string
+  tags: string[]
+  sourceUrl: string
+  text: string
+  charLen: number
+}
+
+/** Contenu complet d'un docSet pour le viewer lecture-seule. meta=null si le dossier n'existe pas. */
+export interface DocSetDetail {
+  slug: string
+  meta: DocSet | null
+  source: string // source.md (markdown complet nettoyé)
+  chunks: DocChunk[]
+  existed: boolean
+}
+
+/** Résultat de recherche lexicale top-k (jumeau MemorySearchHit). */
+export interface DocSearchHit {
+  docSlug: string
+  title: string
+  breadcrumb: string
+  anchor: string
+  sourceUrl: string
+  snippet: string
+  chunkId: number
+  score: number
+}
+
+/** Erreur par-page d'un import (remontée inline, jamais silencieuse). */
+export interface DocImportError {
+  url: string
+  error: string
+}
+
+/** Résultat d'un import / ré-import. */
+export interface DocImportResult {
+  slug: string
+  title: string
+  origin: DocOrigin
+  chunkCount: number
+  pageCount: number
+  errors: DocImportError[]
+}
+
+/** État poussé pendant l'import (broadcast docs:import-progress → vue progression). page/total cadencent le crawl/multi-pages. */
+export interface DocsImportProgress {
+  phase: 'probe' | 'index-found' | 'crawl' | 'fetch' | 'chunk' | 'done' | 'error'
+  message: string
+  page?: number
+  total?: number
+  title?: string
+  url?: string
+  error?: string
+}
+
 // ---- Auto-update (canaux stable/dev, UI brandée) ----
 export type UpdateChannel = 'stable' | 'dev'
 export type UpdatePhase =
@@ -614,6 +693,26 @@ export interface BridgeApi {
     unwatch: () => void
     onChanged: (cb: () => void) => void
     offChanged: () => void
+  }
+  /** Oryon Docs (Phase 4) : docs tierces importées ($0), lecture seule + retrieval lexical. Store GLOBAL ~/.oryon/docs (toutes apps). */
+  docs: {
+    /** docSets importés, récents d'abord (filtre tag optionnel). */
+    list: (tag?: string) => Promise<DocSet[]>
+    /** Contenu complet d'un docSet (meta + source.md + sections) pour le viewer. */
+    read: (slug: string) => Promise<DocSetDetail>
+    /** Recherche lexicale top-k sur les sections (globale, ou bornée à un docSet/tag). */
+    search: (query: string, opts?: { docSlug?: string; tag?: string; limit?: number }) => Promise<DocSearchHit[]>
+    /** Importe une doc tierce (URL → llms.txt/md/sitemap, ou markdown collé). Progression via onProgress. */
+    import: (args: { url?: string; markdown?: string; label?: string }) => Promise<DocImportResult>
+    /** Re-synchronise un docSet depuis sa source web d'origine. */
+    reimport: (slug: string) => Promise<DocImportResult>
+    delete: (slug: string) => Promise<{ deleted: boolean }>
+    /** Store modifié (écritures UI OU agents MCP) → rafraîchir la liste. */
+    onChanged: (cb: () => void) => void
+    offChanged: () => void
+    /** Progression d'un import en cours (phases probe/crawl/fetch/chunk/done + erreurs par-page). */
+    onProgress: (cb: (p: DocsImportProgress) => void) => void
+    offProgress: () => void
   }
   settings: {
     /** Réglages app-global (clé/valeur). */

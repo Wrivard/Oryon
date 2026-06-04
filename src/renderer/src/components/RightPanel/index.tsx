@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
-import { Bot, FileCode, Globe, ListTree, GitCompareArrows, KanbanSquare, Network, type LucideIcon } from 'lucide-react'
+import { Bot, FileCode, Globe, ListTree, GitCompareArrows, KanbanSquare, Network, BookOpen, type LucideIcon } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { transition } from '../../lib/motion'
 import { useAppStore } from '../../store'
@@ -10,6 +10,7 @@ import { TasksPanel } from './TasksPanel'
 import { PlanPanel } from './PlanPanel'
 import { SourcePanel } from './SourcePanel'
 import { MemoryPanel } from './MemoryPanel'
+import { DocsPanel } from './DocsPanel'
 import { OrchestratorPanel } from './OrchestratorPanel'
 
 interface TabDef {
@@ -25,6 +26,7 @@ const TABS: TabDef[] = [
   { id: 'plan', label: 'Plan', icon: ListTree },
   { id: 'source', label: 'Source', icon: GitCompareArrows },
   { id: 'memory', label: 'Memory', icon: Network },
+  { id: 'docs', label: 'Docs', icon: BookOpen },
   { id: 'tasks', label: 'Tasks', icon: KanbanSquare },
 ]
 
@@ -114,6 +116,12 @@ export default function RightPanel() {
             {active === 'memory' && (
               <div className="absolute inset-0">
                 <MemoryPanel key={workspace.id} projectPath={workspace.project_path} />
+              </div>
+            )}
+
+            {active === 'docs' && (
+              <div className="absolute inset-0">
+                <DocsPanel />
               </div>
             )}
 
