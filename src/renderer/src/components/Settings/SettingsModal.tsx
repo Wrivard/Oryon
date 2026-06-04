@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { X, Sparkles, SlidersHorizontal, Trash2, Plus, Pencil, Plug, Mic, Download } from 'lucide-react'
+import { X, Sparkles, SlidersHorizontal, Trash2, Plus, Pencil, Plug, Mic, Download, CalendarDays } from 'lucide-react'
 import { IconButton } from '../ui/IconButton'
 import { cn } from '../../lib/cn'
 import { transitionFast } from '../../lib/motion'
 import { VoiceSettings } from './Voice/VoiceSettings'
 import { UpdatesSettings } from './UpdatesSettings'
 import { ConnectorsSection } from './ConnectorsSection'
+import { CalendarSection } from './CalendarSection'
 import { ThemePicker } from '../Theme/ThemePicker'
 import type { SkillInfo, SkillScope, SkillImportResult } from '@shared/types'
 
@@ -14,7 +15,7 @@ import type { SkillInfo, SkillScope, SkillImportResult } from '@shared/types'
 // faible est non-exprimable. Le contrôle reste pour rendre la politique « toujours le plus puissant » explicite.
 const MODELS = [{ v: 'opus', label: 'Opus (max) — imposé à tous les agents' }]
 
-type Tab = 'app' | 'mcp' | 'skills' | 'voice' | 'updates'
+type Tab = 'app' | 'mcp' | 'skills' | 'voice' | 'calendar' | 'updates'
 
 export function SettingsModal({
   open,
@@ -184,6 +185,7 @@ export function SettingsModal({
     { id: 'mcp', label: 'MCP', icon: Plug },
     { id: 'skills', label: 'Skills', icon: Sparkles },
     { id: 'voice', label: 'Voice', icon: Mic },
+    { id: 'calendar', label: 'Calendar', icon: CalendarDays },
     { id: 'updates', label: 'Mises à jour', icon: Download },
   ]
 
@@ -286,6 +288,8 @@ export function SettingsModal({
                     </div>
                   ) : tab === 'mcp' ? (
                     <ConnectorsSection projectPath={projectPath} />
+                  ) : tab === 'calendar' ? (
+                    <CalendarSection />
                   ) : (
                       <section>
                         <div className="mb-2 flex items-center justify-between">
