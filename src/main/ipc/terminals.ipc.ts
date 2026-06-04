@@ -2,7 +2,7 @@ import { ipcMain } from 'electron'
 import type { CreateTerminalInput } from '../../shared/types'
 import { createTerminal, writeTerminal, resizeTerminal, killTerminal } from '../services/pty-manager'
 import { ensureClaudeReady, normalizeClaudeAutostart, enforceAgentSpawn } from '../services/claude-launcher'
-import { hasClaudeSession, clearClaudeLastPrompt } from '../services/claude-session'
+import { hasClaudeSession } from '../services/claude-session'
 import { buildProjectMcpConfigForPath } from './settings.ipc'
 
 export function registerTerminalsIpc() {
@@ -35,15 +35,7 @@ export function registerTerminalsIpc() {
       // workspace (les terminaux restent montés, PTY vivants) → le switch ne re-spawn ni ne reset rien.
       // Worktree neuf (1er spawn / split) → pas de session → pas de --continue de toute façon.
       const isOrchestrator = opts.env?.ORYON_AGENT_ROLE === 'orchestrator'
-      if (isOrchestrator && hasClaudeSession(opts.cwd) && !/--continue\b/.test(autostart)) {
-        autostart += ' --continue'
-        // claude `--continue` ré-injecte ET AUTO-SOUMET le dernier prompt (lastPrompt) stocké dans la session →
-        // un prompt fantôme (« npm »/« run ») se re-soumettait tout seul à CHAQUE relance de l'orchestrateur.
-        // On tue d'abord l'ancien claude (orphelin après un reload du renderer) pour éviter une course d'écriture
-        // sur le transcript, puis on vide ce lastPrompt AVANT que le nouveau claude ne reprenne la session.
-        killTerminal(opts.id)
-        clearClaudeLastPrompt(opts.cwd)
-      }
+      if (isOrchestrator && hasClaudeSession(opts.cwd) && !/--continue\b/.test(autostart)) autostart += ' --continue'
     }
     createTerminal({
       id: opts.id,
