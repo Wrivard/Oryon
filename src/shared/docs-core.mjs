@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto'
 import { safeName } from './memory-core.mjs'
 
 const MAX_CHUNK_CHARS = 8000 // cap de sous-split d'une section (jamais coupé à l'intérieur d'un bloc code)
+const MERGE_MIN_CHARS = 300 // sous ce seuil de corps, une section est fusionnée dans la précédente (anti mini-chunks)
 
 // ── Atomicité (MIRROIR de memory-core.mjs, qui garde renameRetry/writeAtomic privés ; on ne le modifie pas). ──
 // Sous Windows (MoveFileEx), fs.rename ÉCHOUE (EPERM/EBUSY) si un autre process a la destination ouverte en
@@ -71,6 +72,12 @@ const HEAD_RE = /^(#{1,3})[ \t]+(.+?)[ \t]*#*[ \t]*$/ // H1/H2/H3 ATX (ferme les
 const FENCE_RE = /^[ \t]*```/ // ligne ouvrant/fermant un bloc code triple-backtick
 const STOP = new Set(['the', 'a', 'an', 'and', 'or', 'for', 'to', 'of', 'in', 'on', 'with', 'via', 'you', 'your'])
 
+/** Retire les liens markdown [texte](url) du texte d'un heading → garde « texte ». Sinon l'URL polluerait
+ *  title/breadcrumb/anchor/tags (ancres « configuration-valueshttps… », tags « https/docs/sentry », ~60 % des chunks Sentry). */
+function stripMdLinks(s) {
+  return String(s).replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').trim()
+}
+
 /** Ancre slug-GitHub d'un heading (minuscule, ponctuation retirée, espaces → '-'). */
 function githubSlug(s) {
   return String(s)
@@ -125,15 +132,16 @@ function splitOnCap(text, cap) {
 }
 
 /**
- * Découpe un markdown en sections par heading H1/H2/H3 (fence-aware : un « # » dans un bloc code n'est PAS un
- * heading). Chaque section : { title, breadcrumb ('H1 > H2 > H3'), anchor (slug GitHub), text, charLen, tags }.
- * Les sections > ~8000 chars sont sous-splittées sans couper un bloc code ; chaque sous-morceau garde le même
- * title/breadcrumb/anchor. opts: { sourceUrl, baseTags }.
+ * Découpe un markdown en sections par heading H1/H2 SEULEMENT (fence-aware : un « # » dans un bloc code n'est PAS
+ * un heading ; un H3 reste du CORPS de sa section parente). Les liens markdown d'un heading sont réduits à leur
+ * texte. Chaque section : { title, breadcrumb ('H1 > H2'), anchor (slug GitHub), text, charLen, tags }. Une section
+ * dont le corps fait < ~300 chars est fusionnée dans la précédente ; les sections > ~8000 chars sont sous-splittées
+ * sans couper un bloc code (chaque sous-morceau garde le même title/breadcrumb/anchor). opts: { sourceUrl, baseTags }.
  */
 export function chunkMarkdown(md, opts = {}) {
   const { sourceUrl = '', baseTags = [] } = opts
   const lines = String(md || '').split('\n')
-  const stack = [null, null, null, null] // index 1..3 = H1/H2/H3 courants
+  const stack = [null, null, null] // index 1..2 = H1/H2 courants (les H3 ne créent plus de section)
   const seenAnchors = new Map()
   const sections = []
   let current = null
@@ -150,13 +158,14 @@ export function chunkMarkdown(md, opts = {}) {
     const fence = FENCE_RE.test(line)
     if (!inFence && !fence) {
       const h = HEAD_RE.exec(line)
-      if (h) {
+      if (h && h[1].length <= 2) {
+        // H1/H2 = frontière de section ; un H3 (level 3) n'en crée pas → il retombe comme corps de la section courante.
         flush()
         const level = h[1].length
-        const title = h[2].trim()
+        const title = stripMdLinks(h[2])
         stack[level] = title
-        for (let l = level + 1; l <= 3; l++) stack[l] = null
-        const breadcrumb = [stack[1], stack[2], stack[3]].filter((x, i) => i < level && x).join(' > ')
+        for (let l = level + 1; l <= 2; l++) stack[l] = null
+        const breadcrumb = [stack[1], stack[2]].filter((x, i) => i < level && x).join(' > ')
         const anchor = uniqueAnchor(seenAnchors, githubSlug(title))
         const tags = [...new Set([...baseTags.map((t) => String(t)), ...tokenize(breadcrumb)])]
         current = { title, breadcrumb, anchor, tags, lines: [line] }
@@ -173,9 +182,23 @@ export function chunkMarkdown(md, opts = {}) {
   }
   flush()
 
+  // Fusion des mini-sections (corps < MERGE_MIN_CHARS) dans la précédente : supprime les chunks isolés (ex. un
+  // « ### Parameters » d'une ligne, ou une section H2 quasi vide). Le texte n'est jamais perdu — il rejoint la
+  // section précédente (sœur/parent), qui garde son title/breadcrumb/anchor.
+  const merged = []
+  for (const s of sections) {
+    const prev = merged[merged.length - 1]
+    if (prev && s.text.trim().length < MERGE_MIN_CHARS) {
+      prev.text = `${prev.text}\n\n${s.text}`.replace(/[ \t\r\n]+$/, '')
+      prev.tags = [...new Set([...prev.tags, ...s.tags])]
+    } else {
+      merged.push({ ...s })
+    }
+  }
+
   // Sous-split code-fence-safe → liste plate de chunks (sourceUrl stampé pour le multi-pages éventuel).
   const chunks = []
-  for (const s of sections) {
+  for (const s of merged) {
     for (const text of splitOnCap(s.text, MAX_CHUNK_CHARS)) {
       chunks.push({ title: s.title, breadcrumb: s.breadcrumb, anchor: s.anchor, text, charLen: text.length, tags: s.tags, sourceUrl })
     }

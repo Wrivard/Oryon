@@ -1,47 +1,48 @@
-// Test headless du « spine » Docs (Phase 1) : node scripts/test-docs-core.mjs → exit 0 si tout passe, 1 sinon.
+// Test headless du « spine » Docs : node scripts/test-docs-core.mjs → exit 0 si tout passe, 1 sinon.
 // Écrit un docSet fixture (slug de test dédié) dans le store GLOBAL ~/.oryon/docs via docs-core, le relit via
-// docs-read (Node pur), asserte chunking heading-aware + code-fence-safe, ancres slug-GitHub, snippet non
-// coupé dans un fence, et le ranking lexical. Nettoie le docSet de test à la fin (finally). Zéro dép, zéro Claude.
+// docs-read (Node pur), asserte : chunking H1/H2 (H3 = corps), strip des liens markdown dans les headings,
+// fusion des mini-sections, code-fence-safety, ancres slug-GitHub, ligne de recherche LEAN (SPEC-A) + ranking,
+// snippet non coupé dans un fence, fetchSection. Nettoie le docSet de test à la fin (finally). Zéro dép, zéro Claude.
 import { chunkMarkdown, writeDocSet, deleteDocSet, slugFor, readDocSet } from '../src/shared/docs-core.mjs'
 import { listDocs, searchDocs, fetchSection } from '../src/mcp/docs-read.mjs'
 
-// Fixture type Stripe/Sentry : plusieurs H1/H2/H3 + un bloc code contenant une ligne « # … » (piège : un
-// commentaire shell dans un fence NE doit PAS compter comme heading).
-const FIXTURE = `# Stripe API
+// Fixture type Sentry/Stripe. Pièges couverts : (1) un heading porte un LIEN markdown « ## [Configuration](url) »
+// — le titre/ancre/tags ne doivent PAS être pollués par l'URL ; (2) des H3 (dsn, tracesSampleRate) restent du
+// CORPS de leur H2 parent (plus de section H3) ; (3) une mini-section « Notes » (< 300 c) fusionne dans la
+// précédente ; (4) un « # … » DANS un bloc code n'est PAS un heading.
+const FIXTURE = `# Sentry SDK
 
-Stripe is a payment platform. This guide covers the core API surface.
+Sentry is an error monitoring platform. This guide walks through installing the SDK, initialising the client, capturing both handled and unhandled errors, and tuning the sampling configuration so a typical web application reports cleanly to your dashboard within a few minutes of setup.
 
-## Charges
+## [Configuration](https://docs.sentry.io/platforms/javascript/configuration/)
 
-Charges let you accept one-time payments from customers.
+The configuration object accepts several keys that control how the SDK behaves at runtime. The most important options are described below with their defaults and the values teams typically use in production deployments.
 
-### Create a charge
+### dsn
 
-To create a charge, call the API:
+The DSN tells the SDK where to send events. Without it, the SDK runs in a no-op mode and captures nothing at all.
 
 \`\`\`bash
-# create a charge via curl (this comment is NOT a markdown heading)
-curl https://api.stripe.com/v1/charges \\
-  -d amount=2000 \\
-  -d currency=usd
+# this is a shell comment, NOT a markdown heading
+export SENTRY_DSN=https://examplePublicKey@o0.ingest.sentry.io/0
 \`\`\`
 
-After the call returns, store the charge id for your records.
+You can also pass the dsn inline when you initialise the client in your application bootstrap code.
 
-### Retrieve a charge
+### tracesSampleRate
 
-Fetch a previously created charge by its id.
+Controls the fraction of transactions captured for performance monitoring. A value of 1.0 captures every transaction; lower it in production to keep event volume and cost under control.
 
-## Refunds
+## Capturing errors
 
-Refund a charge in full or partially. Refund policy applies to disputed payments.
+The SDK captures unhandled exceptions and unhandled promise rejections automatically once it has been initialised. You can also report handled errors yourself by calling captureException, attaching extra context, tags, and breadcrumbs so the issue is easy to triage later from the dashboard.
 
-# Webhooks
+## Notes
 
-Webhooks notify your server when a charge event happens.
+See the changelog.
 `
 
-const SOURCE_URL = 'https://stripe.example/docs'
+const SOURCE_URL = 'https://sentry.example/docs'
 const results = []
 const ok = (cond, msg) => {
   results.push({ pass: !!cond, msg })
@@ -51,50 +52,66 @@ const balancedFences = (s) => (String(s).match(/```/g) || []).length % 2 === 0
 const findChunk = (chunks, title) => chunks.find((c) => c.title === title)
 
 async function main() {
-  const slug = slugFor('Oryon Test Docs Fixture Phase1 ZZZ')
+  const slug = slugFor('Oryon Test Docs Fixture ZZZ')
 
-  // ── chunkMarkdown ──────────────────────────────────────────────────────────────────────────────────────
-  const chunks = chunkMarkdown(FIXTURE, { sourceUrl: SOURCE_URL, baseTags: ['stripe'] })
-  ok(chunks.length === 6, `6 sections attendues (fence-aware : le « # » du bloc code ignoré) — obtenu ${chunks.length}`)
+  // ── chunkMarkdown : granularité H1/H2 + strip-liens + fusion ─────────────────────────────────────────────
+  const chunks = chunkMarkdown(FIXTURE, { sourceUrl: SOURCE_URL, baseTags: ['sentry'] })
+  // Sections H1/H2 = [Sentry SDK, Configuration, Capturing errors, Notes] ; « Notes » (< 300 c) fusionne dans
+  // « Capturing errors » → 3 chunks.
+  ok(chunks.length === 3, `3 sections attendues (H1/H2 only + fusion mini-section) — obtenu ${chunks.length}`)
 
-  const create = findChunk(chunks, 'Create a charge')
-  ok(!!create, 'section « Create a charge » présente')
-  ok(create && create.breadcrumb === 'Stripe API > Charges > Create a charge', `breadcrumb H1>H2>H3 — obtenu "${create && create.breadcrumb}"`)
-  ok(create && create.anchor === 'create-a-charge', `ancre slug-GitHub "create-a-charge" — obtenu "${create && create.anchor}"`)
-  ok(create && balancedFences(create.text), 'texte de section : bloc code entier (fences équilibrés)')
+  // (1) strip des liens markdown dans le heading « ## [Configuration](url) »
+  const config = findChunk(chunks, 'Configuration')
+  ok(!!config, 'titre de section nettoyé du lien markdown (« Configuration », pas « [Configuration](url) »)')
+  ok(config && config.anchor === 'configuration', `ancre propre "configuration" (pas polluée par l'URL) — obtenu "${config && config.anchor}"`)
+  ok(config && config.breadcrumb === 'Sentry SDK > Configuration', `breadcrumb H1>H2 — obtenu "${config && config.breadcrumb}"`)
+  ok(config && !config.tags.some((t) => /http|sentry\.io|platforms/.test(t)), `tags non pollués par l'URL — obtenu ${JSON.stringify(config && config.tags)}`)
 
-  const retrieve = findChunk(chunks, 'Retrieve a charge')
-  ok(retrieve && retrieve.anchor === 'retrieve-a-charge', `ancre "retrieve-a-charge" — obtenu "${retrieve && retrieve.anchor}"`)
-  ok(create && retrieve && create.anchor !== retrieve.anchor, 'ancres distinctes (pas de collision)')
-  ok(create && create.tags.includes('stripe'), 'baseTags propagés dans les tags de section')
+  // (2) les H3 (dsn, tracesSampleRate) restent du CORPS de la section Configuration (pas de section propre)
+  ok(config && config.text.includes('### dsn') && config.text.includes('tracesSampleRate'), 'les H3 restent dans le corps de leur H2 parent')
+  ok(!findChunk(chunks, 'dsn') && !findChunk(chunks, 'tracesSampleRate'), 'aucun chunk H3 isolé (dsn / tracesSampleRate)')
+
+  // (3) fusion de la mini-section « Notes » dans la précédente (« Capturing errors »)
+  const capt = findChunk(chunks, 'Capturing errors')
+  ok(!findChunk(chunks, 'Notes'), 'mini-section « Notes » fusionnée (pas de chunk isolé)')
+  ok(capt && capt.text.includes('See the changelog.'), 'le texte de « Notes » rejoint la section précédente (rien de perdu)')
+
+  // (4) fence-safety : le bloc code entier, « # … » du fence non traité comme heading
+  ok(config && balancedFences(config.text), 'texte de section : bloc code entier (fences équilibrés)')
+  ok(config && config.text.includes('# this is a shell comment'), 'le « # » du bloc code reste du corps (pas un heading)')
 
   // ── writeDocSet → relecture docs-core ──────────────────────────────────────────────────────────────────
-  await writeDocSet({ slug, title: 'Stripe API', sourceUrl: SOURCE_URL, origin: 'paste', tags: ['stripe', 'payments'], description: 'Fixture de test', sourceMarkdown: FIXTURE, chunks })
+  await writeDocSet({ slug, title: 'Sentry SDK', sourceUrl: SOURCE_URL, origin: 'paste', tags: ['sentry', 'errors'], description: 'Fixture de test', sourceMarkdown: FIXTURE, chunks })
   const set = await readDocSet(slug)
-  ok(set.existed && set.meta && set.meta.chunkCount === 6, `meta.chunkCount=6 — obtenu ${set.meta && set.meta.chunkCount}`)
+  ok(set.existed && set.meta && set.meta.chunkCount === 3, `meta.chunkCount=3 — obtenu ${set.meta && set.meta.chunkCount}`)
   ok(set.source === FIXTURE, 'source.md ré-lu identique au markdown fourni')
 
   // ── docs-read : listDocs ───────────────────────────────────────────────────────────────────────────────
   ok(listDocs().some((d) => d.slug === slug), 'listDocs() voit le docSet de test')
-  ok(listDocs({ tag: 'payments' }).some((d) => d.slug === slug), 'listDocs({tag:"payments"}) filtre OK')
+  ok(listDocs({ tag: 'errors' }).some((d) => d.slug === slug), 'listDocs({tag:"errors"}) filtre OK')
   ok(!listDocs({ tag: 'nope-absent-tag' }).some((d) => d.slug === slug), 'listDocs({tag absent}) exclut le docSet')
 
-  // ── docs-read : searchDocs (ranking) ───────────────────────────────────────────────────────────────────
-  const refund = searchDocs({ query: 'refund', docSlug: slug })
-  ok(refund.length > 0 && refund[0].title === 'Refunds' && refund[0].anchor === 'refunds', `top hit "refund" = Refunds — obtenu "${refund[0] && refund[0].title}"`)
+  // ── docs-read : searchDocs — ligne LEAN (SPEC-A) + ranking ─────────────────────────────────────────────
+  const traces = searchDocs({ query: 'tracessamplerate', docSlug: slug })
+  const hit = traces[0]
+  ok(hit && hit.anchor === 'configuration', `top hit "tracessamplerate" → section Configuration — obtenu "${hit && hit.anchor}"`)
+  ok(hit && hit.breadcrumb === 'Sentry SDK > Configuration', 'résultat porte le breadcrumb (finit par le titre de section)')
+  ok(hit && !('title' in hit) && !('sourceUrl' in hit), 'SPEC-A : ligne lean SANS title ni sourceUrl')
+  ok(hit && ['docSlug', 'breadcrumb', 'anchor', 'snippet', 'chunkId', 'score'].every((k) => k in hit), 'SPEC-A : champs {docSlug,breadcrumb,anchor,snippet,chunkId,score}')
+  ok(hit && hit.snippet.toLowerCase().includes('tracessamplerate'), 'snippet contient le terme cherché')
+  ok(hit && balancedFences(hit.snippet), 'snippet : fences équilibrés (jamais coupé dans un bloc code)')
 
-  const amount = searchDocs({ query: 'amount', docSlug: slug })
-  ok(amount.length > 0 && amount[0].title === 'Create a charge', `top hit "amount" = Create a charge — obtenu "${amount[0] && amount[0].title}"`)
-  ok(amount[0] && amount[0].snippet.includes('amount'), 'snippet contient le terme cherché')
-  ok(amount[0] && balancedFences(amount[0].snippet), 'snippet : fences équilibrés (jamais coupé dans un bloc code)')
+  const capture = searchDocs({ query: 'captureexception', docSlug: slug })
+  ok(capture[0] && capture[0].anchor === 'capturing-errors', `top hit "captureexception" → Capturing errors — obtenu "${capture[0] && capture[0].anchor}"`)
 
-  ok(searchDocs({ query: 'charge', docSlug: slug, limit: 2 }).length <= 2, 'limit respecté')
+  ok(searchDocs({ query: 'sentry', docSlug: slug, limit: 2 }).length <= 2, 'limit respecté')
   ok(searchDocs({ query: '   ', docSlug: slug }).length === 0, 'query vide → 0 résultat')
 
-  // ── docs-read : fetchSection ───────────────────────────────────────────────────────────────────────────
-  const sec = fetchSection({ docSlug: slug, anchor: 'create-a-charge' })
-  ok(!sec.error && sec.title === 'Create a charge', `fetchSection résout l'ancre — titre "${sec.title}"`)
-  ok(sec.markdown && sec.markdown.includes('curl https://api.stripe.com'), 'fetchSection rend le bloc code de la section')
+  // ── docs-read : fetchSection (garde title + sourceUrl, SPEC-A) ─────────────────────────────────────────
+  const sec = fetchSection({ docSlug: slug, anchor: 'configuration' })
+  ok(!sec.error && sec.title === 'Configuration', `fetchSection résout l'ancre + garde le titre — "${sec.title}"`)
+  ok(sec.sourceUrl === SOURCE_URL, `fetchSection garde sourceUrl — obtenu "${sec.sourceUrl}"`)
+  ok(sec.markdown && sec.markdown.includes('export SENTRY_DSN'), 'fetchSection rend le bloc code de la section')
   ok(sec.markdown && balancedFences(sec.markdown), 'fetchSection : fences équilibrés')
   ok(fetchSection({ docSlug: slug, anchor: 'no-such-anchor' }).error, 'fetchSection : ancre inconnue → error')
 
