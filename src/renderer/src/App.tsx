@@ -4,6 +4,7 @@ import { PanelLeft, Settings } from 'lucide-react'
 import logoUrl from './assets/app-logo.png'
 import WorkspaceRail from './components/WorkspaceRail'
 import TerminalGrid, { EmptyState } from './components/TerminalGrid'
+import { CalendarView } from './components/Calendar'
 import RightPanel from './components/RightPanel'
 import { IconButton } from './components/ui/IconButton'
 import { SettingsModal } from './components/Settings/SettingsModal'
@@ -27,6 +28,7 @@ function AppContent() {
   const rightWidthRef = useRef(rightWidth)
   rightWidthRef.current = rightWidth
   const activeWorkspaceId = useAppStore((s) => s.activeWorkspaceId)
+  const calendarMode = useAppStore((s) => s.calendarMode)
   const activeWorkspace = useAppStore((s) => s.workspaces.find((w) => w.id === activeWorkspaceId))
   const workspaces = useAppStore((s) => s.workspaces)
   const openWorkspaceIds = useAppStore((s) => s.openWorkspaceIds)
@@ -184,13 +186,16 @@ function AppContent() {
         {/* Centre — une grille par workspace ouvert ; seule l'active est visible, les autres restent
             MONTÉES mais cachées (display:none) → leurs PTY restent vivants. Le switch ne démonte donc rien. */}
         <motion.div variants={fadeUp} className="flex-1 overflow-hidden">
-          {mountedWorkspaceIds.length === 0 ? (
+          {/* Vue Calendar : remplace visuellement les grilles mais les laisse MONTÉES (active=false →
+              display:none, donc PTY + scrollback vivants). EmptyState masqué tant que le calendrier est affiché. */}
+          {mountedWorkspaceIds.length === 0 && !calendarMode ? (
             <EmptyState />
           ) : (
             mountedWorkspaceIds.map((wsId) => (
-              <TerminalGrid key={wsId} workspaceId={wsId} active={wsId === activeWorkspaceId} />
+              <TerminalGrid key={wsId} workspaceId={wsId} active={!calendarMode && wsId === activeWorkspaceId} />
             ))
           )}
+          {calendarMode && <CalendarView />}
         </motion.div>
 
         {/* Splitter */}
