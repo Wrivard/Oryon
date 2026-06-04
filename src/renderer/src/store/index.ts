@@ -91,7 +91,8 @@ export const useAppStore = create<AppStore>((set) => ({
     })),
 
   setWorkspaces: (workspaces) => set({ workspaces }),
-  setActiveWorkspace: (activeWorkspaceId) => set({ activeWorkspaceId, maximizedTerminalId: null }),
+  // Activer un workspace quitte la vue Calendar (sélection mutuellement exclusive avec l'entrée du rail).
+  setActiveWorkspace: (activeWorkspaceId) => set({ activeWorkspaceId, maximizedTerminalId: null, calendarMode: false }),
   openWorkspace: (id) =>
     set((s) => (s.openWorkspaceIds.includes(id) ? {} : { openWorkspaceIds: [...s.openWorkspaceIds, id] })),
   // Pose les terminaux d'UN workspace (clé = workspaceId). N'altère plus le focus : à l'activation

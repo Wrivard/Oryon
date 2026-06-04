@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
-import { Plus, PanelLeftClose, Settings } from 'lucide-react'
+import { Plus, PanelLeftClose, Settings, CalendarDays } from 'lucide-react'
 import { useAppStore } from '../../store'
 import { useTheme } from '../Theme/ThemeProvider'
 import { IconButton } from '../ui/IconButton'
@@ -14,7 +14,7 @@ interface Props {
 }
 
 export default function WorkspaceRail({ onCollapse }: Props) {
-  const { workspaces, activeWorkspaceId, terminalCounts, workspaceActivity, setWorkspaces, setActiveWorkspace, setTerminalCounts } =
+  const { workspaces, activeWorkspaceId, terminalCounts, workspaceActivity, calendarMode, setWorkspaces, setActiveWorkspace, setTerminalCounts, setCalendarMode } =
     useAppStore()
   const { theme } = useTheme()
   const [modalOpen, setModalOpen] = useState(false)
@@ -69,6 +69,25 @@ export default function WorkspaceRail({ onCollapse }: Props) {
 
       {/* Liste */}
       <div className="flex-1 overflow-y-auto p-1.5">
+        {/* Entrée Calendar — au-dessus des workspaces ; bascule la zone centrale sur le calendrier.
+            Cliquer un workspace appelle setActiveWorkspace qui remet calendarMode=false (désélection mutuelle). */}
+        <button
+          onClick={() => setCalendarMode(true)}
+          className={cn(
+            'group relative mb-1 flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left outline-none',
+            'transition-colors duration-fast ease-out',
+            calendarMode ? 'bg-active' : 'hover:bg-hover',
+          )}
+        >
+          {calendarMode && <span className="absolute inset-y-1 left-0 w-0.5 rounded-full bg-accent" />}
+          <CalendarDays
+            size={14}
+            className={cn('shrink-0', calendarMode ? 'text-fg' : 'text-fg-muted group-hover:text-fg')}
+          />
+          <span className={cn('flex-1 truncate text-[13px]', calendarMode ? 'text-fg' : 'text-fg-muted group-hover:text-fg')}>
+            Calendar
+          </span>
+        </button>
         {workspaces.length === 0 ? (
           <div className="mt-8 px-3 text-center">
             <p className="text-xs text-fg-muted">Aucun workspace</p>
