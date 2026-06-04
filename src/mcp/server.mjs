@@ -355,14 +355,14 @@ server.tool(
 
 server.tool(
   'fetch_doc_section',
-  "Renvoie le markdown COMPLET d'une section de doc (par docSlug + anchor, cf. search_docs) : joint les chunks du même heading, blocs code intacts, tronqué à maxChars (défaut 6000, couvre >99 % des sections) sans couper un fence. Renvoie { docSlug, title, breadcrumb, sourceUrl, markdown } ou { error } si l'ancre est introuvable.",
+  "Renvoie le markdown COMPLET d'une section de doc (par docSlug + anchor, cf. search_docs) : joint les chunks du même heading, blocs code intacts, tronqué à maxChars (défaut 8000 = taille max d'une section non-splittée → une section d'une pièce revient entière) sans couper un fence. Renvoie { docSlug, title, breadcrumb, sourceUrl, markdown } ou { error } si l'ancre est introuvable.",
   {
     docSlug: z.string().describe('slug du docSet (cf. list_docs / search_docs)'),
     anchor: z.string().describe('ancre de la section (cf. search_docs)'),
-    maxChars: z.number().optional().describe('troncature en caractères (défaut 6000)'),
+    maxChars: z.number().optional().describe('troncature en caractères (défaut 8000)'),
   },
   async ({ docSlug, anchor, maxChars }) =>
-    text(JSON.stringify(docs.fetchSection({ docSlug, anchor, maxChars: maxChars ?? 6000 }))),
+    text(JSON.stringify(docs.fetchSection({ docSlug, anchor, maxChars: maxChars ?? 8000 }))),
 )
 
 // import_doc : ÉCRITURE (≠ les 3 lectures ci-dessus, non-gatées) → GATÉ orchestrateur. L'import vit dans le

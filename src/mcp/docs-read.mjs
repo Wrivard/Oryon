@@ -264,12 +264,12 @@ export function searchDocs({ query, docSlug, tag, limit = 8 } = {}) {
 }
 
 /**
- * Markdown complet d'UNE section. opts: { docSlug, anchor, maxChars=6000 }. Joint les chunks de même anchor
- * (= même heading, incl. sous-morceaux), ordre chunkId, tronqué à maxChars sans couper un fence (6000 couvre
- * >99 % des sections ; l'appelant peut surcharger). Renvoie { docSlug, title, breadcrumb, sourceUrl, markdown }
- * ou { error }.
+ * Markdown complet d'UNE section. opts: { docSlug, anchor, maxChars=8000 }. Joint les chunks de même anchor
+ * (= même heading, incl. sous-morceaux), ordre chunkId, tronqué à maxChars sans couper un fence. Défaut 8000 =
+ * cap d'une section non-splittée (MAX_CHUNK_CHARS de docs-core) → une section d'une seule pièce revient ENTIÈRE
+ * par défaut ; l'appelant peut surcharger. Renvoie { docSlug, title, breadcrumb, sourceUrl, markdown } ou { error }.
  */
-export function fetchSection({ docSlug, anchor, maxChars = 6000 } = {}) {
+export function fetchSection({ docSlug, anchor, maxChars = 8000 } = {}) {
   if (!docSlug || !anchor) return { error: 'docSlug et anchor requis' }
   const matching = loadChunks(docSlug).filter((c) => c.anchor === anchor)
   if (!matching.length) return { error: `Section introuvable (docSlug="${docSlug}", anchor="${anchor}"). Vérifie via search_docs.` }
