@@ -150,7 +150,7 @@ export function chunkMarkdown(md, opts = {}) {
   const flush = () => {
     if (current && current.lines.join('\n').trim()) {
       const text = current.lines.join('\n').replace(/[ \t\r\n]+$/, '')
-      sections.push({ title: current.title, breadcrumb: current.breadcrumb, anchor: current.anchor, text, tags: current.tags })
+      sections.push({ title: current.title, breadcrumb: current.breadcrumb, anchor: current.anchor, text, tags: current.tags, level: current.level })
     }
   }
 
@@ -168,14 +168,14 @@ export function chunkMarkdown(md, opts = {}) {
         const breadcrumb = [stack[1], stack[2]].filter((x, i) => i < level && x).join(' > ')
         const anchor = uniqueAnchor(seenAnchors, githubSlug(title))
         const tags = [...new Set([...baseTags.map((t) => String(t)), ...tokenize(breadcrumb)])]
-        current = { title, breadcrumb, anchor, tags, lines: [line] }
+        current = { title, breadcrumb, anchor, tags, level, lines: [line] }
         continue
       }
     }
     if (!current) {
       // Préambule (texte avant tout heading) : section sans titre pour ne perdre aucun contenu.
       const anchor = uniqueAnchor(seenAnchors, 'overview')
-      current = { title: '', breadcrumb: '', anchor, tags: [...new Set(baseTags.map((t) => String(t)))], lines: [] }
+      current = { title: '', breadcrumb: '', anchor, tags: [...new Set(baseTags.map((t) => String(t)))], level: 0, lines: [] }
     }
     current.lines.push(line)
     if (fence) inFence = !inFence
@@ -188,7 +188,12 @@ export function chunkMarkdown(md, opts = {}) {
   const merged = []
   for (const s of sections) {
     const prev = merged[merged.length - 1]
-    if (prev && s.text.trim().length < MERGE_MIN_CHARS) {
+    // « corps » = texte hors la ligne de heading (un H1/H2 démarre par son heading ; l'overview level 0 n'en a pas).
+    const nl = s.text.indexOf('\n')
+    const body = s.level > 0 ? (nl >= 0 ? s.text.slice(nl + 1) : '') : s.text
+    // Fusionne une mini-section (corps < seuil) dans la précédente — SAUF un H1 (section majeure : reste autonome),
+    // et tant que ça ne fait pas dépasser le cap de chunk (évite qu'une série de mini-sections forme un chunk géant).
+    if (prev && s.level !== 1 && body.trim().length < MERGE_MIN_CHARS && prev.text.length + s.text.length + 2 <= MAX_CHUNK_CHARS) {
       prev.text = `${prev.text}\n\n${s.text}`.replace(/[ \t\r\n]+$/, '')
       prev.tags = [...new Set([...prev.tags, ...s.tags])]
     } else {

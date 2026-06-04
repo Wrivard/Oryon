@@ -35,11 +35,15 @@ Controls the fraction of transactions captured for performance monitoring. A val
 
 ## Capturing errors
 
-The SDK captures unhandled exceptions and unhandled promise rejections automatically once it has been initialised. You can also report handled errors yourself by calling captureException, attaching extra context, tags, and breadcrumbs so the issue is easy to triage later from the dashboard.
+The SDK captures unhandled exceptions and unhandled promise rejections automatically once it has been initialised. You can also report handled errors yourself by calling captureException, attaching extra context, tags, and breadcrumbs so the issue is easy to triage later from the dashboard. Manual capture is useful inside try/catch blocks where you recover from an error but still want visibility into how often it happens in production and which users it affects.
 
 ## Notes
 
 See the changelog.
+
+# Changelog
+
+v2.0 shipped.
 `
 
 const SOURCE_URL = 'https://sentry.example/docs'
@@ -58,7 +62,7 @@ async function main() {
   const chunks = chunkMarkdown(FIXTURE, { sourceUrl: SOURCE_URL, baseTags: ['sentry'] })
   // Sections H1/H2 = [Sentry SDK, Configuration, Capturing errors, Notes] ; « Notes » (< 300 c) fusionne dans
   // « Capturing errors » → 3 chunks.
-  ok(chunks.length === 3, `3 sections attendues (H1/H2 only + fusion mini-section) — obtenu ${chunks.length}`)
+  ok(chunks.length === 4, `4 sections attendues (H1/H2 only + fusion mini-section H2 + H1 tardif gardé autonome) — obtenu ${chunks.length}`)
 
   // (1) strip des liens markdown dans le heading « ## [Configuration](url) »
   const config = findChunk(chunks, 'Configuration')
@@ -73,8 +77,13 @@ async function main() {
 
   // (3) fusion de la mini-section « Notes » dans la précédente (« Capturing errors »)
   const capt = findChunk(chunks, 'Capturing errors')
-  ok(!findChunk(chunks, 'Notes'), 'mini-section « Notes » fusionnée (pas de chunk isolé)')
+  ok(!findChunk(chunks, 'Notes'), 'mini-section « Notes » (H2) fusionnée (pas de chunk isolé)')
   ok(capt && capt.text.includes('See the changelog.'), 'le texte de « Notes » rejoint la section précédente (rien de perdu)')
+
+  // (3bis) garde H1 : une mini-section de niveau H1 (« Changelog ») n'est PAS fusionnée (reste autonome)
+  const changelog = findChunk(chunks, 'Changelog')
+  ok(!!changelog, 'mini-section H1 « Changelog » NON fusionnée (un H1 garde son autonomie)')
+  ok(changelog && changelog.breadcrumb === 'Changelog', `breadcrumb H1 « Changelog » — obtenu "${changelog && changelog.breadcrumb}"`)
 
   // (4) fence-safety : le bloc code entier, « # … » du fence non traité comme heading
   ok(config && balancedFences(config.text), 'texte de section : bloc code entier (fences équilibrés)')
@@ -83,7 +92,7 @@ async function main() {
   // ── writeDocSet → relecture docs-core ──────────────────────────────────────────────────────────────────
   await writeDocSet({ slug, title: 'Sentry SDK', sourceUrl: SOURCE_URL, origin: 'paste', tags: ['sentry', 'errors'], description: 'Fixture de test', sourceMarkdown: FIXTURE, chunks })
   const set = await readDocSet(slug)
-  ok(set.existed && set.meta && set.meta.chunkCount === 3, `meta.chunkCount=3 — obtenu ${set.meta && set.meta.chunkCount}`)
+  ok(set.existed && set.meta && set.meta.chunkCount === 4, `meta.chunkCount=4 — obtenu ${set.meta && set.meta.chunkCount}`)
   ok(set.source === FIXTURE, 'source.md ré-lu identique au markdown fourni')
 
   // ── docs-read : listDocs ───────────────────────────────────────────────────────────────────────────────
