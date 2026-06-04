@@ -180,6 +180,22 @@ const bridge: BridgeApi = {
     },
     offChanged: () => ipcRenderer.removeAllListeners('memory:changed'),
   },
+  docs: {
+    list: (tag) => ipcRenderer.invoke('docs:list', tag),
+    read: (slug) => ipcRenderer.invoke('docs:read', slug),
+    search: (query, opts) => ipcRenderer.invoke('docs:search', query, opts),
+    import: (args) => ipcRenderer.invoke('docs:import', args),
+    reimport: (slug) => ipcRenderer.invoke('docs:reimport', slug),
+    delete: (slug) => ipcRenderer.invoke('docs:delete', slug),
+    onChanged: (cb) => {
+      ipcRenderer.on('docs:changed', () => cb())
+    },
+    offChanged: () => ipcRenderer.removeAllListeners('docs:changed'),
+    onProgress: (cb) => {
+      ipcRenderer.on('docs:import-progress', (_e: IpcRendererEvent, p) => cb(p))
+    },
+    offProgress: () => ipcRenderer.removeAllListeners('docs:import-progress'),
+  },
   source: {
     status: (projectPath) => ipcRenderer.invoke('source:status', projectPath),
     diff: (projectPath, file) => ipcRenderer.invoke('source:diff', projectPath, file),
