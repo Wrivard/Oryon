@@ -48,6 +48,7 @@ const interrupting = new Set<string>() // terminaux en cours d'ESC (non réutili
 const stallNotified = new Set<string>() // terminaux déjà signalés "silencieux" (watchdog WC) — anti-spam
 const terminalAssignedAt = new Map<string, number>() // R3 : ts du dernier dispatch → détecte un worker MORT-NÉ (jamais émis)
 const attemptByTask = new Map<string, number>() // capture : nb d'essais par task (assign/re-dispatch) pour outcomes.ndjson
+const readOnlyByTask = new Map<string, boolean>() // SPEC-B : tasks de consultation (aucun commit attendu) → skip l'evidence-gate « branche vide »
 const STALL_MS = 5 * 60_000 // worker busy sans flux depuis 5 min → surfacé à l'orchestrateur (JAMAIS tué)
 let observerInstalled = false
 
@@ -247,6 +248,8 @@ export async function agentAssignTask(
   instructions: string,
   title?: string,
   files?: string[],
+  docSlug?: string,
+  readOnly?: boolean,
 ): Promise<{ terminal: string; taskId: string }> {
   const ws = getWorkspace(workspaceId)
   if (!ws) throw new Error(`Workspace ${workspaceId} introuvable`)
@@ -343,6 +346,10 @@ export async function agentAssignTask(
     updateTask(task.id, { status: 'in-progress', assigned_terminal_id: id })
   }
   terminalBusy.set(id, task.id)
+  // SPEC-B : mémorise si la task est read-only (consultation, aucun commit attendu) pour que report_task
+  // skippe l'evidence-gate « branche vide ». Re-dispatch : on (re)pose la valeur, sinon on purge un état périmé.
+  if (readOnly) readOnlyByTask.set(task.id, true)
+  else readOnlyByTask.delete(task.id)
   terminalAssignedAt.set(id, Date.now()) // R3 : repère temporel pour détecter un worker mort-né
   stallNotified.delete(id) // re-dispatch → le watchdog pourra de nouveau signaler ce terminal
   const attempt = (attemptByTask.get(task.id) ?? 0) + 1 // capture : essai courant (1 = frais, +1 par re-dispatch)
@@ -378,7 +385,13 @@ export async function agentAssignTask(
         'Do NOT read shared/session memory (it is orchestrator context, not your task). Use search_memories ONLY if the task explicitly asks you to.',
         'When the task is GENUINELY finished: commit your changes to your branch, confirm with `git status`/`git diff` that the work is actually present, then call report_task with status "done" (or "blocked" if you truly cannot proceed) and a truthful one-line summary. NEVER report "done" unless the committed diff really contains the changes.',
       ]
-  const prompt = oneLinePrompt([`[task ${task.id}]`, instructions, staleNote, ...roleReminder].join(' '))
+  // SPEC-B : si l'orchestrateur a nommé un docSlug, pointe le worker vers la BONNE doc importée directement
+  // (search_docs scopé, pas de découverte list_docs). N'invente pas l'API : si la doc manque, escalade via report_task.
+  const docNote =
+    docSlug && docSlug.trim()
+      ? `Doc de référence : utilise search_docs({query:'…', docSlug:'${docSlug.trim()}'}) pour grounder ton implémentation sur l'API réelle (ne devine pas ; si la doc manque, report_task "blocked-pending-docs: <outil>").`
+      : ''
+  const prompt = oneLinePrompt([`[task ${task.id}]`, instructions, docNote, staleNote, ...roleReminder].join(' '))
   pasteLine(id, prompt)
   // CAPTURE : événement 'assigned' (outcomes.ndjson) — essai, frais vs re-dispatch, fichiers, état worktree.
   recordOutcome(ws.project_path, {
@@ -469,7 +482,9 @@ export async function agentReportTask(
 
   // Un "done" sur une branche VIDE (0 commit + worktree propre = aucun travail) est REJETÉ : task gardée
   // in-progress, worker renvoyé committer, et orchestrateur prévenu (jamais d'acceptation muette du rapport).
-  if (!blocked && task && fromAgent && ev && ev.empty) {
+  // SPEC-B : sauf si la task est read-only (consultation pure) — un "done" sans commit y est LÉGITIME, on ne
+  // rejette pas et on n'enregistre pas l'outcome `empty-branch` (corrige le faux positif Nell + Cole).
+  if (!blocked && task && fromAgent && ev && ev.empty && !readOnlyByTask.get(task.id)) {
     if (termId && hasLiveTerminal(termId)) {
       pasteLine(
         termId,
@@ -648,6 +663,7 @@ export function agentApproveTask(taskId: string): { ok: boolean; message: string
             mergeMessage: m,
           })
           attemptByTask.delete(taskId)
+          readOnlyByTask.delete(taskId) // SPEC-B : task terminée → purge son flag read-only
           emitTasks(wsId)
           agentMailbox(wsId, 'système', m)
         },
