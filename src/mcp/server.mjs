@@ -15,6 +15,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync } fr
 import { join } from 'node:path'
 import * as memory from '../shared/memory-core.mjs'
 import * as archive from './archive-read.mjs'
+import * as docs from './docs-read.mjs'
 import * as outcomes from './outcomes-read.mjs'
 
 const APPDATA =
@@ -323,6 +324,45 @@ server.tool(
         2,
       ),
     ),
+)
+
+// ---- Oryon Docs : LECTURE des docs tierces importées (~/.oryon/docs, store GLOBAL toutes apps) ----
+// Pur FS + scoring lexical en-process (cf. docs-read.mjs) → coût $0, lecture seule. NON-GATÉS (server.tool
+// direct, PAS readMemoryTool/orchestratorTool) : la doc est de la RÉFÉRENCE, pas de la coordination → exposés
+// à TOUS les agents (orchestrateur ET workers), pour trouver la bonne section sans lire toute la doc.
+
+server.tool(
+  'list_docs',
+  "Liste les docs tierces importées (~/.oryon/docs, GLOBAL toutes apps), les plus récentes d'abord. Filtre optionnel par tag (insensible casse). Par docSet : slug, title, sourceUrl, origin, fetchedAt, pageCount, chunkCount, tags[], description. Survol bon marché avant search_docs / fetch_doc_section. Aucune doc importée → [].",
+  {
+    tag: z.string().optional().describe('filtre par tag (insensible à la casse) ; absent = toutes'),
+  },
+  async ({ tag }) => text(JSON.stringify(docs.listDocs({ tag }), null, 2)),
+)
+
+server.tool(
+  'search_docs',
+  "Recherche lexicale top-k dans les SECTIONS des docs importées : trouve la bonne section sans lire toute la doc. Filtre optionnel par docSlug (une seule doc) ou tag. Renvoie ≤ limit résultats (défaut 8) classés par score : docSlug, title, breadcrumb, anchor, sourceUrl, snippet (±200 chars, fence-safe), chunkId. Récupère ensuite le markdown complet d'une section via fetch_doc_section (docSlug + anchor).",
+  {
+    query: z.string().describe('mots-clés (substring, insensible à la casse)'),
+    docSlug: z.string().optional().describe('restreint à un seul docSet (cf. list_docs) ; absent = tous'),
+    tag: z.string().optional().describe('restreint aux docSets portant ce tag ; absent = tous'),
+    limit: z.number().optional().describe('nb max de sections (défaut 8)'),
+  },
+  async ({ query, docSlug, tag, limit }) =>
+    text(JSON.stringify(docs.searchDocs({ query, docSlug, tag, limit: limit ?? 8 }), null, 2)),
+)
+
+server.tool(
+  'fetch_doc_section',
+  "Renvoie le markdown COMPLET d'une section de doc (par docSlug + anchor, cf. search_docs) : joint les chunks du même heading, blocs code intacts, tronqué à maxChars (défaut 12000) sans couper un fence. Renvoie { docSlug, title, breadcrumb, sourceUrl, markdown } ou { error } si l'ancre est introuvable.",
+  {
+    docSlug: z.string().describe('slug du docSet (cf. list_docs / search_docs)'),
+    anchor: z.string().describe('ancre de la section (cf. search_docs)'),
+    maxChars: z.number().optional().describe('troncature en caractères (défaut 12000)'),
+  },
+  async ({ docSlug, anchor, maxChars }) =>
+    text(JSON.stringify(docs.fetchSection({ docSlug, anchor, maxChars: maxChars ?? 12000 }), null, 2)),
 )
 
 // ---- Feedback / RH : scorecards de perf des workers + KPIs équipe (orchestrateur-only, lecture seule, $0) ----
