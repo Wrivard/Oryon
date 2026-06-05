@@ -175,6 +175,17 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
       if (!sawClaude && /(Welcome to Claude Code|Claude Code v|esc to interrupt|│\s*>)/i.test(buf)) {
         sawClaude = true
         setStatus(term.id, 'claude_ready')
+        // ORCHESTRATEUR (pane_index < 0) repris via `--resume` : claude restaure le dernier prompt dans le CHAMP
+        // de saisie (doc : restauré pour ré-édition, PAS auto-soumis). Dans un PTY ce brouillon pouvait finir
+        // soumis (= prompt fantôme). On le vide avec la BONNE séquence : Esc-Esc = clear du brouillon (mécanisme
+        // OFFICIEL ; l'ancienne tentative v0.1.44 utilisait Ctrl+E/Ctrl+U que le TUI Ink de claude IGNORE). Le 3e
+        // Esc ferme le sélecteur de rewind au cas où le champ était vide (1er lancement) → rien de destructeur.
+        // Workers exclus (ils démarrent frais, aucun brouillon à vider).
+        if (term.pane_index < 0) {
+          const tid = term.id
+          setTimeout(() => window.bridge.terminals.write(tid, '\x1b\x1b'), 700)
+          setTimeout(() => window.bridge.terminals.write(tid, '\x1b'), 950)
+        }
       }
     })
     window.bridge.terminals.onExit(term.id, () => setStatus(term.id, 'exited'))

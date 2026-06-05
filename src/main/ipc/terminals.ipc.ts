@@ -2,7 +2,7 @@ import { ipcMain } from 'electron'
 import type { CreateTerminalInput } from '../../shared/types'
 import { createTerminal, writeTerminal, resizeTerminal, killTerminal } from '../services/pty-manager'
 import { ensureClaudeReady, normalizeClaudeAutostart, enforceAgentSpawn } from '../services/claude-launcher'
-import { hasClaudeSession } from '../services/claude-session'
+import { hasClaudeSessionId } from '../services/claude-session'
 import { buildProjectMcpConfigForPath } from './settings.ipc'
 
 export function registerTerminalsIpc() {
@@ -27,15 +27,21 @@ export function registerTerminalsIpc() {
       // Enforcement au spawn : modèle le plus puissant pour TOUS les agents (non-contournable, F1) +
       // identité worker durable injectée à tout claude sans --append-system-prompt (F2/F3/F5/F6).
       autostart = enforceAgentSpawn(autostart)
-      // Reprise de session au redémarrage de l'app : SEUL l'orchestrateur reprend sa conversation
-      // (`--continue`) — son contexte de coordination est précieux. Les WORKERS repartent FRAIS : leur
-      // session = une tâche ponctuelle jetable (l'orchestrateur ré-assigne au boot), et resumer une grosse
-      // session worker BLOQUE l'agent sur le prompt « résumé / session complète » + brûle de l'usage pour rien.
-      // NB : ce chokepoint n'est touché qu'au DÉMARRAGE (ou nouveau terminal/split) — JAMAIS au switch de
-      // workspace (les terminaux restent montés, PTY vivants) → le switch ne re-spawn ni ne reset rien.
-      // Worktree neuf (1er spawn / split) → pas de session → pas de --continue de toute façon.
+      // Reprise de session au redémarrage : SEUL l'orchestrateur reprend (les WORKERS repartent FRAIS — leur
+      // session = une tâche jetable, ré-assignée au boot ; resumer une grosse session worker brûle de l'usage).
+      // On ÉPINGLE l'orchestrateur sur SA session DÉDIÉE, identifiée par son terminal id (stable en DB) :
+      //   • `--resume <id>` si <id>.jsonl existe déjà → reprise DÉTERMINISTE de SA conversation ;
+      //   • `--session-id <id>` au 1er lancement → crée la session avec cet id.
+      // Pourquoi PAS `--continue` : il reprend la session la PLUS RÉCENTE du dossier. Or l'orchestrateur PARTAGE
+      // son cwd (repo principal) avec d'éventuelles sessions `claude` MANUELLES de l'utilisateur → --continue
+      // pouvait reprendre la MAUVAISE et restaurer son input résiduel (« npm »/« run », fragment d'un `npm run
+      // dev`) qui se faisait auto-soumettre au resume = le « prompt fantôme ». L'épinglage par id supprime la
+      // collision (cf. claude-session.hasClaudeSessionId + clear du brouillon restauré dans Terminal.tsx).
+      // NB : chokepoint touché qu'au DÉMARRAGE (ou nouveau terminal/split), JAMAIS au switch de workspace.
       const isOrchestrator = opts.env?.ORYON_AGENT_ROLE === 'orchestrator'
-      if (isOrchestrator && hasClaudeSession(opts.cwd) && !/--continue\b/.test(autostart)) autostart += ' --continue'
+      if (isOrchestrator && !/--(session-id|resume|continue)\b/.test(autostart)) {
+        autostart += hasClaudeSessionId(opts.cwd, opts.id) ? ` --resume ${opts.id}` : ` --session-id ${opts.id}`
+      }
     }
     createTerminal({
       id: opts.id,

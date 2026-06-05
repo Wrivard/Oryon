@@ -2,7 +2,7 @@
 // `claude` ni aucun process (coût $0 préservé, aucune var d'auth touchée). Sert F2 (décision de reprise au
 // spawn) ET l'archivage des conversations (services/archive.ts).
 
-import { readdirSync } from 'fs'
+import { readdirSync, existsSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
@@ -23,6 +23,20 @@ export function claudeProjectDir(cwd: string): string {
 export function hasClaudeSession(cwd: string): boolean {
   try {
     return readdirSync(claudeProjectDir(cwd)).some((f) => f.endsWith('.jsonl'))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Vrai ssi le CLI claude a déjà le transcript de CETTE session PRÉCISE (`<sessionId>.jsonl`) dans ce dossier.
+ * Sert à l'épinglage de l'orchestrateur sur SA session dédiée : `--resume <id>` si elle existe, sinon
+ * `--session-id <id>` (création). Évite que `--continue` (la plus récente du dossier) reprenne une session
+ * `claude` MANUELLE de l'utilisateur partageant le même cwd (→ restauration d'un input résiduel = fantôme).
+ */
+export function hasClaudeSessionId(cwd: string, sessionId: string): boolean {
+  try {
+    return existsSync(join(claudeProjectDir(cwd), `${sessionId}.jsonl`))
   } catch {
     return false
   }
