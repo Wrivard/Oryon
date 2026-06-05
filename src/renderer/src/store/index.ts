@@ -38,6 +38,10 @@ interface AppStore {
   requestOpenBrowser: (workspaceId: string, url: string) => void
 
   setWorkspaces: (ws: Workspace[]) => void
+  /** Remplace en place un workspace édité (nom/couleur) dans la liste. */
+  patchWorkspace: (ws: Workspace) => void
+  /** Retire un workspace supprimé : nettoie terminaux/activité/compteurs/ouverts et réassigne l'actif. */
+  removeWorkspace: (id: string) => void
   setActiveWorkspace: (id: string | null) => void
   /** Marque un workspace comme ouvert (monté en arrière-plan). Idempotent ; jamais retiré au switch. */
   openWorkspace: (id: string) => void
@@ -91,6 +95,22 @@ export const useAppStore = create<AppStore>((set) => ({
     })),
 
   setWorkspaces: (workspaces) => set({ workspaces }),
+  patchWorkspace: (ws) =>
+    set((s) => ({ workspaces: s.workspaces.map((w) => (w.id === ws.id ? ws : w)) })),
+  removeWorkspace: (id) =>
+    set((s) => {
+      const terminalsByWorkspace = { ...s.terminalsByWorkspace }
+      const workspaceActivity = { ...s.workspaceActivity }
+      const terminalCounts = { ...s.terminalCounts }
+      delete terminalsByWorkspace[id]
+      delete workspaceActivity[id]
+      delete terminalCounts[id]
+      const workspaces = s.workspaces.filter((w) => w.id !== id)
+      const openWorkspaceIds = s.openWorkspaceIds.filter((w) => w !== id)
+      // Si on supprime l'actif, on retombe sur le plus récent restant (sinon null → écran « Aucun workspace »).
+      const activeWorkspaceId = s.activeWorkspaceId === id ? (workspaces[0]?.id ?? null) : s.activeWorkspaceId
+      return { workspaces, terminalsByWorkspace, workspaceActivity, terminalCounts, openWorkspaceIds, activeWorkspaceId }
+    }),
   // Activer un workspace quitte la vue Calendar (sélection mutuellement exclusive avec l'entrée du rail).
   setActiveWorkspace: (activeWorkspaceId) => set({ activeWorkspaceId, maximizedTerminalId: null, calendarMode: false }),
   openWorkspace: (id) =>
