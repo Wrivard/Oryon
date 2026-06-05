@@ -6,6 +6,8 @@ import {
   ArrowLeft,
   ArrowRight,
   MousePointerSquareDashed,
+  Bug,
+  Copy,
   Star,
   Triangle,
   ExternalLink,
@@ -51,6 +53,7 @@ export function BrowserPanel({ workspaceId }: { workspaceId: string }) {
   const [devCommand, setDevCommand] = useState(workspace?.dev_command ?? 'npm run dev')
   const [inspecting, setInspecting] = useState(false)
   const [nav, setNav] = useState({ back: false, forward: false })
+  const [loading, setLoading] = useState(false)
 
   // Récents / favoris (Migration 012 — persistés par workspace côté main).
   const [recents, setRecents] = useState<BrowserRecent[]>([])
@@ -250,14 +253,18 @@ export function BrowserPanel({ workspaceId }: { workspaceId: string }) {
       if (e?.isMainFrame && e?.url) setAddress(e.url)
       syncNav()
     }
+    const onStart = () => setLoading(true)
     const onStop = () => {
+      setLoading(false)
       syncNav()
       persist()
     }
+    w.addEventListener('did-start-loading', onStart)
     w.addEventListener('did-navigate', onNavigate)
     w.addEventListener('did-navigate-in-page', onInPage)
     w.addEventListener('did-stop-loading', onStop)
     return () => {
+      w.removeEventListener('did-start-loading', onStart)
       w.removeEventListener('did-navigate', onNavigate)
       w.removeEventListener('did-navigate-in-page', onInPage)
       w.removeEventListener('did-stop-loading', onStop)
@@ -389,8 +396,13 @@ export function BrowserPanel({ workspaceId }: { workspaceId: string }) {
         <IconButton label="Suivant" size="sm" onClick={() => wv()?.goForward?.()} disabled={!nav.forward}>
           <ArrowRight size={13} />
         </IconButton>
-        <IconButton label="Recharger" size="sm" onClick={() => wv()?.reload?.()} disabled={!url}>
-          <RotateCw size={13} />
+        <IconButton
+          label={loading ? 'Arrêter le chargement' : 'Recharger'}
+          size="sm"
+          onClick={() => (loading ? wv()?.stop?.() : wv()?.reload?.())}
+          disabled={!url}
+        >
+          {loading ? <Square size={12} /> : <RotateCw size={13} />}
         </IconButton>
         <IconButton
           label={inspecting ? 'Inspect actif — clique un élément (Échap pour sortir)' : 'Inspect → code'}
@@ -400,6 +412,22 @@ export function BrowserPanel({ workspaceId }: { workspaceId: string }) {
           disabled={!url}
         >
           <MousePointerSquareDashed size={13} className={cn(inspecting && 'text-accent')} />
+        </IconButton>
+        <IconButton
+          label="Outils de développement"
+          size="sm"
+          onClick={() => {
+            const w = wv()
+            if (!w) return
+            try {
+              w.isDevToolsOpened?.() ? w.closeDevTools?.() : w.openDevTools?.()
+            } catch {
+              /* webview pas prête */
+            }
+          }}
+          disabled={!url}
+        >
+          <Bug size={13} />
         </IconButton>
 
         {/* Barre d'adresse + dropdown favoris/récents */}
@@ -413,8 +441,17 @@ export function BrowserPanel({ workspaceId }: { workspaceId: string }) {
             }}
             aria-label="URL de la preview"
             placeholder="localhost:5173"
-            className="h-6 w-full rounded-sm border border-border bg-bg-inset px-2 text-[12px] text-fg outline-none transition-colors focus:border-accent"
+            className={cn(
+              'h-6 w-full rounded-sm border border-border bg-bg-inset px-2 text-[12px] text-fg outline-none transition-colors focus:border-accent',
+              loading && 'pr-7',
+            )}
           />
+          {loading && (
+            <RotateCw
+              size={11}
+              className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 animate-spin text-fg-subtle"
+            />
+          )}
           {omniOpen && (
             <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-72 overflow-auto rounded-md border border-border bg-bg-panel py-1 shadow-md">
               {favorites.length === 0 && recents.length === 0 ? (
@@ -457,6 +494,16 @@ export function BrowserPanel({ workspaceId }: { workspaceId: string }) {
           )}
         </div>
 
+        <IconButton
+          label="Copier l'URL"
+          size="sm"
+          onClick={() => {
+            if (currentUrl) void navigator.clipboard?.writeText(normalizeUrl(currentUrl)).catch(() => {})
+          }}
+          disabled={!currentUrl}
+        >
+          <Copy size={13} />
+        </IconButton>
         <IconButton
           label={isFavorited ? 'Retirer des favoris' : 'Ajouter aux favoris'}
           size="sm"
