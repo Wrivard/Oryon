@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, session, protocol, ipcMain } from 'electron'
+import { app, BrowserWindow, Menu, shell, session, protocol, ipcMain } from 'electron'
 import { join, extname, resolve, sep } from 'path'
 import { readFile } from 'fs/promises'
 import { existsSync, writeFileSync, rmSync, readFileSync } from 'fs'
@@ -129,6 +129,9 @@ function createWindow() {
     // Compteur d'échecs consécutifs : si CE démarrage échoue aussi (miette non effacée), le prochain lira N+1.
     try { writeFileSync(STARTUP_CRUMB, String(priorStartupFails + 1)) } catch { /* ignore */ }
   }
+  // Pas de menu natif (File/Edit/View/Window/Help) : Oryon a sa propre barre. setApplicationMenu(null) le
+  // retire GLOBALEMENT (toutes fenêtres), contrairement à autoHideMenuBar qui le ré-affiche au Alt.
+  Menu.setApplicationMenu(null)
   const win = new BrowserWindow({
     title: app.isPackaged ? 'Oryon' : 'Oryon Dev', // distingue visuellement les fenêtres dev et prod simultanées
 

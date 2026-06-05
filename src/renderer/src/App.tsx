@@ -141,12 +141,6 @@ function AppContent() {
       >
         <img src={logoUrl} alt="Oryon" className="h-[18px] w-[18px] rounded-[5px] object-contain" draggable={false} />
         <span className="text-[13px] font-semibold tracking-tight">Oryon</span>
-        {activeWorkspace && (
-          <>
-            <span className="text-fg-subtle">/</span>
-            <span className="text-[13px] text-fg-muted">{activeWorkspace.name}</span>
-          </>
-        )}
         <div className="relative ml-auto">
           <IconButton label="Réglages" size="sm" onClick={() => openSettings()}>
             <Settings size={14} />
