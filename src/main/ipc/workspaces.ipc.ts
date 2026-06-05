@@ -70,6 +70,9 @@ export function registerWorkspacesIpc() {
       created_at: now,
       last_opened: now,
       dev_command: null,
+      browser_recents: null,
+      browser_favorites: null,
+      last_browser_url: null,
     }
     const autostart = buildClaudeCommand() // "claude"
     // Un worktree git par agent (isolation des éditions + git diff). SERIAL (sync execFileSync dans cette
