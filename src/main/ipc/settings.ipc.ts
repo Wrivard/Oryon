@@ -22,7 +22,9 @@ import type {
 function getAppSettings(): Record<string, string> {
   const rows = getDb().prepare('SELECT key, value FROM app_settings').all() as Array<{ key: string; value: string }>
   const out: Record<string, string> = {}
-  for (const r of rows) out[r.key] = r.value
+  // N'expose JAMAIS au renderer les secrets chiffrés (tokens OAuth/REST stockés enc:v1 par calendar/vercel) :
+  // ils ne servent qu'au main (just-in-time). Le renderer lit leur PRÉSENCE via des handlers dédiés (vercelStatus…).
+  for (const r of rows) if (!r.value?.startsWith(ENC_PREFIX)) out[r.key] = r.value
   return out
 }
 export function setAppSetting(key: string, value: string): void {
