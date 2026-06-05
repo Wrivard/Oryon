@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
-import { PanelLeft, Settings } from 'lucide-react'
-import logoUrl from './assets/app-logo.png'
+import { PanelLeft } from 'lucide-react'
 import WorkspaceRail from './components/WorkspaceRail'
 import TerminalGrid, { EmptyState } from './components/TerminalGrid'
 import { CalendarView } from './components/Calendar'
@@ -14,15 +13,13 @@ import { UpdateToast } from './components/Update/UpdateToast'
 import { useAppStore } from './store'
 import { useUiStore } from './store/ui'
 import { useUpdateStore } from './store/update'
-import { fadeUp, staggerContainer, transition } from './lib/motion'
+import { fadeUp, staggerContainer } from './lib/motion'
 
 function AppContent() {
   const [railCollapsed, setRailCollapsed] = useState(false)
   const settingsOpen = useUiStore((s) => s.settingsOpen)
   const settingsTab = useUiStore((s) => s.settingsTab)
-  const openSettings = useUiStore((s) => s.openSettings)
   const closeSettings = useUiStore((s) => s.closeSettings)
-  const updatePhase = useUpdateStore((s) => s.phase)
   const [rightWidth, setRightWidth] = useState(38)
   const dragging = useRef(false)
   const rightWidthRef = useRef(rightWidth)
@@ -132,26 +129,7 @@ function AppContent() {
 
   return (
     <div className="flex h-full flex-col bg-bg text-fg">
-      {/* Top bar */}
-      <motion.header
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={transition}
-        className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-bg-panel px-3"
-      >
-        <img src={logoUrl} alt="Oryon" className="h-[18px] w-[18px] rounded-[5px] object-contain" draggable={false} />
-        <span className="text-[13px] font-semibold tracking-tight">Oryon</span>
-        <div className="relative ml-auto">
-          <IconButton label="Réglages" size="sm" onClick={() => openSettings()}>
-            <Settings size={14} />
-          </IconButton>
-          {(updatePhase === 'available' || updatePhase === 'downloaded') && (
-            <span className="pointer-events-none absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-accent" />
-          )}
-        </div>
-      </motion.header>
-
-      {/* Corps : rail · centre · panneau droit */}
+      {/* Corps : rail · centre · panneau droit (plus de top bar : le titre/logo vit dans la barre de titre OS) */}
       <motion.div
         variants={staggerContainer(0.05, 0.05)}
         initial="hidden"

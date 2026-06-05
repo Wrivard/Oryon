@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
 import { Plus, PanelLeftClose, Settings, CalendarDays, Pencil, Trash2 } from 'lucide-react'
 import { useAppStore } from '../../store'
+import { useUiStore } from '../../store/ui'
+import { useUpdateStore } from '../../store/update'
 import { useTheme } from '../Theme/ThemeProvider'
 import { IconButton } from '../ui/IconButton'
 import { Badge } from '../ui/Badge'
@@ -21,6 +23,8 @@ export default function WorkspaceRail({ onCollapse }: Props) {
   const { workspaces, activeWorkspaceId, terminalCounts, workspaceActivity, calendarMode, setWorkspaces, setActiveWorkspace, setTerminalCounts, setCalendarMode, removeWorkspace } =
     useAppStore()
   const { theme } = useTheme()
+  const openSettings = useUiStore((s) => s.openSettings)
+  const updatePhase = useUpdateStore((s) => s.phase)
   const [modalOpen, setModalOpen] = useState(false)
   const [editingWs, setEditingWs] = useState<Workspace | null>(null)
   const [deletingWs, setDeletingWs] = useState<Workspace | null>(null)
@@ -187,9 +191,15 @@ export default function WorkspaceRail({ onCollapse }: Props) {
 
       {/* Footer */}
       <div className="shrink-0 border-t border-border p-1.5">
-        <button className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-[11px] text-fg-subtle outline-none transition-colors duration-fast hover:bg-hover hover:text-fg-muted">
+        <button
+          onClick={() => openSettings()}
+          className="relative flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-[11px] text-fg-subtle outline-none transition-colors duration-fast hover:bg-hover hover:text-fg-muted"
+        >
           <Settings size={13} />
           Réglages
+          {(updatePhase === 'available' || updatePhase === 'downloaded') && (
+            <span className="ml-auto h-1.5 w-1.5 rounded-full bg-accent" title="Mise à jour disponible" />
+          )}
         </button>
         {appInfo && (
           <div className="px-2.5 pt-1 text-[10px] tabular-nums text-fg-subtle" title={appInfo.isDev ? 'Build de développement' : 'Build de production'}>
