@@ -77,6 +77,33 @@ function maybeSweepDocsImport(): void {
   }
 }
 
+// Sweep des captures du panneau Browser (screenshots/<reqId>.{png,err}) : l'outil MCP `browser_screenshot` les
+// relit en polling COURT (~12 s) puis ne les supprime jamais → un fichier survivant > 1 h est orphelin (capture
+// jamais relue / crash). Même convention que maybeSweepDocsImport (throttle 10 min : inutile de stat à chaque tick).
+const SCREENSHOT_TTL_MS = 60 * 60_000
+let lastScreenshotSweep = 0
+function maybeSweepScreenshots(): void {
+  if (Date.now() - lastScreenshotSweep < 600_000) return
+  lastScreenshotSweep = Date.now()
+  const shotDir = join(dir, 'screenshots')
+  let files: string[]
+  try {
+    files = readdirSync(shotDir)
+  } catch {
+    return // dossier absent (aucune capture déclenchée) : rien à balayer
+  }
+  const now = Date.now()
+  for (const f of files) {
+    if (!/\.(png|err)$/.test(f)) continue
+    const p = join(shotDir, f)
+    try {
+      if (now - statSync(p).mtimeMs > SCREENSHOT_TTL_MS) unlinkSync(p)
+    } catch {
+      /* déjà supprimé / illisible : ignore */
+    }
+  }
+}
+
 function writeMeta(): void {
   const db = getDb()
   const terminalsRaw = db
@@ -212,6 +239,7 @@ export function initMcpExport(): void {
     tickWatchdog() // WC : surface (sans tuer) les workers busy silencieux > 5 min
     maybeArchive()
     maybeSweepDocsImport() // balaie les issues d'import orphelines (> 1 h), throttle interne 10 min
+    maybeSweepScreenshots() // balaie les captures Browser orphelines (> 1 h), throttle interne 10 min
   }, 2000)
 
   addDataObserver((terminalId, data) => {

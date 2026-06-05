@@ -1,9 +1,10 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { mkdirSync, writeFileSync, renameSync } from 'fs'
 import { join } from 'path'
 import { getDb } from '../db'
 import { startDevServer, stopDevServer, getDevPort } from '../services/dev-server'
-import type { Workspace, DevServerResult } from '../../shared/types'
+import { setVercelToken, hasVercelToken, listVercelProjects } from '../services/vercel-rest'
+import type { Workspace, DevServerResult, BrowserRecent, BrowserFavorite } from '../../shared/types'
 
 // Dossier d'état MCP (miroir de mcp-export.stateDir — recopié ici pour éviter un cycle d'import
 // mcp-export ↔ browser.ipc, puisque mcp-export importe déjà navigateBrowser d'ici).
@@ -62,6 +63,18 @@ export function appendAppConsole(level: number | string, message: string, source
   appBuf = (appBuf + `${t} [${level}] ${message}${loc}\n`).slice(-CONSOLE_CAP)
   appDirty = true
   if (!appFlushTimer) appFlushTimer = setTimeout(flushAppConsole, 500)
+}
+
+// Préférences Browser persistées sur la ligne `workspaces` (Migration 012). recents/favorites = colonnes JSON
+// (null tant que jamais écrites → []). Cap des récents : on garde les 15 plus récentes, dédupliquées par URL.
+const RECENTS_CAP = 15
+function parseJson<T>(raw: string | null | undefined, fallback: T): T {
+  if (!raw) return fallback
+  try {
+    return JSON.parse(raw) as T
+  } catch {
+    return fallback
+  }
 }
 
 export function registerBrowserIpc() {
@@ -125,6 +138,68 @@ export function registerBrowserIpc() {
       return
     }
     writeFileAtomic(join(dir, `${d.reqId}.png`), Buffer.from(d.png))
+  })
+
+  // ── Optim Browser : préférences (récents/favoris/dernière URL) persistées par workspace (Migration 012) ──
+  ipcMain.handle('browser:getPrefs', (_e, workspaceId: string) => {
+    const row = getDb()
+      .prepare('SELECT browser_recents, browser_favorites, last_browser_url FROM workspaces WHERE id = ?')
+      .get(workspaceId) as Pick<Workspace, 'browser_recents' | 'browser_favorites' | 'last_browser_url'> | undefined
+    return {
+      recents: parseJson<BrowserRecent[]>(row?.browser_recents, []),
+      favorites: parseJson<BrowserFavorite[]>(row?.browser_favorites, []),
+      lastUrl: row?.last_browser_url ?? null,
+    }
+  })
+
+  ipcMain.handle('browser:addRecent', (_e, workspaceId: string, url: string, title?: string): void => {
+    if (!url) return
+    const row = getDb().prepare('SELECT browser_recents FROM workspaces WHERE id = ?').get(workspaceId) as
+      | Pick<Workspace, 'browser_recents'>
+      | undefined
+    if (!row) return // workspace inconnu : rien à écrire
+    const recents = parseJson<BrowserRecent[]>(row.browser_recents, [])
+    // Prepend + dédup par URL (l'entrée existante remonte en tête) + cap aux RECENTS_CAP plus récentes.
+    const next = [{ url, title, ts: Date.now() }, ...recents.filter((r) => r.url !== url)].slice(0, RECENTS_CAP)
+    getDb().prepare('UPDATE workspaces SET browser_recents = ? WHERE id = ?').run(JSON.stringify(next), workspaceId)
+  })
+
+  ipcMain.handle(
+    'browser:toggleFavorite',
+    (_e, workspaceId: string, url: string, label?: string): { favorited: boolean } => {
+      if (!url) return { favorited: false }
+      const row = getDb().prepare('SELECT browser_favorites FROM workspaces WHERE id = ?').get(workspaceId) as
+        | Pick<Workspace, 'browser_favorites'>
+        | undefined
+      if (!row) return { favorited: false }
+      const favorites = parseJson<BrowserFavorite[]>(row.browser_favorites, [])
+      const exists = favorites.some((f) => f.url === url)
+      const next = exists ? favorites.filter((f) => f.url !== url) : [...favorites, { url, label }]
+      getDb().prepare('UPDATE workspaces SET browser_favorites = ? WHERE id = ?').run(JSON.stringify(next), workspaceId)
+      return { favorited: !exists }
+    },
+  )
+
+  ipcMain.handle('browser:setLastUrl', (_e, workspaceId: string, url: string): void => {
+    getDb().prepare('UPDATE workspaces SET last_browser_url = ? WHERE id = ?').run(url || null, workspaceId)
+  })
+
+  // ── Vercel REST : token chiffré au repos, jamais renvoyé au renderer (cf. services/vercel-rest.ts) ──
+  ipcMain.handle('browser:setVercelToken', (_e, token: string) => setVercelToken(token))
+  ipcMain.handle('browser:vercelStatus', () => ({ hasToken: hasVercelToken() }))
+  ipcMain.handle('browser:vercelProjects', () => listVercelProjects())
+
+  // Ouvre une URL dans le navigateur système (lien externe depuis le panneau Browser).
+  ipcMain.handle('browser:openExternal', async (_e, url: string): Promise<void> => {
+    if (url) await shell.openExternal(url)
+  })
+
+  // Vide le ring de console de la webview du workspace (+ flush du buffer vidé vers le log lu par browser_console).
+  ipcMain.handle('browser:clearConsole', (_e, workspaceId: string): void => {
+    if (!workspaceId) return
+    consoleBuf.set(workspaceId, '')
+    dirtyConsole.add(workspaceId)
+    if (!consoleFlushTimer) consoleFlushTimer = setTimeout(flushConsole, 500)
   })
 }
 
