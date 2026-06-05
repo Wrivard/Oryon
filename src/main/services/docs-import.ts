@@ -27,6 +27,8 @@ export interface DocsImportArgs {
   url?: string
   markdown?: string
   label?: string
+  /** Force le ré-import même si une doc de la même origine existe déjà (sinon : court-circuit anti-doublon). */
+  force?: boolean
 }
 export interface ImportError {
   url: string
@@ -49,6 +51,8 @@ export interface DocsImportResult {
   chunkCount: number
   pageCount: number
   errors: ImportError[]
+  /** true si l'import a été court-circuité : une doc de la même origine existait déjà (aucun fetch effectué). */
+  alreadyPresent?: boolean
 }
 
 type Emit = (p: DocsImportProgress) => void
@@ -639,6 +643,51 @@ async function mapPool<T>(items: T[], limit: number, worker: (item: T, index: nu
   await Promise.all(runners)
 }
 
+// ── Anti-doublon (court-circuit AVANT tout fetch) ────────────────────────────────────────────────────────
+/** Origine (proto+host) d'une URL ; '' si invalide. */
+function originOf(u: string): string {
+  try {
+    return new URL(u).origin
+  } catch {
+    return ''
+  }
+}
+/**
+ * Si un docSet de la MÊME ORIGINE web existe déjà dans le store GLOBAL, renvoie son résumé (sinon null). Les docs
+ * d'un même « stack » vivent sous une seule origine, et la `sourceUrl` stockée est souvent l'URL llms.txt/origine
+ * (≠ l'URL d'entrée) → on matche par ORIGINE, pas par URL exacte. Sert à NE PAS re-crawler une doc déjà installée
+ * (un import pouvait re-fetcher des centaines de pages pour finalement écraser l'existant). Contourné par `force`.
+ */
+async function findExistingDocByUrl(url: string): Promise<DocsImportResult | null> {
+  const o = originOf(url)
+  if (!o) return null
+  try {
+    const idx = (await core.readIndex()) as Array<{
+      slug?: string
+      title?: string
+      sourceUrl?: string
+      origin?: string
+      chunkCount?: number
+      pageCount?: number
+    }>
+    const hit = idx.find((e) => e.slug && e.sourceUrl && originOf(e.sourceUrl) === o)
+    if (hit && hit.slug) {
+      return {
+        slug: hit.slug,
+        title: hit.title || hit.slug,
+        origin: (hit.origin as DocOrigin) || 'md',
+        chunkCount: hit.chunkCount || 0,
+        pageCount: hit.pageCount || 0,
+        errors: [],
+        alreadyPresent: true,
+      }
+    }
+  } catch {
+    /* index illisible → pas de court-circuit, on importe normalement */
+  }
+  return null
+}
+
 // ── API publique ─────────────────────────────────────────────────────────────────────────────────────────
 /**
  * Importe une doc tierce. `markdown` collé → import direct (origin 'paste') ; sinon `url` → tiers
@@ -684,6 +733,16 @@ async function importDocCore(argsIn: DocsImportArgs, emit: Emit): Promise<DocsIm
     throw new Error(`URL invalide : ${url}`)
   }
 
+  // Anti-doublon : si une doc de cette origine est DÉJÀ dans le store global, on s'arrête AVANT de fetcher/crawler
+  // et on réutilise l'existant (évite de re-télécharger des centaines de pages). Court-circuité par `force` (re-sync).
+  if (!argsIn.force) {
+    const existing = await findExistingDocByUrl(url)
+    if (existing) {
+      emit({ phase: 'done', message: `Déjà présent : ${existing.title} (${existing.slug}) — import ignoré`, total: existing.chunkCount })
+      return existing
+    }
+  }
+
   const initial = await safeFetch(url, 'text/markdown, text/plain, text/html;q=0.8')
 
   emit({ phase: 'probe', message: 'Sonde llms.txt…' })
@@ -709,5 +768,6 @@ export async function reimportDoc(slug: string, onProgress: Emit = () => {}): Pr
   const ds = (await core.readDocSet(slug)) as { meta: { title?: string; sourceUrl?: string } | null }
   if (!ds.meta) throw new Error(`Doc introuvable : ${slug}`)
   if (!ds.meta.sourceUrl) throw new Error(`« ${ds.meta.title || slug} » a été collé : pas de source web à re-synchroniser.`)
-  return importDoc({ url: ds.meta.sourceUrl, label: ds.meta.title }, onProgress)
+  // force: true → re-sync = re-fetch RÉEL (sinon l'anti-doublon court-circuiterait, la doc existant déjà).
+  return importDoc({ url: ds.meta.sourceUrl, label: ds.meta.title, force: true }, onProgress)
 }
