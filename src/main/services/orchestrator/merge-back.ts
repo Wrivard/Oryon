@@ -11,7 +11,7 @@ import { promisify } from 'util'
 import { mkdirSync, appendFileSync } from 'fs'
 import { join, dirname } from 'path'
 import type { MergeResult } from '../../../shared/types'
-import { worktreeDir, branchFor, listAgentWorktrees, refreshWorktreeToHead } from '../worktrees'
+import { worktreeDir, branchFor, listAgentWorktrees, refreshWorktreeToHead, isTransientHarnessPath } from '../worktrees'
 import { verifyMain } from './green-gate'
 
 const exec = promisify(execFile)
@@ -19,7 +19,9 @@ const exec = promisify(execFile)
 async function git(cwd: string, args: string[]): Promise<string> {
   // core.editor=true : un merge non-ff (rebase-before-merge) ne doit JAMAIS ouvrir d'éditeur (bloquerait
   // le process enfant). Les merges qui passent -m ne sont pas affectés.
-  const { stdout } = await exec('git', ['-c', 'core.quotePath=false', '-c', 'core.editor=true', ...args], {
+  // safe.directory=* : Oryon en ADMIN crée les worktrees possédés par « Administrators » → git refuserait sinon
+  // (« dubious ownership ») et le merge échouerait. Portée -c (pas de config globale), repos de l'utilisateur.
+  const { stdout } = await exec('git', ['-c', 'core.quotePath=false', '-c', 'core.editor=true', '-c', 'safe.directory=*', ...args], {
     cwd,
     maxBuffer: 64 * 1024 * 1024,
     windowsHide: true,
@@ -35,11 +37,20 @@ async function tryGit(cwd: string, args: string[]): Promise<string | null> {
   }
 }
 
-/** MAIN propre ? (suivi seulement — les fichiers non suivis ne bloquent pas un merge non conflictuel). */
+/**
+ * MAIN propre ? (suivi seulement — les fichiers non suivis ne bloquent pas un merge non conflictuel.)
+ * On IGNORE les locks transitoires du harness (ex. `.claude/scheduled_tasks.lock`, réécrit en continu) qui
+ * salissaient MAIN en permanence et gelaient à l'infini TOUT merge-back (travail coincé sur les branches,
+ * 0 task approuvée). Un VRAI fichier suivi modifié sur MAIN bloque toujours l'intégration (protège l'humain).
+ */
 async function isClean(main: string): Promise<boolean> {
-  const wt = await tryGit(main, ['diff', '--quiet']) // null si l'arbre de travail a des modifs
-  const idx = await tryGit(main, ['diff', '--cached', '--quiet']) // null si l'index a des modifs
-  return wt !== null && idx !== null
+  const out = await tryGit(main, ['status', '--porcelain', '--untracked-files=no'])
+  if (out === null) return false // git a échoué → prudence : on considère MAIN non propre
+  return !out
+    .split('\n')
+    .map((l) => l.slice(3).trim())
+    .filter(Boolean)
+    .some((p) => !isTransientHarnessPath(p))
 }
 
 export interface MergeBackJob {

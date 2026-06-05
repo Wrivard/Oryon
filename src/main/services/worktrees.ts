@@ -22,7 +22,10 @@ const AGENT_BRANCH_PREFIX = 'oryon/agent-'
 /** git synchrone dans `cwd`. Lève sur code de sortie non nul (comportement execFileSync). */
 function git(cwd: string, args: string[]): string {
   // core.editor=true : un merge non-ff ne doit JAMAIS ouvrir d'éditeur (bloquerait le process enfant Windows).
-  return execFileSync('git', ['-c', 'core.quotePath=false', '-c', 'core.editor=true', ...args], {
+  // safe.directory=* : Oryon lancé en ADMINISTRATEUR crée les worktrees possédés par « Administrators » → git
+  // refuserait sinon (« detected dubious ownership ») et la création de worktree / le merge échoueraient. On fait
+  // confiance à TOUS les dépôts pour NOS appels git (repos de l'utilisateur ; portée -c, pas de config globale).
+  return execFileSync('git', ['-c', 'core.quotePath=false', '-c', 'core.editor=true', '-c', 'safe.directory=*', ...args], {
     cwd,
     windowsHide: true,
     encoding: 'utf8',
@@ -57,6 +60,19 @@ export function branchFor(agent: string): string {
 /** Normalise un chemin pour comparaison (Windows : slashes + casse insensibles, pas de slash final). */
 function norm(p: string): string {
   return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+}
+
+/**
+ * Fichier TRANSITOIRE du harness/Oryon (lock réécrit en continu) qui ne doit JAMAIS gater un merge-back ni
+ * déclencher une alarme de contamination du tronc. Cas réel : `.claude/scheduled_tasks.lock` (planificateur
+ * Claude Code) suivi par git dans certains repos → réécrit en boucle → MAIN « sale » en permanence, ce qui
+ * (a) reportait à l'infini TOUT merge-back (isClean=false, travail coincé sur les branches) et (b) faisait croire
+ * à une contamination du tronc. On ne matche QUE les `*.lock` sous `.claude/` ou `.oryon/` — jamais les lockfiles
+ * de dépendances à la racine (package-lock.json/pnpm-lock.yaml/yarn.lock ne sont pas concernés).
+ */
+export function isTransientHarnessPath(p: string): boolean {
+  const s = p.replace(/\\/g, '/').toLowerCase()
+  return s.endsWith('.lock') && (s.includes('.claude/') || s.includes('.oryon/'))
 }
 
 interface WtEntry {
@@ -313,6 +329,12 @@ export function branchEvidence(main: string, agent: string): BranchEvidence {
     .map((l) => l.slice(3).trim())
     .filter(Boolean)
   const filesChanged = Array.from(new Set([...committed, ...uncommitted]))
-  const mainDirty = !!((tryGit(main, ['status', '--porcelain', '--untracked-files=no']) ?? '').trim())
+  // Contamination du tronc = fichiers SUIVIS modifiés sur MAIN, HORS locks transitoires du harness (sinon un
+  // `.claude/scheduled_tasks.lock` réécrit en boucle déclenchait un faux « ⚠ TRONC PRINCIPAL SALE » en continu).
+  const mainDirty = (tryGit(main, ['status', '--porcelain', '--untracked-files=no']) ?? '')
+    .split('\n')
+    .map((l) => l.slice(3).trim())
+    .filter(Boolean)
+    .some((p) => !isTransientHarnessPath(p))
   return { ahead, filesChanged, worktreeDirty, mainDirty, empty: ahead === 0 && !worktreeDirty }
 }
