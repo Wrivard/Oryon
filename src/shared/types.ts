@@ -10,6 +10,30 @@ export interface Workspace {
   last_opened: number | null
   /** Commande de dev pour le panneau Browser (défaut "npm run dev"). Migration 002. */
   dev_command: string | null
+  /** Préférences Browser (Migration 012). JSON : BrowserRecent[] / BrowserFavorite[] ; + dernière URL ouverte. */
+  browser_recents: string | null
+  browser_favorites: string | null
+  last_browser_url: string | null
+}
+
+/** Une URL récemment visitée dans le panneau Browser (persistée par workspace, dédupliquée + cappée). */
+export interface BrowserRecent {
+  url: string
+  title?: string
+  ts: number
+}
+/** Une URL épinglée (favori) du panneau Browser. */
+export interface BrowserFavorite {
+  url: string
+  label?: string
+}
+/** Un projet Vercel (via l'API REST) pour le dropdown du panneau Browser : URL de prod cliquable. */
+export interface VercelProject {
+  id: string
+  name: string
+  url: string
+  inspectorUrl?: string
+  framework?: string
 }
 
 /** Noeud d'arbre de fichiers (children chargés à la demande). */
@@ -657,6 +681,25 @@ export interface BridgeApi {
     onCapture: (cb: (data: { workspaceId: string; reqId: string }) => void) => void
     offCapture: () => void
     sendCaptureResult: (reqId: string, png: Uint8Array, error?: string) => void
+    // ── Optim Browser : récents/favoris (A), Vercel (B), navigation externe (C), console (D) ──
+    /** Préférences persistées du workspace : récents + favoris + dernière URL ouverte. */
+    getPrefs: (workspaceId: string) => Promise<{ recents: BrowserRecent[]; favorites: BrowserFavorite[]; lastUrl: string | null }>
+    /** Ajoute une URL aux récents (dédup + cap, prepend). */
+    addRecent: (workspaceId: string, url: string, title?: string) => Promise<void>
+    /** Épingle / dépingle un favori. Renvoie l'état final. */
+    toggleFavorite: (workspaceId: string, url: string, label?: string) => Promise<{ favorited: boolean }>
+    /** Mémorise la dernière URL ouverte (auto-restore au mount). */
+    setLastUrl: (workspaceId: string, url: string) => Promise<void>
+    /** Enregistre le token d'accès Vercel (REST) — stocké CHIFFRÉ, jamais renvoyé au renderer. */
+    setVercelToken: (token: string) => Promise<{ ok: boolean }>
+    /** Statut Vercel (token présent ?) — ne renvoie JAMAIS le token. */
+    vercelStatus: () => Promise<{ hasToken: boolean }>
+    /** Projets Vercel (via REST) avec leur URL de prod — pour le dropdown du panneau. */
+    vercelProjects: () => Promise<VercelProject[]>
+    /** Ouvre une URL dans le navigateur système (shell.openExternal). */
+    openExternal: (url: string) => Promise<void>
+    /** Vide le ring de console de la webview de ce workspace. */
+    clearConsole: (workspaceId: string) => Promise<void>
   }
   orchestrator: {
     listTasks: (workspaceId: string) => Promise<Task[]>
