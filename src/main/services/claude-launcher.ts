@@ -38,13 +38,23 @@ function shellQuote(s: string): string {
 }
 
 /**
- * Argument --append-system-prompt SANS coller un argv multi-KB dans le PTY PowerShell (ce qui fait crasher
- * PSReadLine : System.ArgumentOutOfRangeException — W3). On écrit le prompt (statique) dans un fichier sous
- * userData (nommé par hash du contenu → stable + dédupliqué) et on renvoie une petite sous-expression
- * PowerShell qui en relit le contenu à l'évaluation de la ligne → claude reçoit EXACTEMENT le même arg, mais
- * la ligne tapée fait ~120 caractères. $0 inchangé (aucune var d'auth touchée). Repli : inline si l'I/O échoue.
+ * Flag --append-system-prompt-file : écrit le prompt (statique) dans un fichier userData (nommé par hash du
+ * contenu → stable + dédupliqué) et passe son CHEMIN à claude. CRUCIAL — on ne colle JAMAIS le CONTENU du prompt
+ * sur la ligne de commande.
+ *
+ * ROOT CAUSE du « prompt fantôme » (« npm »/« run » auto-soumis) : l'ANCIENNE forme
+ * `--append-system-prompt "$(Get-Content -Raw '...')"` inlinait le contenu du prompt. PowerShell le gardait en UN
+ * seul argument, MAIS au lancement du NATIF claude.exe il re-sérialise les args en une chaîne de ligne de commande
+ * SANS échapper les guillemets (") internes du prompt. Le C-runtime de claude.exe (CommandLineToArgvW) re-découpe
+ * alors ce blob sur ces " : un fragment d'un exemple CITÉ dans le prompt (l'orchestrateur contient littéralement
+ * `(e.g. "1) npm run typecheck green; …")`) devient un token POSITIONNEL orphelin, que claude prend pour son
+ * `[prompt]` positionnel et SOUMET tout seul. D'où « npm » (orchestrateur) / « <tool> … » (workers) en 1er tour,
+ * promptSource:"typed", parentUuid:null — SANS aucune écriture « npm » au PTY (c'est l'argv de claude, pas le
+ * stdin ; c'est pourquoi aucun flush console n'y pouvait rien). Passer le CHEMIN (qui ne contient pas de ")
+ * supprime la cause à la racine. Bonus : garde la ligne courte (≈120 c) — le but initial du fichier (évite le
+ * crash PSReadLine sur un argv multi-Ko, W3). $0 inchangé (aucune var d'auth touchée).
  */
-function systemPromptArg(prompt: string): string {
+function appendSystemPromptFlag(prompt: string): string {
   try {
     const hash = createHash('sha1').update(prompt).digest('hex').slice(0, 16)
     const file = join(app.getPath('userData'), `oryon-roleprompt-${hash}.txt`)
@@ -53,11 +63,12 @@ function systemPromptArg(prompt: string): string {
       writeFileSync(tmp, prompt, 'utf8')
       renameSync(tmp, file)
     }
-    // PowerShell évalue $(...) au moment de l'Entrée et substitue le contenu du fichier comme valeur d'arg
-    // (donnée, non ré-interprétée) → quotes/apostrophes/$ du prompt sont sûrs. Seul le CHEMIN est échappé.
-    return `"$(Get-Content -Raw -LiteralPath '${file.replace(/'/g, "''")}')"`
+    // claude lit le fichier lui-même : le CONTENU ne transite jamais par l'argv. Seul le CHEMIN (sans guillemet
+    // interne) est sur la ligne, single-quoté pour PowerShell → re-sérialisation native propre, aucune découpe.
+    return `--append-system-prompt-file ${shellQuote(file)}`
   } catch {
-    return shellQuote(prompt) // repli : au pire l'ancien comportement (crash PSReadLine cosmétique)
+    // Échec I/O (rare) : repli inline (au pire l'ancien comportement) ; le chemin nominal ci-dessus EST la correction.
+    return `--append-system-prompt ${shellQuote(prompt)}`
   }
 }
 
@@ -65,7 +76,7 @@ export function buildClaudeCommand(opts: ClaudeCommandOpts = {}): string {
   let cmd = `claude ${AUTONOMY_FLAG}`
   if (opts.model) cmd += ` --model ${opts.model}`
   if (opts.effort) cmd += ` --effort ${opts.effort}`
-  if (opts.appendSystemPrompt) cmd += ` --append-system-prompt ${systemPromptArg(opts.appendSystemPrompt)}`
+  if (opts.appendSystemPrompt) cmd += ` ${appendSystemPromptFlag(opts.appendSystemPrompt)}`
   if (opts.continueSession) cmd += ' --continue'
   return cmd
 }
@@ -84,7 +95,7 @@ export function enforceAgentSpawn(autostart: string): string {
   if (/--model\s+(haiku|sonnet)\b/i.test(cmd)) cmd = cmd.replace(/--model\s+\S+/i, `--model ${AGENT_MODEL}`)
   else if (!/--model\b/.test(cmd)) cmd += ` --model ${AGENT_MODEL}`
   if (!/--effort\b/.test(cmd)) cmd += ' --effort max'
-  if (!/--append-system-prompt\b/.test(cmd)) cmd += ` --append-system-prompt ${systemPromptArg(WORKER_TERMINAL_SYSTEM)}`
+  if (!/--append-system-prompt\b/.test(cmd)) cmd += ` ${appendSystemPromptFlag(WORKER_TERMINAL_SYSTEM)}`
   return cmd
 }
 
