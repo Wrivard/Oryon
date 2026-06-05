@@ -4,6 +4,7 @@ import { MotionConfig } from 'motion/react'
 import '@fontsource-variable/geist'
 import '@fontsource-variable/geist-mono'
 import { ThemeProvider } from './components/Theme/ThemeProvider'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import './index.css'
 
 const root = ReactDOM.createRoot(document.getElementById('root')!)
@@ -28,7 +29,9 @@ if (window.location.hash === '#voice-widget') {
         {/* reducedMotion="user" : motion (JS) respecte prefers-reduced-motion, comme le fait déjà le CSS. */}
         <MotionConfig reducedMotion="user">
           <ThemeProvider>
-            <app.default />
+            <ErrorBoundary label="Oryon">
+              <app.default />
+            </ErrorBoundary>
           </ThemeProvider>
         </MotionConfig>
       </React.StrictMode>,

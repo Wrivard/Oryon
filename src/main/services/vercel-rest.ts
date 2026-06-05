@@ -89,7 +89,13 @@ function prodUrl(p: VProject): string {
 export async function listVercelProjects(): Promise<VercelProject[]> {
   const token = dec(get(K_TOKEN))
   if (!token) throw new Error('Aucun token Vercel configuré (Settings → Browser).')
-  const res = await fetch(PROJECTS_ENDPOINT, { headers: { Authorization: `Bearer ${token}` } })
+  // Timeout dur (15 s) : un appel suspendu (réseau/proxy) ne doit pas figer le dropdown indéfiniment.
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 15000)
+  const res = await fetch(PROJECTS_ENDPOINT, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: ctrl.signal,
+  }).finally(() => clearTimeout(timer))
   if (!res.ok) {
     if (res.status === 401 || res.status === 403) throw new Error('Token Vercel invalide ou sans permission.')
     throw new Error(`Vercel API ${res.status}`)

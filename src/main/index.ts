@@ -16,6 +16,23 @@ import { registerVoiceHotkeys, stopVoiceHotkeys, getVoiceHotkeyConflicts } from 
 import { createVoiceWidget, destroyVoiceWidget } from './services/voice-widget'
 import { initUpdater } from './services/updater'
 
+// ── Filet anti-crash du PROCESS MAIN ───────────────────────────────────────────────────────────────────
+// Sans ces handlers, une exception non capturée ou un rejet de promesse non géré dans le main TUE le process
+// principal → toute l'app meurt (fenêtre + tous les terminaux PTY) = « Oryon a crashé ». On LOGGE (mirroir dans
+// le ring MCP via appendAppConsole → visible par l'outil read_app_log, contrairement aux console.error main qui
+// ne vont qu'en stderr) et on CONTINUE. La plupart des throws isolés (handler IPC, callback async d'un service)
+// ne justifient pas de tuer l'app. (Diagnostic : un crash jusque-là invisible devient une ligne de log datée.)
+process.on('uncaughtException', (err) => {
+  const msg = err?.stack || String(err)
+  console.error('[main] uncaughtException:', msg)
+  try { appendAppConsole('error', `[main] uncaughtException: ${msg}`, 'main') } catch { /* ring indispo */ }
+})
+process.on('unhandledRejection', (reason) => {
+  const msg = reason instanceof Error ? reason.stack || reason.message : String(reason)
+  console.error('[main] unhandledRejection:', msg)
+  try { appendAppConsole('error', `[main] unhandledRejection: ${msg}`, 'main') } catch { /* ring indispo */ }
+})
+
 // Nom d'app PAR CANAL → userData distinct dev vs prod. PROD = %APPDATA%/Oryon (la DB y migre depuis
 // BridgeForge, cf. db/index.ts) ; DEV = %APPDATA%/Oryon Dev → oryon.db / mcp-state / flags séparés, pour que
 // le build dev (electron-vite) et le build prod INSTALLÉ tournent EN MÊME TEMPS sans se battre sur la même
@@ -77,6 +94,9 @@ const clearStartupCrumb = (): void => {
 // 0xC0000135 = STATUS_DLL_NOT_FOUND (hex non signé = 3221225781 ; int32 signé = -1073741515).
 const isDllNotFound = (code: number): boolean => code === 0xc0000135 || code === -1073741515
 let sandboxFallbackArmed = false
+// Anti-boucle de reload renderer : au plus 1 reload de récupération /15 s (un crash renderer déterministe ne
+// doit pas tourner en boucle de reload serrée).
+let lastRendererReload = 0
 function fallbackToNoSandbox(reason: string): void {
   if (!isWin || sandboxFallbackArmed || existsSync(SANDBOX_OFF_FLAG)) return
   sandboxFallbackArmed = true
@@ -158,7 +178,19 @@ function createWindow() {
   win.webContents.on('render-process-gone', (_e, details) => {
     console.error(`[window] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`)
     // Renderer tué par une DLL injectée bloquée par le sandbox → bascule no-sandbox (cf. en-tête du fichier).
-    if (isDllNotFound(details.exitCode)) fallbackToNoSandbox(`renderer:${details.reason}:${details.exitCode}`)
+    if (isDllNotFound(details.exitCode)) {
+      fallbackToNoSandbox(`renderer:${details.reason}:${details.exitCode}`)
+      return
+    }
+    // Sinon (crashed/oom/abnormal) : le process renderer est mort → fenêtre figée/blanche. On RECHARGE (nouveau
+    // process renderer) plutôt que de laisser l'app inutilisable. Débounce 15 s pour éviter une boucle si le
+    // crash se reproduit aussitôt. 'clean-exit' = fermeture normale → on ne recharge pas.
+    const now = Date.now()
+    if (details.reason !== 'clean-exit' && !win.isDestroyed() && now - lastRendererReload > 15000) {
+      lastRendererReload = now
+      console.error('[window] render-process-gone → reload de récupération')
+      win.webContents.reload()
+    }
   })
   // Preuve POSITIVE que le renderer + ses sous-ressources (bundle module, CSS, wasm ORT) ont chargé
   // (did-fail-load ne couvre QUE la navigation du document principal, pas les sous-ressources).

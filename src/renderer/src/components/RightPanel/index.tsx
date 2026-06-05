@@ -4,6 +4,7 @@ import { Bot, FileCode, Globe, ListTree, GitCompareArrows, KanbanSquare, Network
 import { cn } from '../../lib/cn'
 import { transition } from '../../lib/motion'
 import { useAppStore } from '../../store'
+import { ErrorBoundary } from '../ErrorBoundary'
 import { EditorPanel } from './EditorPanel'
 import { BrowserPanel } from './BrowserPanel'
 import { TasksPanel } from './TasksPanel'
@@ -90,14 +91,20 @@ export default function RightPanel() {
             {/* Editor & Browser restent montés au TOGGLE d'onglets (état/dev server/webview préservés).
                 Au changement de WORKSPACE, key={workspace.id} les remonte volontairement (projet différent). */}
             <div className={cn('absolute inset-0', active === 'editor' ? 'block' : 'hidden')}>
-              <EditorPanel key={workspace.id} projectPath={workspace.project_path} active={active === 'editor'} />
+              <ErrorBoundary key={`editor-${workspace.id}`} label="Editor">
+                <EditorPanel projectPath={workspace.project_path} active={active === 'editor'} />
+              </ErrorBoundary>
             </div>
             <div className={cn('absolute inset-0', active === 'browser' ? 'block' : 'hidden')}>
-              <BrowserPanel key={workspace.id} workspaceId={workspace.id} />
+              <ErrorBoundary key={`browser-${workspace.id}`} label="Browser">
+                <BrowserPanel workspaceId={workspace.id} />
+              </ErrorBoundary>
             </div>
             {/* Source reste monté (Monaco DiffEditor coûteux à remonter) ; il refetch quand actif. */}
             <div className={cn('absolute inset-0', active === 'source' ? 'block' : 'hidden')}>
-              <SourcePanel key={workspace.id} projectPath={workspace.project_path} active={active === 'source'} />
+              <ErrorBoundary key={`source-${workspace.id}`} label="Source">
+                <SourcePanel projectPath={workspace.project_path} active={active === 'source'} />
+              </ErrorBoundary>
             </div>
 
             {/* Orchestrateurs : UN panneau par workspace OUVERT, tous MONTÉS (même cachés) → chaque swarm de
@@ -108,32 +115,42 @@ export default function RightPanel() {
               const visible = active === 'orchestrator' && wsId === activeWorkspaceId
               return (
                 <div key={wsId} className={cn('absolute inset-0', visible ? 'block' : 'hidden')}>
-                  <OrchestratorPanel workspaceId={wsId} active={visible} />
+                  <ErrorBoundary label="Orchestrator">
+                    <OrchestratorPanel workspaceId={wsId} active={visible} />
+                  </ErrorBoundary>
                 </div>
               )
             })}
 
             {active === 'memory' && (
               <div className="absolute inset-0">
-                <MemoryPanel key={workspace.id} projectPath={workspace.project_path} />
+                <ErrorBoundary key={`memory-${workspace.id}`} label="Memory">
+                  <MemoryPanel projectPath={workspace.project_path} />
+                </ErrorBoundary>
               </div>
             )}
 
             {active === 'docs' && (
               <div className="absolute inset-0">
-                <DocsPanel />
+                <ErrorBoundary label="Docs">
+                  <DocsPanel />
+                </ErrorBoundary>
               </div>
             )}
 
             {active === 'plan' && (
               <div className="absolute inset-0">
-                <PlanPanel />
+                <ErrorBoundary label="Plan">
+                  <PlanPanel />
+                </ErrorBoundary>
               </div>
             )}
 
             {active === 'tasks' && (
               <div className="absolute inset-0">
-                <TasksPanel />
+                <ErrorBoundary label="Tasks">
+                  <TasksPanel />
+                </ErrorBoundary>
               </div>
             )}
           </>
