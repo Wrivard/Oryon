@@ -35,6 +35,12 @@ const STATUS_FILTERS: { key: SystemFeedbackStatus | 'all'; label: string }[] = [
   { key: 'resolved', label: 'Résolus' },
   { key: 'wontfix', label: 'Ignorés' },
 ]
+const SEVERITY_FILTERS: { key: SystemFeedbackSeverity | 'all'; label: string }[] = [
+  { key: 'all', label: 'Toutes' },
+  { key: 'error', label: 'Erreurs' },
+  { key: 'warning', label: 'Avert.' },
+  { key: 'info', label: 'Infos' },
+]
 const ACTIONS: { key: SystemFeedbackStatus; label: string }[] = [
   { key: 'reviewed', label: 'Marquer revu' },
   { key: 'resolved', label: 'Résolu' },
@@ -63,6 +69,7 @@ function rel(ts: number): string {
 export function SystemFeedbackView(): JSX.Element {
   const [reports, setReports] = useState<SystemFeedbackReport[] | null>(null)
   const [statusFilter, setStatusFilter] = useState<SystemFeedbackStatus | 'all'>('all')
+  const [severityFilter, setSeverityFilter] = useState<SystemFeedbackSeverity | 'all'>('all')
   const [categoryFilter, setCategoryFilter] = useState<SystemFeedbackCategory | 'all'>('all')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -89,9 +96,10 @@ export function SystemFeedbackView(): JSX.Element {
     return list.filter(
       (r) =>
         (statusFilter === 'all' || r.status === statusFilter) &&
+        (severityFilter === 'all' || r.severity === severityFilter) &&
         (categoryFilter === 'all' || r.category === categoryFilter),
     )
-  }, [reports, statusFilter, categoryFilter])
+  }, [reports, statusFilter, severityFilter, categoryFilter])
 
   const openCount = useMemo(() => (reports ?? []).filter((r) => r.status === 'open').length, [reports])
   const totalCount = reports?.length ?? 0
@@ -145,7 +153,7 @@ export function SystemFeedbackView(): JSX.Element {
       </header>
 
       {/* Filtre de statut */}
-      <div className="flex shrink-0 items-center border-b border-border px-3 py-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2">
         <div className="flex items-center gap-0.5 rounded-full border border-border bg-bg-inset p-0.5">
           {STATUS_FILTERS.map((f) => (
             <button
@@ -154,6 +162,20 @@ export function SystemFeedbackView(): JSX.Element {
               className={cn(
                 'h-6 rounded-full px-3 text-[11px] font-medium transition',
                 statusFilter === f.key ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:text-fg',
+              )}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-0.5 rounded-full border border-border bg-bg-inset p-0.5">
+          {SEVERITY_FILTERS.map((f) => (
+            <button
+              key={f.key}
+              onClick={() => setSeverityFilter(f.key)}
+              className={cn(
+                'h-6 rounded-full px-3 text-[11px] font-medium transition',
+                severityFilter === f.key ? 'bg-accent-soft text-accent' : 'text-fg-muted hover:text-fg',
               )}
             >
               {f.label}
@@ -193,6 +215,7 @@ export function SystemFeedbackView(): JSX.Element {
                   <button
                     onClick={() => {
                       setStatusFilter('all')
+                      setSeverityFilter('all')
                       setCategoryFilter('all')
                     }}
                     className="mt-1 rounded-full border border-border bg-bg-elevated px-3 py-1 text-[12px] font-medium text-fg-muted transition hover:border-border-strong hover:text-fg active:scale-[0.98]"
