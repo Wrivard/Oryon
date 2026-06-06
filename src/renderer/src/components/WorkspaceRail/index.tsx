@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
-import { Plus, PanelLeftClose, Settings, CalendarDays, Pencil, Trash2 } from 'lucide-react'
+import { Plus, PanelLeftClose, Settings, CalendarDays, ClipboardList, Pencil, Trash2 } from 'lucide-react'
 import { useAppStore } from '../../store'
 import { useUiStore } from '../../store/ui'
 import { useUpdateStore } from '../../store/update'
@@ -20,7 +20,7 @@ interface Props {
 }
 
 export default function WorkspaceRail({ onCollapse }: Props) {
-  const { workspaces, activeWorkspaceId, terminalCounts, workspaceActivity, calendarMode, setWorkspaces, setActiveWorkspace, setTerminalCounts, setCalendarMode, removeWorkspace } =
+  const { workspaces, activeWorkspaceId, terminalCounts, workspaceActivity, calendarMode, feedbackMode, setWorkspaces, setActiveWorkspace, setTerminalCounts, setCalendarMode, setFeedbackMode, removeWorkspace } =
     useAppStore()
   const { theme } = useTheme()
   const openSettings = useUiStore((s) => s.openSettings)
@@ -91,6 +91,23 @@ export default function WorkspaceRail({ onCollapse }: Props) {
           <CalendarDays size={14} className={cn('shrink-0', calendarMode ? 'text-fg' : 'text-fg-muted group-hover:text-fg')} />
           <span className={cn('flex-1 truncate text-[13px]', calendarMode ? 'text-fg' : 'text-fg-muted group-hover:text-fg')}>
             Calendar
+          </span>
+        </button>
+        <button
+          onClick={() => setFeedbackMode(true)}
+          className={cn(
+            'group relative flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left outline-none',
+            'transition-colors duration-fast ease-out',
+            feedbackMode ? 'bg-active' : 'hover:bg-hover',
+          )}
+        >
+          {feedbackMode && <span className="absolute inset-y-1 left-0 w-0.5 rounded-full bg-accent" />}
+          <ClipboardList
+            size={14}
+            className={cn('shrink-0', feedbackMode ? 'text-fg' : 'text-fg-muted group-hover:text-fg')}
+          />
+          <span className={cn('flex-1 truncate text-[13px]', feedbackMode ? 'text-fg' : 'text-fg-muted group-hover:text-fg')}>
+            Feedback système
           </span>
         </button>
         {/* ↑ futurs liens de navigation ici */}

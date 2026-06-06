@@ -616,6 +616,37 @@ export interface CreateTerminalInput {
   env?: Record<string, string>
 }
 
+// ── System Feedback : store GLOBAL cross-workspace de rapports de l'orchestrateur sur le SYSTÈME Oryon ──
+/** Bucket d'un rapport système (worker / orchestration / design du système / bug Oryon). */
+export type SystemFeedbackCategory = 'worker' | 'orchestration' | 'system-design' | 'oryon-bug' | 'other'
+export type SystemFeedbackSeverity = 'info' | 'warning' | 'error'
+export type SystemFeedbackStatus = 'open' | 'reviewed' | 'resolved' | 'wontfix'
+
+/** Rapport système déposé par l'orchestrateur. Store GLOBAL ~/.oryon/system-feedback/reports.ndjson (toutes apps). */
+export interface SystemFeedbackReport {
+  id: string
+  ts: number // epoch ms (posé par le main à l'écriture)
+  workspace: string // nom du workspace d'origine (attribution cross-workspace)
+  workspacePath?: string // chemin absolu du projet (drill-in)
+  agent: string // qui l'a déposé (orchestrateur en général)
+  category: SystemFeedbackCategory
+  severity: SystemFeedbackSeverity
+  title: string // résumé court
+  exactError: string // erreur / preuve verbatim
+  hypothesizedCause: string // pourquoi l'orchestrateur pense que ça arrive
+  relevantData?: string // libre : ids de tâches, preuve git, outcomes, compteurs
+  suggestedFix?: string
+  status: SystemFeedbackStatus // défaut 'open'
+  reviewedAt?: number
+  reviewNote?: string
+}
+/** Filtre de lecture du store de feedback système. */
+export interface SystemFeedbackFilter {
+  status?: SystemFeedbackStatus
+  category?: SystemFeedbackCategory
+  limit?: number
+}
+
 /** API exposée au renderer via contextBridge (`window.bridge`). */
 export interface BridgeApi {
   /** Infos de l'app : version (affichée en bas du rail) + marqueur dev. + copie fiable via le clipboard Electron. */
@@ -799,6 +830,13 @@ export interface BridgeApi {
     /** Events sur une fenêtre [timeMin,timeMax] (ISO) ; tous les calendriers, ou un seul via calendarId. */
     events: (opts: { timeMin: string; timeMax: string; calendarId?: string }) => Promise<CalendarEvent[]>
     /** Connexion/déconnexion changée (main → renderer) → rafraîchir la vue. */
+    onChanged: (cb: () => void) => void
+    offChanged: () => void
+  }
+  /** System Feedback : store GLOBAL cross-workspace des rapports de l'orchestrateur sur le SYSTÈME Oryon (vue de revue). */
+  systemFeedback: {
+    list: (filter?: SystemFeedbackFilter) => Promise<SystemFeedbackReport[]>
+    updateStatus: (id: string, status: SystemFeedbackStatus, note?: string) => Promise<{ ok: boolean }>
     onChanged: (cb: () => void) => void
     offChanged: () => void
   }

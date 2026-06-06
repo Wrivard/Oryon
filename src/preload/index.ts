@@ -217,6 +217,14 @@ const bridge: BridgeApi = {
     },
     offChanged: () => ipcRenderer.removeAllListeners('calendar:changed'),
   },
+  systemFeedback: {
+    list: (filter) => ipcRenderer.invoke('system-feedback:list', filter),
+    updateStatus: (id, status, note) => ipcRenderer.invoke('system-feedback:update-status', id, status, note),
+    onChanged: (cb) => {
+      ipcRenderer.on('system-feedback:changed', () => cb())
+    },
+    offChanged: () => ipcRenderer.removeAllListeners('system-feedback:changed'),
+  },
   source: {
     status: (projectPath) => ipcRenderer.invoke('source:status', projectPath),
     diff: (projectPath, file) => ipcRenderer.invoke('source:diff', projectPath, file),

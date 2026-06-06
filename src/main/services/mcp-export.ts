@@ -8,6 +8,7 @@ import { stripAnsi } from './orchestrator/mailbox'
 import { drainPendingMerges } from './orchestrator/merge-back'
 import { sweepArchive } from './archive'
 import { navigateBrowser, requestBrowserScreenshot, appendAppConsole } from '../ipc/browser.ipc'
+import { recordSystemFeedback, resolveSystemFeedback } from '../ipc/system-feedback.ipc'
 import { importDoc } from './docs-import'
 import * as docsImportCmd from './docs-import-command.mjs'
 import {
@@ -194,6 +195,10 @@ async function processCommand(path: string): Promise<void> {
     } else if (cmd.type === 'reset-orchestrator') {
       appendAppConsole('info', '[reset] flush + /clear demandés sur l’orchestrateur', 'reset-orchestrator')
       void agentResetOrchestrator(cmd.workspaceId, cmd.rehydration ?? null)
+    } else if (cmd.type === 'report-system-issue') {
+      await recordSystemFeedback(cmd)
+    } else if (cmd.type === 'resolve-system-issue') {
+      await resolveSystemFeedback(cmd.issueId, cmd.status, cmd.note ?? null)
     }
     try {
       unlinkSync(path)

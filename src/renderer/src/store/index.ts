@@ -59,6 +59,10 @@ interface AppStore {
   /** Vue Calendar active (entrée du rail au-dessus des workspaces) : true = grand calendrier, false = grilles terminaux. */
   calendarMode: boolean
   setCalendarMode: (enabled: boolean) => void
+
+  /** Vue System Feedback active (entrée du rail) : true = revue des rapports système (cross-workspace), false = grilles/calendrier. */
+  feedbackMode: boolean
+  setFeedbackMode: (enabled: boolean) => void
 }
 
 export const useAppStore = create<AppStore>((set) => ({
@@ -72,6 +76,7 @@ export const useAppStore = create<AppStore>((set) => ({
   terminalCounts: {},
   workspaceActivity: {},
   calendarMode: false,
+  feedbackMode: false,
   tasks: [],
   mailbox: [],
   projectVocab: [],
@@ -111,8 +116,9 @@ export const useAppStore = create<AppStore>((set) => ({
       const activeWorkspaceId = s.activeWorkspaceId === id ? (workspaces[0]?.id ?? null) : s.activeWorkspaceId
       return { workspaces, terminalsByWorkspace, workspaceActivity, terminalCounts, openWorkspaceIds, activeWorkspaceId }
     }),
-  // Activer un workspace quitte la vue Calendar (sélection mutuellement exclusive avec l'entrée du rail).
-  setActiveWorkspace: (activeWorkspaceId) => set({ activeWorkspaceId, maximizedTerminalId: null, calendarMode: false }),
+  // Activer un workspace quitte les vues globales du rail (Calendar / System Feedback) — sélection exclusive.
+  setActiveWorkspace: (activeWorkspaceId) =>
+    set({ activeWorkspaceId, maximizedTerminalId: null, calendarMode: false, feedbackMode: false }),
   openWorkspace: (id) =>
     set((s) => (s.openWorkspaceIds.includes(id) ? {} : { openWorkspaceIds: [...s.openWorkspaceIds, id] })),
   // Pose les terminaux d'UN workspace (clé = workspaceId). N'altère plus le focus : à l'activation
@@ -158,5 +164,7 @@ export const useAppStore = create<AppStore>((set) => ({
     })),
   setWorkspaceActivity: (id, active) =>
     set((s) => (s.workspaceActivity[id] === active ? {} : { workspaceActivity: { ...s.workspaceActivity, [id]: active } })),
-  setCalendarMode: (calendarMode) => set({ calendarMode }),
+  // Les deux vues globales du rail sont mutuellement exclusives (une seule à la fois).
+  setCalendarMode: (calendarMode) => set({ calendarMode, feedbackMode: false }),
+  setFeedbackMode: (feedbackMode) => set({ feedbackMode, calendarMode: false }),
 }))

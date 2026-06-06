@@ -17,6 +17,7 @@ import * as memory from '../shared/memory-core.mjs'
 import * as archive from './archive-read.mjs'
 import * as docs from './docs-read.mjs'
 import * as outcomes from './outcomes-read.mjs'
+import * as systemFeedback from '../shared/system-feedback-core.mjs'
 
 const APPDATA =
   process.env.APPDATA ||
@@ -450,6 +451,87 @@ server.tool(
   "KPIs d'équipe (analogie dashboard manager) dérivés du journal d'outcomes : débit (events/tasks distinctes), re-dispatch rate, taux d'approbation, rejets evidence-gate, conflits/defers de merge, blocked, abandons. Pour suivre la santé du process dans le temps.",
   {},
   async () => text(JSON.stringify(outcomes.teamMetrics(PROJECT_DIR), null, 2)),
+)
+
+// ---- System Feedback : store GLOBAL cross-workspace de rapports sur le SYSTÈME Oryon (orchestrateur-only) ----
+// L'orchestrateur dépose un rapport CURÉ quand il rencontre un problème touchant le système (worker/dispatch/
+// merge/design) — distinct des outcomes (auto, par tâche) et de la mémoire (par projet). L'humain relit
+// périodiquement (~/.oryon/system-feedback) pour décider des optimisations. Écriture via le main (sérialise +
+// broadcast UI) ; lecture en direct sur le FS ($0).
+
+orchestratorTool(
+  'report_system_issue',
+  "Dépose un RAPPORT dans le store GLOBAL cross-workspace de feedback système (~/.oryon/system-feedback). À utiliser quand tu rencontres un problème touchant le SYSTÈME Oryon lui-même (coordination des workers, dispatch, merge-back, worktrees, design de l'orchestrateur) — PAS un problème de tâche ordinaire. Donne l'erreur EXACTE (preuve verbatim), la cause que tu SUPPOSES, et les données pertinentes (ids de tâches, preuve git, compteurs). L'humain relit ces rapports pour améliorer Oryon. Consulte list_system_issues AVANT pour éviter un doublon.",
+  {
+    category: z
+      .enum(['worker', 'orchestration', 'system-design', 'oryon-bug', 'other'])
+      .describe('bucket : worker / orchestration (dispatch, merge) / system-design / bug Oryon / autre'),
+    severity: z.enum(['info', 'warning', 'error']).describe('gravité'),
+    title: z.string().describe('résumé court (1 ligne)'),
+    exactError: z.string().describe('erreur / preuve VERBATIM (message, sortie git, wake-line)'),
+    hypothesizedCause: z.string().describe('pourquoi tu penses que ça arrive'),
+    relevantData: z.string().optional().describe('libre : ids de tâches, preuve git, outcomes, compteurs'),
+    suggestedFix: z.string().optional().describe('piste de correction optionnelle'),
+  },
+  async ({ category, severity, title, exactError, hypothesizedCause, relevantData, suggestedFix }) => {
+    try {
+      const id = queueCommand({
+        type: 'report-system-issue',
+        workspaceId: currentWorkspaceId() ?? null,
+        agent: DEFAULT_AUTHOR ?? 'orchestrator',
+        category,
+        severity,
+        title,
+        exactError,
+        hypothesizedCause,
+        relevantData: relevantData ?? null,
+        suggestedFix: suggestedFix ?? null,
+      })
+      return text(JSON.stringify({ queued: true, id }))
+    } catch (e) {
+      return text(JSON.stringify({ queued: false, error: String(e) }))
+    }
+  },
+)
+
+orchestratorTool(
+  'list_system_issues',
+  "Liste les rapports du store GLOBAL de feedback système (TOUS workspaces confondus), récents d'abord. Filtre optionnel par status (open/reviewed/resolved/wontfix) et category. Consulte-le AVANT report_system_issue pour ne pas dupliquer un rapport existant.",
+  {
+    status: z.enum(['open', 'reviewed', 'resolved', 'wontfix']).optional().describe('filtre par statut'),
+    category: z.enum(['worker', 'orchestration', 'system-design', 'oryon-bug', 'other']).optional().describe('filtre par bucket'),
+    limit: z.number().optional().describe('nombre max (défaut 50)'),
+  },
+  async ({ status, category, limit }) => {
+    try {
+      const rows = await systemFeedback.listReports({
+        status,
+        category,
+        limit: typeof limit === 'number' ? limit : 50,
+      })
+      return text(JSON.stringify(rows, null, 2))
+    } catch (e) {
+      return text(JSON.stringify({ error: String(e) }))
+    }
+  },
+)
+
+orchestratorTool(
+  'resolve_system_issue',
+  "Change le statut d'un rapport de feedback système (par id) : reviewed / resolved / wontfix, avec une note optionnelle. Sert surtout à l'humain via l'UI, mais tu peux marquer un doublon 'resolved'.",
+  {
+    id: z.string().describe('id du rapport (cf. list_system_issues)'),
+    status: z.enum(['open', 'reviewed', 'resolved', 'wontfix']),
+    note: z.string().optional().describe('note de revue optionnelle'),
+  },
+  async ({ id, status, note }) => {
+    try {
+      const cmdId = queueCommand({ type: 'resolve-system-issue', issueId: id, status, note: note ?? null })
+      return text(JSON.stringify({ queued: true, id: cmdId }))
+    } catch (e) {
+      return text(JSON.stringify({ queued: false, error: String(e) }))
+    }
+  },
 )
 
 // ---- Orchestration : tâches et mailbox (MCP→main via file de commandes) ----
