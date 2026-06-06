@@ -5,7 +5,8 @@ import type { SystemFeedbackFilter, SystemFeedbackStatus } from '../../shared/ty
 
 // System Feedback — IPC + écriture du store GLOBAL cross-workspace (~/.oryon/system-feedback/reports.ndjson).
 // Les RAPPORTS sont déposés par l'orchestrateur via l'outil MCP report_system_issue : la commande transite par
-// mcp-export → recordSystemFeedback() ici (un SEUL writer côté main → pas de course avec la réécriture de statut).
+// mcp-export → recordSystemFeedback() ici. La sérialisation append/rewrite est garantie par la chaîne d'écritures
+// in-process de system-feedback-core (enqueue), pas par l'ordre d'appel.
 // La vue renderer lit via 'system-feedback:list' et change le statut via 'system-feedback:update-status'.
 // Toute écriture émet 'system-feedback:changed' pour rafraîchir la vue en direct.
 

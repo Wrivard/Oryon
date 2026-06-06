@@ -9,8 +9,11 @@
 // calculé par os.homedir() — AUCUN env à câbler, même chemin côté MCP et côté main. Layout :
 //   ~/.oryon/system-feedback/reports.ndjson — 1 ligne JSON par rapport (append-only ; statut réécrit atomiquement)
 //
-// Concurrence : append atomique au niveau OS (appendFile) ; la réécriture (changement de statut) est sérialisée
-// par le process principal (seul writer du rewrite) + atomique (tmp + rename-retry EPERM/EBUSY, copiés de docs-core).
+// Concurrence : TOUTES les écritures (append + réécriture de statut) passent par une CHAÎNE de promesses
+// in-process (enqueue) → sérialisées dans le main : jamais d'interleave read/rewrite qui ferait perdre un
+// append, ni deux réécritures qui se clobberent. Écritures atomiques (tmp + rename-retry EPERM/EBUSY, copiés
+// de docs-core). La LECTURE (listReports), y compris cross-process par le serveur MCP, n'est PAS sérialisée :
+// un read peut transitoirement rater le tout dernier record pendant un append en vol (bénin, auto-résolu).
 import { promises as fs, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
@@ -40,6 +43,18 @@ async function writeAtomic(path, content) {
   await renameRetry(tmp, path)
 }
 
+// Chaîne d'écritures in-process : sérialise append/rewrite pour qu'un read-modify-write ne perde jamais un
+// append concurrent et que deux rewrites ne se clobberent pas. Une tâche qui échoue ne casse pas la chaîne.
+let writeChain = Promise.resolve()
+function enqueue(task) {
+  const run = writeChain.then(task, task)
+  writeChain = run.then(
+    () => {},
+    () => {},
+  )
+  return run
+}
+
 /** Dossier du store GLOBAL de feedback système (toutes apps). mkdir récursif best-effort puis renvoie le chemin. */
 export function feedbackDir() {
   const dir = join(homedir(), '.oryon', 'system-feedback')
@@ -61,20 +76,22 @@ export const genId = () => randomUUID()
  * Append BEST-EFFORT d'un rapport (ne throw JAMAIS — un rapport perdu vaut mieux qu'un crash du main).
  * Complète id/ts/status si absents. Retourne le record écrit, ou null en cas d'échec.
  */
-export async function appendReport(record) {
-  try {
-    const full = {
-      ...record,
-      id: record.id || genId(),
-      ts: typeof record.ts === 'number' ? record.ts : Date.now(),
-      status: record.status || 'open',
+export function appendReport(record) {
+  return enqueue(async () => {
+    try {
+      const full = {
+        ...record,
+        id: record.id || genId(),
+        ts: typeof record.ts === 'number' ? record.ts : Date.now(),
+        status: record.status || 'open',
+      }
+      feedbackDir() // garantit le dossier
+      await fs.appendFile(reportsPath(), JSON.stringify(full) + '\n', 'utf8')
+      return full
+    } catch {
+      return null
     }
-    feedbackDir() // garantit le dossier
-    await fs.appendFile(reportsPath(), JSON.stringify(full) + '\n', 'utf8')
-    return full
-  } catch {
-    return null
-  }
+  })
 }
 
 /**
@@ -110,34 +127,36 @@ export async function listReports(filter = {}) {
  * Met à jour le statut (et la note de revue) d'UN rapport, par id. Réécriture ATOMIQUE du fichier entier.
  * Retourne true si l'id a été trouvé, false sinon.
  */
-export async function updateReportStatus(id, status, note, reviewedAt) {
-  let raw
-  try {
-    raw = await fs.readFile(reportsPath(), 'utf8')
-  } catch {
-    return false
-  }
-  let found = false
-  const next = []
-  for (const line of raw.split('\n')) {
-    const s = line.trim()
-    if (!s) continue
-    let r
+export function updateReportStatus(id, status, note, reviewedAt) {
+  return enqueue(async () => {
+    let raw
     try {
-      r = JSON.parse(s)
+      raw = await fs.readFile(reportsPath(), 'utf8')
     } catch {
-      next.push(s) // ligne malformée préservée telle quelle
-      continue
+      return false
     }
-    if (r.id === id) {
-      found = true
-      if (status) r.status = status
-      if (note !== undefined) r.reviewNote = note || undefined
-      r.reviewedAt = typeof reviewedAt === 'number' ? reviewedAt : Date.now()
+    let found = false
+    const next = []
+    for (const line of raw.split('\n')) {
+      const s = line.trim()
+      if (!s) continue
+      let r
+      try {
+        r = JSON.parse(s)
+      } catch {
+        next.push(s) // ligne malformée préservée telle quelle
+        continue
+      }
+      if (r.id === id) {
+        found = true
+        if (status) r.status = status
+        if (note !== undefined) r.reviewNote = note || undefined
+        r.reviewedAt = typeof reviewedAt === 'number' ? reviewedAt : Date.now()
+      }
+      next.push(JSON.stringify(r))
     }
-    next.push(JSON.stringify(r))
-  }
-  if (!found) return false
-  await writeAtomic(reportsPath(), next.join('\n') + '\n')
-  return true
+    if (!found) return false
+    await writeAtomic(reportsPath(), next.join('\n') + '\n')
+    return true
+  })
 }

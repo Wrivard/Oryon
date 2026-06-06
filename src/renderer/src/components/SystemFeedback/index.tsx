@@ -33,6 +33,7 @@ const STATUS_FILTERS: { key: SystemFeedbackStatus | 'all'; label: string }[] = [
   { key: 'open', label: 'Ouverts' },
   { key: 'reviewed', label: 'Revus' },
   { key: 'resolved', label: 'Résolus' },
+  { key: 'wontfix', label: 'Ignorés' },
 ]
 const ACTIONS: { key: SystemFeedbackStatus; label: string }[] = [
   { key: 'reviewed', label: 'Marquer revu' },
@@ -65,10 +66,12 @@ export function SystemFeedbackView(): JSX.Element {
   const [categoryFilter, setCategoryFilter] = useState<SystemFeedbackCategory | 'all'>('all')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [noteDraft, setNoteDraft] = useState('')
 
   const load = async (): Promise<void> => {
     try {
-      setReports(await window.bridge.systemFeedback.list())
+      // Borne le payload (store curé = petit ; cap large pour ne jamais charger un store géant d'un coup).
+      setReports(await window.bridge.systemFeedback.list({ limit: 500 }))
     } catch {
       setReports([])
     }
@@ -91,12 +94,13 @@ export function SystemFeedbackView(): JSX.Element {
   }, [reports, statusFilter, categoryFilter])
 
   const openCount = useMemo(() => (reports ?? []).filter((r) => r.status === 'open').length, [reports])
+  const totalCount = reports?.length ?? 0
 
   const applyStatus = async (r: SystemFeedbackReport, status: SystemFeedbackStatus): Promise<void> => {
     setBusyId(r.id)
     try {
-      await window.bridge.systemFeedback.updateStatus(r.id, status)
-      await load() // le broadcast rafraîchit aussi ; on recharge par sûreté
+      // Le main broadcast 'system-feedback:changed' sur succès → onChanged → load() rafraîchit la liste (pas de double-fetch).
+      await window.bridge.systemFeedback.updateStatus(r.id, status, noteDraft.trim() || undefined)
     } catch (e) {
       toast.error((e as Error).message, { title: 'Mise à jour échouée' })
     } finally {
@@ -119,6 +123,7 @@ export function SystemFeedbackView(): JSX.Element {
           <select
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value as SystemFeedbackCategory | 'all')}
+            aria-label="Filtrer par catégorie"
             className="h-7 rounded-md border border-border bg-bg-inset px-2 text-[12px] text-fg-muted outline-none"
           >
             <option value="all">Toutes catégories</option>
@@ -172,13 +177,30 @@ export function SystemFeedbackView(): JSX.Element {
             </div>
             <div className="space-y-1.5">
               <h3 className="text-[14px] font-semibold text-fg">
-                {(reports?.length ?? 0) === 0 ? 'Aucun rapport système' : 'Rien dans ce filtre'}
+                {totalCount === 0 ? 'Aucun rapport système' : 'Rien dans ce filtre'}
               </h3>
-              <p className="mx-auto max-w-sm text-[12px] leading-relaxed text-fg-subtle">
-                Les orchestrateurs de tes workspaces déposent ici un rapport quand ils rencontrent un problème
-                touchant le système Oryon (worker, dispatch, merge, design). Relis-les périodiquement pour décider
-                des optimisations.
-              </p>
+              {totalCount === 0 ? (
+                <p className="mx-auto max-w-sm text-[12px] leading-relaxed text-fg-subtle">
+                  Les orchestrateurs de tes workspaces déposent ici un rapport quand ils rencontrent un problème
+                  touchant le système Oryon (worker, dispatch, merge, design). Relis-les périodiquement pour
+                  décider des optimisations.
+                </p>
+              ) : (
+                <>
+                  <p className="mx-auto max-w-sm text-[12px] leading-relaxed text-fg-subtle">
+                    Aucun rapport ne correspond aux filtres actuels.
+                  </p>
+                  <button
+                    onClick={() => {
+                      setStatusFilter('all')
+                      setCategoryFilter('all')
+                    }}
+                    className="mt-1 rounded-full border border-border bg-bg-elevated px-3 py-1 text-[12px] font-medium text-fg-muted transition hover:border-border-strong hover:text-fg active:scale-[0.98]"
+                  >
+                    Réinitialiser les filtres
+                  </button>
+                </>
+              )}
             </div>
           </div>
         ) : (
@@ -189,7 +211,15 @@ export function SystemFeedbackView(): JSX.Element {
               return (
                 <div key={r.id} className="overflow-hidden rounded-lg border border-border bg-bg-panel">
                   <button
-                    onClick={() => setExpandedId(open ? null : r.id)}
+                    onClick={() => {
+                      if (open) {
+                        setExpandedId(null)
+                        setNoteDraft('')
+                      } else {
+                        setExpandedId(r.id)
+                        setNoteDraft(r.reviewNote ?? '') // préremplit avec la note existante (édition)
+                      }
+                    }}
                     className="flex w-full items-center gap-3 px-3 py-2.5 text-left outline-none transition-colors hover:bg-hover"
                   >
                     <span className={cn('shrink-0', sev.cls)}>{sev.icon}</span>
@@ -224,9 +254,21 @@ export function SystemFeedbackView(): JSX.Element {
                       {r.suggestedFix && <Field label="Correction proposée">{r.suggestedFix}</Field>}
                       <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px] text-fg-subtle">
                         <span>Déposé par {r.agent}</span>
-                        {r.reviewNote && <span>· Note : {r.reviewNote}</span>}
+                        {r.workspacePath && (
+                          <span className="max-w-full truncate" title={r.workspacePath}>
+                            · {r.workspacePath}
+                          </span>
+                        )}
+                        {typeof r.reviewedAt === 'number' && <span>· Révisé {rel(r.reviewedAt)}</span>}
                       </div>
-                      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                      <input
+                        value={noteDraft}
+                        onChange={(e) => setNoteDraft(e.target.value)}
+                        placeholder="Note de revue (optionnel) — jointe au changement de statut"
+                        aria-label="Note de revue"
+                        className="mt-3 w-full rounded-md border border-border bg-bg-inset px-2.5 py-1.5 text-[12px] text-fg outline-none placeholder:text-fg-subtle focus:border-border-strong"
+                      />
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
                         {ACTIONS.filter((a) => a.key !== r.status).map((a) => (
                           <button
                             key={a.key}
@@ -259,7 +301,7 @@ function Field({ label, children }: { label: string; children: ReactNode }): JSX
   return (
     <div className="mb-2.5">
       <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-fg-subtle">{label}</div>
-      <div className="whitespace-pre-wrap break-words font-mono text-[11.5px] leading-relaxed text-fg-muted">
+      <div className="max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono text-[11.5px] leading-relaxed text-fg-muted">
         {children}
       </div>
     </div>
