@@ -26,7 +26,7 @@ import {
 } from '../worktrees'
 import { enqueueMergeBack } from './merge-back'
 import { verifyWorktree } from './green-gate'
-import { readClaims, claimFile, releaseClaimsByAgent } from '../../../shared/memory-core.mjs'
+import { readClaims, claimFile, releaseClaimsByAgent, CLAIM_TTL_MS } from '../../../shared/memory-core.mjs'
 import type { OrchestratorEvent, TaskStatus, Workspace } from '../../../shared/types'
 
 // Exécuteur de flotte. L'orchestration EST pilotée par le terminal orchestrateur dédié (claude opus +
@@ -180,7 +180,10 @@ export function initOrchestrator(): void {
       }
       if (touched) {
         const ws = getWorkspace(wsId)
-        if (ws && isGitRepo(ws.project_path)) void releaseClaimsByAgent(ws.project_path, terminalName(id))
+        if (ws && isGitRepo(ws.project_path))
+          releaseClaimsByAgent(ws.project_path, terminalName(id)).catch((e) =>
+            console.error('[router] releaseClaimsByAgent', e),
+          )
         emitTasks(wsId)
       }
     } catch {
@@ -212,7 +215,10 @@ export function setTaskStatus(taskId: string, status: TaskStatus): void {
     // W6(b) : libère les claims de l'agent quand sa task quitte l'état actif (sinon claim fantôme).
     if (t.assigned_terminal_id && t.workspace_id) {
       const ws = getWorkspace(t.workspace_id)
-      if (ws && isGitRepo(ws.project_path)) void releaseClaimsByAgent(ws.project_path, terminalName(t.assigned_terminal_id))
+      if (ws && isGitRepo(ws.project_path))
+        releaseClaimsByAgent(ws.project_path, terminalName(t.assigned_terminal_id)).catch((e) =>
+          console.error('[router] releaseClaimsByAgent', e),
+        )
     }
   }
   if (t.workspace_id) emitTasks(t.workspace_id)
@@ -310,7 +316,8 @@ export async function agentAssignTask(
       for (const [cf, c] of Object.entries(claimsMap)) {
         const nc = norm(cf)
         const overlap = nf === nc || nf.startsWith(`${nc}/`) || nc.startsWith(`${nf}/`) // préfixe-aware (répertoires)
-        if (overlap && c && c.agent && c.agent.toLowerCase() !== me && activeOthers.has(c.agent.toLowerCase())) {
+        const fresh = c && Date.now() - Number(c.ts || 0) <= CLAIM_TTL_MS // claim expiré (TTL) → ignoré (W6)
+        if (overlap && c && c.agent && fresh && c.agent.toLowerCase() !== me && activeOthers.has(c.agent.toLowerCase())) {
           conflicts.push(`${f} (réservé par ${c.agent})`)
           break
         }
@@ -656,7 +663,9 @@ export function agentApproveTask(taskId: string): { ok: boolean; message: string
         task: t.title ?? 'task',
         onDone: (m) => {
           updateTask(taskId, { status: 'complete' })
-          void releaseClaimsByAgent(ws.project_path, agent) // W6(b) : la task est mergée → libère ses claims
+          releaseClaimsByAgent(ws.project_path, agent).catch((e) =>
+            console.error('[router] releaseClaimsByAgent', e),
+          ) // W6(b) : la task est mergée → libère ses claims
           recordOutcome(ws.project_path, {
             event: 'approved',
             taskId,
