@@ -785,9 +785,9 @@ server.tool(
 
 orchestratorTool(
   'broadcast_command',
-  "Envoie une commande dans les terminaux des workers : une slash-command claude (ex. \"/effort high\", \"/model opus\") pour changer leur effort/modèle/réglages, ou une instruction libre. Par défaut à TOUS les workers vivants ; cible-en un seul via `terminal`. Niveaux d'effort valides : low|medium|high|max.",
+  "Envoie une commande dans les terminaux des workers : une slash-command claude (ex. \"/effort high\", \"/model fable\") pour changer leur effort/modèle/réglages, ou une instruction libre. Par défaut à TOUS les workers vivants ; cible-en un seul via `terminal`. Niveaux d'effort valides : low|medium|high|max.",
   {
-    command: z.string().describe('la ligne à envoyer (ex. "/effort high", "/model opus")'),
+    command: z.string().describe('la ligne à envoyer (ex. "/effort high", "/model fable")'),
     terminal: z.string().optional().describe('name ou #position d\'un worker précis (sinon : tous)'),
   },
   async ({ command, terminal }) => {

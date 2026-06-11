@@ -28,7 +28,7 @@ function listTerminals(workspaceId: string): Terminal[] {
 const INSERT_TERMINAL = `INSERT INTO terminals (id, workspace_id, name, color, role, cwd, autostart_cmd, pane_index, worktree_path)
    VALUES (@id, @workspace_id, @name, @color, @role, @cwd, @autostart_cmd, @pane_index, @worktree_path)`
 
-// Terminal orchestrateur : 9e terminal DÉDIÉ (opus + ultracode en permanence), cwd = arbre PRINCIPAL
+// Terminal orchestrateur : 9e terminal DÉDIÉ (fable + ultracode en permanence), cwd = arbre PRINCIPAL
 // (pas de worktree → il voit l'intégration et inspecte les worktrees des workers). pane_index -1 = hors grille.
 function buildOrchestratorTerminal(workspaceId: string, projectPath: string): Terminal {
   return {

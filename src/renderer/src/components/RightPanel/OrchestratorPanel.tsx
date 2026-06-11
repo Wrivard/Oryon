@@ -3,7 +3,7 @@ import { Terminal } from '../TerminalGrid/Terminal'
 import { useVoiceContext, type OrchestratorBarApi } from '../Voice/VoiceProvider'
 import type { Terminal as TermRow } from '@shared/types'
 
-// Onglet Orchestrator : monte le terminal orchestrateur DÉDIÉ du workspace (opus + effort max). Tu tapes le goal
+// Onglet Orchestrator : monte le terminal orchestrateur DÉDIÉ du workspace (fable + effort max). Tu tapes le goal
 // DIRECTEMENT dans le terminal ; il pilote les workers via les outils MCP. Réutilise le composant <Terminal>
 // (spawn PTY + claude + config MCP gérés là-bas ; rendu plein écran claude → scroll molette/PgUp de l'historique).
 // La dictée vocale orchestrateur est écrite directement dans le PTY (relue/éditée dans claude lui-même) — plus de
@@ -26,7 +26,7 @@ export function OrchestratorPanel({ workspaceId, active }: { workspaceId: string
     <div className="flex h-full flex-col bg-bg-deep">
       <div className="flex h-7 shrink-0 items-center gap-2 border-b border-border px-3 text-[11px] text-fg-subtle">
         <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-        Orchestrator — opus · effort max · pilote la flotte via MCP
+        Orchestrator — fable · effort max · pilote la flotte via MCP
       </div>
       <div className="min-h-0 flex-1">
         {term ? (

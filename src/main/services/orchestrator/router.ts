@@ -699,7 +699,7 @@ export function agentApproveTask(taskId: string): { ok: boolean; message: string
 }
 
 /**
- * broadcast_command (MCP) : injecte une commande (slash-command claude comme /effort high ou /model opus,
+ * broadcast_command (MCP) : injecte une commande (slash-command claude comme /effort high ou /model fable,
  * ou une instruction libre) dans TOUS les workers vivants, ou un seul via `terminalRef`. Sert à régler
  * l'effort / le modèle / les réglages des terminaux (ce que assign_task ne fait pas).
  */

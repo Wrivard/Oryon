@@ -12,9 +12,9 @@ import { BrowserSection } from './BrowserSection'
 import { ThemePicker } from '../Theme/ThemePicker'
 import type { SkillInfo, SkillScope, SkillImportResult } from '@shared/types'
 
-// Tous les agents (orchestrateur + workers) sont CLAMPÉS sur Opus au spawn (enforceAgentSpawn) : un modèle
+// Tous les agents (orchestrateur + workers) sont CLAMPÉS sur Fable 5 au spawn (enforceAgentSpawn) : un modèle
 // faible est non-exprimable. Le contrôle reste pour rendre la politique « toujours le plus puissant » explicite.
-const MODELS = [{ v: 'opus', label: 'Opus (max) — imposé à tous les agents' }]
+const MODELS = [{ v: 'fable', label: 'Fable 5 (max) — imposé à tous les agents' }]
 
 type Tab = 'app' | 'mcp' | 'skills' | 'voice' | 'calendar' | 'browser' | 'updates'
 
@@ -266,7 +266,10 @@ export function SettingsModal({
                         </h3>
                         <div className="flex flex-wrap gap-1.5">
                           {MODELS.map((m) => {
-                            const active = (appSettings.agentModel || 'opus') === m.v
+                            // 'opus' hérité en DB = réécrit en fable au spawn → affiché actif sur fable.
+                            const stored =
+                              appSettings.agentModel === 'opus' ? 'fable' : appSettings.agentModel || 'fable'
+                            const active = stored === m.v
                             return (
                               <button
                                 key={m.v}
