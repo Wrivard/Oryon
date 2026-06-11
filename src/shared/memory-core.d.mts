@@ -76,6 +76,8 @@ export interface FileClaim {
   uuid: string
   ts: number
 }
+/** TTL anti-claim-zombie (ms) : un claim plus vieux est traité comme inexistant. */
+export declare const CLAIM_TTL_MS: number
 export function readClaims(projectDir: string): Promise<Record<string, FileClaim>>
 export function claimFile(
   projectDir: string,

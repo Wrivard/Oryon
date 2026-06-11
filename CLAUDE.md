@@ -28,8 +28,9 @@ factuel. Chaque règle ci-dessous est vérifiable dans le code (un chemin réel 
    disque, `processCommand()` dans `src/main/services/mcp-export.ts` la relit et la route.
    Ajouter un type = l'émettre côté `server.mjs` ET ajouter son handler côté
    `mcp-export.ts`. *Pourquoi* : les deux côtés sont des process séparés ; oublier un côté
-   = commande silencieusement ignorée. (Le registre partagé des types est en cours de
-   centralisation dans `src/shared/command-types.mjs`.)
+   = commande silencieusement ignorée. Le registre partagé des types vit dans
+   `src/shared/command-types.mjs` : tout nouveau type s'y ajoute (le main logge en
+   erreur tout type hors registre).
 
 5. **Commits conventionnels avec scope.** Format `feat(agents): …`, `fix(mcp): …`,
    `docs(repo): …` (français OK — voir `git log --oneline`). JAMAIS `--force`,
@@ -57,9 +58,11 @@ factuel. Chaque règle ci-dessous est vérifiable dans le code (un chemin réel 
 
 - `npm run typecheck` est **obligatoire** avant tout commit qui touche du TypeScript —
   c'est le SEUL garde-fou de types (il lance `tsconfig.node.json` + `tsconfig.web.json`).
-- Pas de suite de tests `npm test` ; quelques scripts de vérification ad hoc existent
-  (`node scripts/test-docs-core.mjs`, `scripts/test-docs-import-command.mjs`) — lance-les
-  si tu touches au domaine concerné.
+- `npm test` (vitest, fichiers sous `tests/`) — obligatoire aussi : caractérise les
+  invariants critiques (quoting claude-launcher, sérialisation system-feedback,
+  round-trip enc:v1). La CI (`.github/workflows/ci.yml`) lance typecheck + test + build.
+- Scripts ad hoc du domaine docs : `node scripts/test-docs-core.mjs`,
+  `scripts/test-docs-import-command.mjs` — lance-les si tu touches ce domaine.
 
 ## Pièges connus
 

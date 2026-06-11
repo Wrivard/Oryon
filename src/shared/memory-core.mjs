@@ -340,6 +340,59 @@ function claimsPath(projectDir) {
   return join(memDir(projectDir), 'claims.json')
 }
 
+// Verrou inter-processus du store de claims : claims.json est écrit par le process principal ET par le
+// serveur MCP de CHAQUE worker (process distincts) — le read-modify-write sans verrou perdait des claims
+// (dernier rename gagne). Fichier-lock à création exclusive (flag 'wx'), contenu `pid ts` ; un lock plus
+// vieux que LOCK_STALE_MS (porteur crashé) est volé. Au timeout, on procède SANS verrou avec un log :
+// le store est un garde-fou ADVISORY — l'indisponibilité serait pire que la course résiduelle. claims.lock
+// vit sous .oryon/memory/ (couvert par l'ignore *.lock du merge-back, invariant v0.1.63).
+const LOCK_STALE_MS = 5000
+const LOCK_TIMEOUT_MS = 3000
+const lockPath = (projectDir) => join(memDir(projectDir), 'claims.lock')
+
+async function withClaimsLock(projectDir, fn) {
+  const lp = lockPath(projectDir)
+  await ensureDir(memDir(projectDir))
+  const deadline = Date.now() + LOCK_TIMEOUT_MS
+  let locked = false
+  while (Date.now() < deadline) {
+    try {
+      await fs.writeFile(lp, `${process.pid} ${Date.now()}`, { flag: 'wx' })
+      locked = true
+      break
+    } catch (e) {
+      if (!e || e.code !== 'EEXIST') break // FS en vrac : on tente sans verrou
+      try {
+        const [, ts] = (await fs.readFile(lp, 'utf8')).split(' ')
+        if (Date.now() - Number(ts || 0) > LOCK_STALE_MS) {
+          await fs.unlink(lp).catch(() => {})
+          continue
+        }
+      } catch {
+        /* lock illisible/disparu : re-essaie */
+      }
+      await new Promise((r) => setTimeout(r, 25))
+    }
+  }
+  if (!locked) {
+    console.error('[memory-core] claims.lock indisponible après', LOCK_TIMEOUT_MS, 'ms — opération SANS verrou')
+  }
+  try {
+    return await fn()
+  } finally {
+    if (locked) {
+      try {
+        await fs.unlink(lp)
+      } catch {
+        /* déjà parti */
+      }
+    }
+  }
+}
+
+/** TTL anti-claim-zombie : un claim plus vieux que ça est traité comme inexistant (4 h). */
+export const CLAIM_TTL_MS = 4 * 60 * 60 * 1000
+
 /** Lit claims.json (mapping fichier → agent + uuid). Retourne {} si absent. */
 export async function readClaims(projectDir) {
   try {
@@ -354,61 +407,68 @@ export async function readClaims(projectDir) {
 /** Ajoute/met à jour un claim (fichier → {agent, uuid, ts}). Détection de conflit : si un autre agent
  *  possède déjà ce fichier avec un uuid différent, renvoie {conflict:true, owner}. Sinon {conflict:false}. */
 export async function claimFile(projectDir, filepath, agentName, opts = {}) {
-  const path = claimsPath(projectDir)
-  const uuid = opts.uuid || String(Math.random()).slice(2)
-  const ts = Date.now()
-  const dir = memDir(projectDir)
-  await ensureDir(dir)
+  return withClaimsLock(projectDir, async () => {
+    const path = claimsPath(projectDir)
+    const uuid = opts.uuid || String(Math.random()).slice(2)
+    const ts = Date.now()
+    const dir = memDir(projectDir)
+    await ensureDir(dir)
 
-  let claims = await readClaims(projectDir)
-  const existing = claims[filepath]
+    let claims = await readClaims(projectDir)
+    const existing = claims[filepath]
+    const expired = existing && Date.now() - Number(existing.ts || 0) > CLAIM_TTL_MS
 
-  // Conflit si un autre agent a déjà ce fichier
-  if (existing && existing.agent !== agentName) {
-    return { conflict: true, owner: existing.agent, uuid: existing.uuid }
-  }
+    // Conflit si un autre agent a déjà ce fichier (claim non expiré)
+    if (existing && !expired && existing.agent !== agentName) {
+      return { conflict: true, owner: existing.agent, uuid: existing.uuid }
+    }
 
-  // Pas de conflit : créer ou mettre à jour
-  claims[filepath] = { agent: agentName, uuid, ts }
+    // Pas de conflit : créer ou mettre à jour
+    claims[filepath] = { agent: agentName, uuid, ts }
 
-  // Écriture atomique
-  const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${++tmpSeq}`
-  await fs.writeFile(tmp, JSON.stringify(claims, null, 2), 'utf8')
-  await renameRetry(tmp, path)
+    // Écriture atomique
+    const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${++tmpSeq}`
+    await fs.writeFile(tmp, JSON.stringify(claims, null, 2), 'utf8')
+    await renameRetry(tmp, path)
 
-  return { conflict: false, uuid }
+    return { conflict: false, uuid }
+  })
 }
 
 /** Relâche un claim (supprime le fichier de claims.json). Idempotent. */
 export async function releaseClaim(projectDir, filepath) {
-  const path = claimsPath(projectDir)
-  let claims = await readClaims(projectDir)
+  return withClaimsLock(projectDir, async () => {
+    const path = claimsPath(projectDir)
+    let claims = await readClaims(projectDir)
 
-  if (claims[filepath]) {
-    delete claims[filepath]
-    const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${++tmpSeq}`
-    await fs.writeFile(tmp, JSON.stringify(claims, null, 2), 'utf8')
-    await renameRetry(tmp, path)
-  }
+    if (claims[filepath]) {
+      delete claims[filepath]
+      const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${++tmpSeq}`
+      await fs.writeFile(tmp, JSON.stringify(claims, null, 2), 'utf8')
+      await renameRetry(tmp, path)
+    }
 
-  return { released: true }
+    return { released: true }
+  })
 }
 
 /** Relâche TOUS les claims d'un agent (à la complétion/annulation de sa task). Idempotent. Renvoie le nb supprimé. */
 export async function releaseClaimsByAgent(projectDir, agentName) {
-  const path = claimsPath(projectDir)
-  const claims = await readClaims(projectDir)
-  let released = 0
-  for (const [f, c] of Object.entries(claims)) {
-    if (c && c.agent === agentName) {
-      delete claims[f]
-      released++
+  return withClaimsLock(projectDir, async () => {
+    const path = claimsPath(projectDir)
+    const claims = await readClaims(projectDir)
+    let released = 0
+    for (const [f, c] of Object.entries(claims)) {
+      if (c && c.agent === agentName) {
+        delete claims[f]
+        released++
+      }
     }
-  }
-  if (released > 0) {
-    const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${++tmpSeq}`
-    await fs.writeFile(tmp, JSON.stringify(claims, null, 2), 'utf8')
-    await renameRetry(tmp, path)
-  }
-  return { released }
+    if (released > 0) {
+      const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${++tmpSeq}`
+      await fs.writeFile(tmp, JSON.stringify(claims, null, 2), 'utf8')
+      await renameRetry(tmp, path)
+    }
+    return { released }
+  })
 }
