@@ -5,6 +5,41 @@ import { ensureClaudeReady, normalizeClaudeAutostart, enforceAgentSpawn } from '
 import { hasClaudeSessionId } from '../services/claude-session'
 import { buildProjectMcpConfigForPath } from './settings.ipc'
 
+// Coalescing du flux PTY→renderer : un send par rafale (~8 ms) au lieu d'un par chunk.
+// Un agent claude qui streame = des dizaines de chunks/s × N terminaux montés — l'IPC
+// par chunk coûtait cher pour rien (xterm.write accepte les blocs). 8 ms < 1 frame
+// (16 ms) → aucune latence perceptible. flushNow garantit l'ORDRE data→exit.
+const FLUSH_MS = 8
+const FLUSH_MAX_BYTES = 64 * 1024
+export function makeCoalescedSender(send: (data: string) => void): {
+  push: (data: string) => void
+  flushNow: () => void
+} {
+  let buf = ''
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const flushNow = (): void => {
+    if (timer) {
+      clearTimeout(timer)
+      timer = null
+    }
+    if (!buf) return
+    const out = buf
+    buf = ''
+    send(out)
+  }
+  return {
+    push: (data: string): void => {
+      buf += data
+      if (buf.length >= FLUSH_MAX_BYTES) {
+        flushNow()
+        return
+      }
+      if (!timer) timer = setTimeout(flushNow, FLUSH_MS)
+    },
+    flushNow,
+  }
+}
+
 export function registerTerminalsIpc() {
   // Spawn d'un PTY ; le flux d'octets est poussé sur des canaux dédiés par id.
   ipcMain.handle('terminals:create', (e, opts: CreateTerminalInput) => {
@@ -43,6 +78,9 @@ export function registerTerminalsIpc() {
         autostart += hasClaudeSessionId(opts.cwd, opts.id) ? ` --resume ${opts.id}` : ` --session-id ${opts.id}`
       }
     }
+    const sender = makeCoalescedSender((data) => {
+      if (!wc.isDestroyed()) wc.send(`terminal:data:${opts.id}`, data)
+    })
     createTerminal({
       id: opts.id,
       cwd: opts.cwd,
@@ -50,10 +88,9 @@ export function registerTerminalsIpc() {
       cols: opts.cols,
       rows: opts.rows,
       env: opts.env,
-      onData: (data) => {
-        if (!wc.isDestroyed()) wc.send(`terminal:data:${opts.id}`, data)
-      },
+      onData: (data) => sender.push(data),
       onExit: (code) => {
+        sender.flushNow() // flush le buffer AVANT de signaler l'exit → ordre data→exit garanti côté renderer
         if (!wc.isDestroyed()) wc.send(`terminal:exit:${opts.id}`, code)
       },
     })
