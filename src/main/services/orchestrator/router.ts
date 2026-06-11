@@ -12,6 +12,7 @@ import { ensureClaudeReady, normalizeClaudeAutostart, enforceAgentSpawn } from '
 import { sweepArchive } from '../archive'
 import { recordOutcome } from './outcomes'
 import { buildProjectMcpConfigForPath, addConnector } from '../../ipc/settings.ipc'
+import { makeCoalescedSender } from '../../ipc/terminals.ipc'
 import { recordMailbox } from './mailbox'
 import { getOrCreateProjectId, createTask, listTasks, getTask, updateTask } from './task-store'
 import {
@@ -854,6 +855,7 @@ export function agentRestartAgent(workspaceId: string, terminalRef: string): voi
 
   // Recâble le flux PTY vers le renderer sur les MÊMES canaux que terminals:create (le composant Terminal de ce
   // id garde ses listeners onData/onExit). Taille par défaut : le renderer re-fit au prochain resize/clic.
+  const sender = makeCoalescedSender((data) => sendToAllWindows(`terminal:data:${id}`, data))
   createTerminal({
     id,
     cwd: shellCwd,
@@ -861,8 +863,11 @@ export function agentRestartAgent(workspaceId: string, terminalRef: string): voi
     cols: 80,
     rows: 24,
     env,
-    onData: (data) => sendToAllWindows(`terminal:data:${id}`, data),
-    onExit: (code) => sendToAllWindows(`terminal:exit:${id}`, code),
+    onData: (data) => sender.push(data),
+    onExit: (code) => {
+      sender.flushNow() // flush le buffer AVANT de signaler l'exit → ordre data→exit garanti côté renderer
+      sendToAllWindows(`terminal:exit:${id}`, code)
+    },
   })
   tellOrch(`[oryon] ↻ ${row.name} relancé (kill+recreate du PTY). Attends qu'il soit prêt avant de le re-piloter.`)
 }
