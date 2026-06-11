@@ -54,6 +54,7 @@ const terminalAssignedAt = new Map<string, number>() // R3 : ts du dernier dispa
 const attemptByTask = new Map<string, number>() // capture : nb d'essais par task (assign/re-dispatch) pour outcomes.ndjson
 const readOnlyByTask = new Map<string, boolean>() // SPEC-B : tasks de consultation (aucun commit attendu) → skip l'evidence-gate « branche vide »
 const STALL_MS = 5 * 60_000 // worker busy sans flux depuis 5 min → surfacé à l'orchestrateur (JAMAIS tué)
+const DEADBORN_DEMOTE_MS = 10 * 60_000 // mort-né (0 octet depuis le dispatch) muet > 10 min (> STALL_MS : la notif précède) → tâche rétrogradée
 let observerInstalled = false
 
 // ---- helpers ----
@@ -347,15 +348,22 @@ export async function agentAssignTask(
   const open = [...listTasks(workspaceId)]
     .reverse()
     .find((t) => t.assigned_terminal_id === id && (t.status === 'in-progress' || t.status === 'in-review'))
+  const wantTitle = title && title.trim() ? title.trim() : null
+  // Recyclage SILENCIEUX = bug ledger (rapport c0834efb) : si l'assign porte un titre DIFFÉRENT de la tâche
+  // ouverte, c'est un AUTRE travail → on rétrograde la vieille au board (todo + détachée ; claims libérés par le
+  // flux existant) et on en crée une fraîche, au lieu d'empiler outcomes/titre mensonger sur le même id.
+  const reuse = open && (!wantTitle || wantTitle === (open.title ?? '').trim())
   let task
-  if (open) {
-    updateTask(open.id, { status: 'in-progress', instructions, assigned_terminal_id: id })
-    task = { ...open, instructions, status: 'in-progress' as TaskStatus, assigned_terminal_id: id }
+  if (reuse) {
+    // Re-dispatch légitime (même tâche) : refresh W1, feedback, retry après "blocked". Met le titre à jour si fourni.
+    updateTask(open.id, { status: 'in-progress', instructions, assigned_terminal_id: id, ...(wantTitle ? { title: wantTitle } : {}) })
+    task = { ...open, instructions, status: 'in-progress' as TaskStatus, assigned_terminal_id: id, ...(wantTitle ? { title: wantTitle } : {}) }
   } else {
+    if (open) updateTask(open.id, { status: 'todo', assigned_terminal_id: null }) // titre ≠ → la vieille retourne au board
     task = createTask({
       workspaceId,
       projectId,
-      title: (title && title.trim()) || instructions.slice(0, 80),
+      title: wantTitle || instructions.slice(0, 80),
       role: 'builder',
       instructions,
       dependsOn: [],
@@ -501,15 +509,31 @@ export async function agentReportTask(
   status: string,
   summary: string,
   claimed?: { filesChanged: string[] | null; committed: boolean | null },
+  taskId?: string | null,
 ): Promise<{ ok: boolean; taskId?: string }> {
   const ids = terminalIds(workspaceId)
   const termId = fromAgent
     ? ids.find((x) => terminalName(x).toLowerCase() === fromAgent.toLowerCase())
     : undefined
-  // Task in-progress la plus récente de ce worker.
-  const task = [...listTasks(workspaceId)]
+  // Attribution du rapport. La déduction nom→terminal→« dernière in-progress » est CE qui, après un rebinding
+  // PTY (011), a clos la tâche du voisin (rapport a99d20e5). Le contrat injecté porte DÉJÀ `[task <id>]` ; si le
+  // worker renvoie ce jeton il est PRIORITAIRE (identité explicite > déduction). Repli sans jeton = déduction.
+  let task = [...listTasks(workspaceId)]
     .reverse()
     .find((t) => t.assigned_terminal_id === termId && t.status === 'in-progress')
+  if (taskId) {
+    const t = getTask(taskId)
+    if (t && t.workspace_id === workspaceId) {
+      if (termId && t.assigned_terminal_id && t.assigned_terminal_id !== termId)
+        console.error('[router] report_task : jeton taskId ≠ déduction par nom', {
+          taskId,
+          fromAgent,
+          tokenTerminal: t.assigned_terminal_id,
+          nameTerminal: termId,
+        })
+      task = t // jeton explicite prioritaire
+    }
+  }
   const blocked = status.toLowerCase() === 'blocked'
 
   // Dédoublonnage (W2, belt-and-suspenders) : démote toute AUTRE ligne in-progress du même terminal
@@ -647,13 +671,18 @@ export async function agentReportTask(
 export function tickWatchdog(): void {
   const now = Date.now()
   for (const [tid, busy] of terminalBusy) {
-    if (!busy || stallNotified.has(tid) || interrupting.has(tid) || !hasLiveTerminal(tid)) continue
+    if (!busy || interrupting.has(tid) || !hasLiveTerminal(tid)) continue
     const last = terminalLastData.get(tid)
     // R3 : référence = dernier flux, ou (worker MORT-NÉ : jamais émis un octet) l'instant du dispatch — pour ne
     // plus rater un claude qui hang/crash au lancement sans rien écrire (avant : last===undefined → jamais flaggé).
     const ref = last ?? terminalAssignedAt.get(tid)
     if (ref === undefined || now - ref <= STALL_MS) continue
     const deadOnArrival = last === undefined
+    // 013 : un mort-né encore muet au-delà de DEADBORN_DEMOTE_MS ne se réveillera pas seul → on RÉTROGRADE sa tâche
+    // (en plus de la notification déjà émise à STALL_MS). On reste donc surveillé entre les deux seuils : stallNotified
+    // ne court-circuite plus le mort-né, il n'empêche que la RE-notification.
+    const demote = deadOnArrival && now - ref > DEADBORN_DEMOTE_MS
+    if (stallNotified.has(tid) && !demote) continue
     const wsId = (getDb().prepare('SELECT workspace_id FROM terminals WHERE id = ?').pluck().get(tid) as
       | string
       | undefined)
@@ -666,6 +695,31 @@ export function tickWatchdog(): void {
     const ev = ws && isGitRepo(ws.project_path) ? branchEvidence(ws.project_path, name) : null
     const mins = Math.round((now - ref) / 60000)
     const evidence = ev ? ` [preuve: ${ev.ahead} commit(s), ${ev.filesChanged.length} fichier(s)]` : ''
+    if (demote) {
+      // Rétrograde au board + libère le terminal + ses claims + outcome 'abandoned' (aligné sur l'exit-observer R7).
+      // UNIQUEMENT le mort-né (zéro octet) — JAMAIS « silencieux mais a déjà émis » (un claude qui réfléchit est légitime).
+      updateTask(busy, { status: 'todo', assigned_terminal_id: null })
+      terminalBusy.set(tid, null)
+      if (ws && isGitRepo(ws.project_path))
+        releaseClaimsByAgent(ws.project_path, name).catch((e) => console.error('[router] releaseClaimsByAgent', e))
+      if (ws)
+        recordOutcome(ws.project_path, {
+          event: 'abandoned',
+          taskId: busy,
+          agent: name,
+          attempt: attemptByTask.get(busy),
+          title: t?.title ?? undefined,
+          reason: 'dead-born-demote',
+        })
+      pasteLine(
+        orch,
+        oneLinePrompt(
+          `[oryon watchdog] tâche "${t?.title ?? ''}" RÉTROGRADÉE todo (${name} mort-né : aucune sortie depuis ~${mins} min) — réassigne-la (restart_agent puis assign_task) ou inspecte le terminal.`,
+        ),
+      )
+      stallNotified.add(tid)
+      continue
+    }
     const msg = deadOnArrival
       ? `[oryon watchdog] ${name} n'a produit AUCUNE sortie depuis le dispatch (~${mins} min) sur "${t?.title ?? ''}" — claude a peut-être planté au lancement ou son serveur MCP est mort. Vérifie (get_terminal_output ${name} / mcp_health ${name}) puis restart_agent si besoin. (aucun kill automatique)`
       : `[oryon watchdog] ${name} silencieux depuis ~${mins} min sur "${t?.title ?? ''}"${evidence}. Peut-être bloqué / en attente d'input / en boucle — inspecte (get_terminal_output ${name}) puis relance ou réassigne. (aucun kill automatique)`

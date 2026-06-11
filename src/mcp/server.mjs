@@ -772,13 +772,14 @@ server.tool(
     fromAgent: z.string().optional().describe('ton nom d\'agent (auto = ORYON_AGENT_NAME)'),
     files_changed: z.array(z.string()).optional().describe('chemins relatifs que tu as touchés (cross-check vs git ; ne remplace PAS le commit)'),
     committed: z.boolean().optional().describe('true si tu as bien commité ton travail dans TA branche'),
+    task_id: z.string().optional().describe('l\'id [task …] reçu dans ton contrat — fournis-le TOUJOURS si tu l\'as'),
   },
-  async ({ status, summary, fromAgent, files_changed, committed }) => {
+  async ({ status, summary, fromAgent, files_changed, committed, task_id }) => {
     const from = fromAgent ?? DEFAULT_AUTHOR ?? 'unknown'
     const workspaceId = currentWorkspaceId()
     if (!workspaceId) return text(JSON.stringify({ queued: false, error: 'workspace introuvable' }))
     try {
-      const id = queueCommand({ type: 'report-task', workspaceId, fromAgent: from, status, summary, filesChanged: files_changed ?? null, committed: committed ?? null })
+      const id = queueCommand({ type: 'report-task', workspaceId, fromAgent: from, status, summary, filesChanged: files_changed ?? null, committed: committed ?? null, taskId: task_id ?? null })
       return text(JSON.stringify({ queued: true, id, status }))
     } catch (e) {
       return text(JSON.stringify({ queued: false, error: String(e) }))
