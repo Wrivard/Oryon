@@ -50,13 +50,13 @@ function resolveProjectId(projectPath?: string | null): string | null {
 // la lecture). Déchiffrés UNIQUEMENT à la génération du config (just-in-time, écrit en 0o600) et pour
 // préremplir le formulaire d'édition (connectorSecrets) — jamais renvoyés par listConnectors.
 const ENC_PREFIX = 'enc:v1:'
-function encryptSecrets(obj: Record<string, string> | null | undefined): string | null {
+export function encryptSecrets(obj: Record<string, string> | null | undefined): string | null {
   if (!obj || Object.keys(obj).length === 0) return null
   const json = JSON.stringify(obj)
   if (safeStorage.isEncryptionAvailable()) return ENC_PREFIX + safeStorage.encryptString(json).toString('base64')
   return json
 }
-function decryptSecrets(stored: unknown): Record<string, string> {
+export function decryptSecrets(stored: unknown): Record<string, string> {
   if (typeof stored !== 'string' || stored.length === 0) return {}
   try {
     if (stored.startsWith(ENC_PREFIX)) {
