@@ -17,5 +17,6 @@ final_a11y_audit.txt
 .DS_Store
 Thumbs.db
 
-# Logs de build (redirections manuelles de `pnpm dist:*`)
+# Logs de build (redirections manuelles de `pnpm dist:*`) et log du lanceur dev
 dist-*.log
+.dev.log
