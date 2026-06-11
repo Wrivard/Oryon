@@ -1,0 +1,23 @@
+name: CI
+
+# Filet qualité : typecheck + build sur chaque push/PR vers main.
+# `electron-vite build` (esbuild) ne vérifie PAS les types → tsc est le seul garde-fou.
+# --ignore-scripts : saute electron-rebuild (natifs inutiles pour tsc/esbuild) → CI rapide.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm run build
