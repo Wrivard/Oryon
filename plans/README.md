@@ -17,12 +17,12 @@ tient CE fichier à jour — les exécuteurs ne le modifient pas.
 | 005 | README.md + CLAUDE.md | 1 | P2 | S–M | — | DONE (Lia, mergé 7b98e56) |
 | 006 | Archive incrémentale + persistance merges reportés | 1 | P3 | M | — | DONE (Gus, mergé fc90f8a — bonus : fix du bug needsGzip `prev.bytes`) |
 | 007 | Socle de tests (vitest + caractérisation launcher/cores/chiffrement) | 2 | P1 | M | 001 | DONE (Kai, mergé ba499aa — 15 tests) |
-| 008 | Contrats assign_task livrés par FICHIER (anti-troncature) | 2 | P1 | M | 003 | TODO |
+| 008 | Contrats assign_task livrés par FICHIER (anti-troncature) | 2 | P1 | M | 003 | DONE (Nell, mergé 469d5da — ledger affiché « Plan 003 » : tâche recyclée, cf. 013) |
 | 009 | Coalescing PTY→IPC (flux terminaux) | 2 | P2 | S–M | — | DONE (Roan, mergé 23a05cd — Cruz écarté : branche périmée, cf. backlog) |
-| 010 | Dé-dup helpers (secrets-crypto ×3, app-settings ×3, atomic-fs ×3) | 2 | P2 | M | 003 | TODO |
-| 011 | Spawn/worktree : cwd=worktree, health-check, env identité | 3 | P1 | M | 008 | TODO |
-| 012 | Retrait uiohook-napi (+ unpin Python CI) | 3 | P2 | M | 001, 007 | TODO |
-| 013 | Intégrité ledger : taskId transactionnel + attribution par jeton + demote mort-né | 4 | P1 | M–L | 002, 011 | TODO |
+| 010 | Dé-dup helpers (secrets-crypto ×3, app-settings ×3, atomic-fs ×3) | 2 | P2 | M | 003 | DONE (Lia, mergé 3933fde) |
+| 011 | Spawn/worktree : cwd=worktree, health-check, env identité | 3 | P1 | M | 008 | DONE (Cole, mergé 7ae639f) |
+| 012 | Retrait uiohook-napi (+ unpin Python CI) | 3 | P2 | M | 001, 007 | DONE (Gus, mergé ee7e74d + retouche aa7de89) |
+| 013 | Intégrité ledger : taskId transactionnel + attribution par jeton + demote mort-né | 4 | P1 | M–L | 002, 011 | EN COURS (Roan) |
 | 014 | uuid → crypto.randomUUID (dep supprimée) | 5 | P3 | S | 012, 013 | TODO |
 | 015 | Hygiène repo (.dev.log ignoré, dev.cmd tracké, scripts a11y retirés) | 0 | P3 | S | — | DONE (7372d50) |
 | 016 | Lockfile unique npm (suppression pnpm-lock.yaml) | 0 | P3 | S | — | DONE (dbaf52c) |
