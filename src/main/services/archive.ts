@@ -93,24 +93,25 @@ function writeFileAtomic(p: string, content: string): void {
  * session déjà archivée à la même taille+mtime n'est pas re-gzippée), (ré)écrit chaque meta .json (tags +
  * horodatage frais), et renvoie la liste des copies gzip à exécuter (le caller choisit sync ou streaming).
  */
-function planAgent(ref: AgentRef): GzJob[] {
+function planAgent(ref: AgentRef): { jobs: GzJob[]; changed: boolean } {
   const src = claudeProjectDir(ref.cwd)
   let files: string[]
   try {
     files = readdirSync(src).filter((f) => f.endsWith('.jsonl'))
   } catch {
-    return [] // pas de transcripts pour ce cwd
+    return { jobs: [], changed: false } // pas de transcripts pour ce cwd
   }
-  if (!files.length) return []
+  if (!files.length) return { jobs: [], changed: false }
   const slug = (ref.role === 'orchestrator' ? 'orchestrator' : ref.agent || ref.termId).toLowerCase()
   const outDir = join(archiveRoot(ref.project), slug)
   try {
     mkdirSync(outDir, { recursive: true })
   } catch {
-    return []
+    return { jobs: [], changed: false }
   }
   const tasks = tasksFor(ref.termId)
   const jobs: GzJob[] = []
+  let changed = false
   for (const f of files) {
     const sp = join(src, f)
     let st: ReturnType<typeof statSync>
@@ -122,32 +123,56 @@ function planAgent(ref: AgentRef): GzJob[] {
     const sessionId = f.replace(/\.jsonl$/, '')
     const gzPath = join(outDir, `${sessionId}.jsonl.gz`)
     const metaPath = join(outDir, `${sessionId}.meta.json`)
-    const prev = readJson<{ sourceBytes: number; sourceMtimeMs: number }>(metaPath)
+    const gz = `${slug}/${sessionId}.jsonl.gz`
+    const prev = readJson<{
+      bytes?: number
+      sourceMtimeMs?: number
+      gz?: string
+      agent?: string
+      role?: string
+      workspaceId?: string
+      project?: string
+      tasks?: TaskTag[]
+    }>(metaPath)
+    // NB : le meta sérialise le champ `bytes` (pas `sourceBytes`) → comparer `prev.bytes` (sinon needsGzip
+    // serait toujours vrai et le sweep incrémental serait neutralisé).
     const needsGzip =
-      !prev || prev.sourceBytes !== st.size || prev.sourceMtimeMs !== st.mtimeMs || !existsSync(gzPath)
-    // meta réécrite à CHAQUE passage (MAJ tags/horodatage) ; le gzip ne tourne que si le source a changé.
-    writeFileAtomic(
-      metaPath,
-      JSON.stringify(
-        {
-          sessionId,
-          agent: ref.agent,
-          role: ref.role,
-          workspaceId: ref.workspaceId,
-          project: ref.project,
-          bytes: st.size,
-          sourceMtimeMs: st.mtimeMs,
-          archivedAt: Date.now(),
-          gz: `${slug}/${sessionId}.jsonl.gz`,
-          tasks,
-        },
-        null,
-        2,
-      ),
-    )
+      !prev || prev.bytes !== st.size || prev.sourceMtimeMs !== st.mtimeMs || !existsSync(gzPath)
+    // meta écrite UNIQUEMENT si un champ sérialisé change (hors `archivedAt`) → plus de réécriture à chaque
+    // passage. needsGzip ⟹ source modifié ⟹ bytes/mtime changés ⟹ metaChanged, donc l'index voit le delta.
+    const metaChanged =
+      needsGzip ||
+      prev?.gz !== gz ||
+      prev?.agent !== ref.agent ||
+      prev?.role !== ref.role ||
+      prev?.workspaceId !== ref.workspaceId ||
+      prev?.project !== ref.project ||
+      JSON.stringify(prev?.tasks ?? []) !== JSON.stringify(tasks)
+    if (metaChanged) {
+      writeFileAtomic(
+        metaPath,
+        JSON.stringify(
+          {
+            sessionId,
+            agent: ref.agent,
+            role: ref.role,
+            workspaceId: ref.workspaceId,
+            project: ref.project,
+            bytes: st.size,
+            sourceMtimeMs: st.mtimeMs,
+            archivedAt: Date.now(),
+            gz,
+            tasks,
+          },
+          null,
+          2,
+        ),
+      )
+      changed = true
+    }
     if (needsGzip) jobs.push({ src: sp, dest: gzPath })
   }
-  return jobs
+  return { jobs, changed }
 }
 
 function gzipSyncFile(src: string, dest: string): void {
@@ -217,17 +242,29 @@ function rebuildIndexes(projects: string[]): void {
 /** Sweep ASYNC (gzip en streaming → pas de jank du process main). Utilisé périodiquement + au report. */
 export async function sweepArchive(): Promise<void> {
   const agents = allAgents()
+  const changedProjects = new Set<string>()
   for (const ref of agents) {
-    for (const job of planAgent(ref)) await gzipStreamFile(job.src, job.dest)
+    const { jobs, changed } = planAgent(ref)
+    for (const job of jobs) await gzipStreamFile(job.src, job.dest)
+    const root = archiveRoot(ref.project)
+    // reconstruit l'index seulement pour les projets changés ; premier passage : projet ayant des sessions
+    // (archiveRoot existe) mais pas encore d'index.ndjson → on force sa reconstruction une fois.
+    if (changed || (existsSync(root) && !existsSync(join(root, 'index.ndjson'))))
+      changedProjects.add(ref.project)
   }
-  rebuildIndexes(agents.map((a) => a.project))
+  if (changedProjects.size) rebuildIndexes([...changedProjects])
 }
 
 /** Sweep SYNC (bloquant) — pour will-quit : garantit l'écriture du delta AVANT killAllTerminals + closeDb. */
 export function sweepArchiveSync(): void {
   const agents = allAgents()
+  const changedProjects = new Set<string>()
   for (const ref of agents) {
-    for (const job of planAgent(ref)) gzipSyncFile(job.src, job.dest)
+    const { jobs, changed } = planAgent(ref)
+    for (const job of jobs) gzipSyncFile(job.src, job.dest)
+    const root = archiveRoot(ref.project)
+    if (changed || (existsSync(root) && !existsSync(join(root, 'index.ndjson'))))
+      changedProjects.add(ref.project)
   }
-  rebuildIndexes(agents.map((a) => a.project))
+  if (changedProjects.size) rebuildIndexes([...changedProjects])
 }

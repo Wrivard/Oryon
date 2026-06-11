@@ -10,22 +10,22 @@ tient CE fichier à jour — les exécuteurs ne le modifient pas.
 
 | Plan | Titre | Vague | Prio | Effort | Dépend de | Statut |
 |------|-------|-------|------|--------|-----------|--------|
-| 001 | CI sur push/PR (typecheck+build) + refresh release.yml | 1 | P1 | S | — | TODO |
-| 002 | Pipeline commandes MCP : atomique, ~0 latence, FIFO | 1 | P1 | S–M | — | TODO |
-| 003 | claims.json : verrou inter-processus + TTL + releases loggées | 1 | P1 | M | — | TODO |
-| 004 | Bridge preload : désabonnements ciblés (19 canaux) | 1 | P1 | M | — | TODO |
-| 005 | README.md + CLAUDE.md | 1 | P2 | S–M | — | TODO |
-| 006 | Archive incrémentale + persistance merges reportés | 1 | P3 | M | — | TODO |
+| 001 | CI sur push/PR (typecheck+build) + refresh release.yml | 1 | P1 | S | — | DONE (Kai, mergé) |
+| 002 | Pipeline commandes MCP : atomique, ~0 latence, FIFO | 1 | P1 | S–M | — | DONE (Cole, mergé 2c9f720) |
+| 003 | claims.json : verrou inter-processus + TTL + releases loggées | 1 | P1 | M | — | EN COURS (Nell) |
+| 004 | Bridge preload : désabonnements ciblés (19 canaux) | 1 | P1 | M | — | EN COURS (Jude) |
+| 005 | README.md + CLAUDE.md | 1 | P2 | S–M | — | DONE (Lia, mergé 7b98e56) |
+| 006 | Archive incrémentale + persistance merges reportés | 1 | P3 | M | — | EN COURS (Gus) |
 | 007 | Socle de tests (vitest + caractérisation launcher/cores/chiffrement) | 2 | P1 | M | 001 | TODO |
 | 008 | Contrats assign_task livrés par FICHIER (anti-troncature) | 2 | P1 | M | 003 | TODO |
-| 009 | Coalescing PTY→IPC (flux terminaux) | 2 | P2 | S–M | — | TODO |
+| 009 | Coalescing PTY→IPC (flux terminaux) | 2 | P2 | S–M | — | EN COURS (Roan — Cruz écarté : branche périmée, cf. note mémoire « backlog ») |
 | 010 | Dé-dup helpers (secrets-crypto ×3, app-settings ×3, atomic-fs ×3) | 2 | P2 | M | 003 | TODO |
 | 011 | Spawn/worktree : cwd=worktree, health-check, env identité | 3 | P1 | M | 008 | TODO |
 | 012 | Retrait uiohook-napi (+ unpin Python CI) | 3 | P2 | M | 001, 007 | TODO |
 | 013 | Intégrité ledger : taskId transactionnel + attribution par jeton + demote mort-né | 4 | P1 | M–L | 002, 011 | TODO |
 | 014 | uuid → crypto.randomUUID (dep supprimée) | 5 | P3 | S | 012, 013 | TODO |
-| 015 | Hygiène repo (.dev.log ignoré, dev.cmd tracké, scripts a11y retirés) | 0 | P3 | S | — | TODO (orchestrateur) |
-| 016 | Lockfile unique npm (suppression pnpm-lock.yaml) | 0 | P3 | S | — | TODO (orchestrateur) |
+| 015 | Hygiène repo (.dev.log ignoré, dev.cmd tracké, scripts a11y retirés) | 0 | P3 | S | — | DONE (7372d50) |
+| 016 | Lockfile unique npm (suppression pnpm-lock.yaml) | 0 | P3 | S | — | DONE (dbaf52c) |
 | 017 | Upgrade Electron (32 EOL → courant) + durcissement webview | finale | P1 | L | tout le reste | TODO (orchestrateur) |
 
 Statuts : TODO | EN COURS | DONE | BLOQUÉ (raison) | REJETÉ (raison).
