@@ -314,8 +314,9 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
   // Hotkey globale / widget flottant → toggle. Abonnement IPC stable (enregistré une seule fois) : le handler
   // appelle le toggle courant via ref, ce qui évite un removeAllListeners + ré-abonnement à CHAQUE changement d'état.
   useEffect(() => {
-    window.bridge.voice.onToggle(() => toggleRef.current())
-    return () => window.bridge.voice.offToggle()
+    const onToggle = () => toggleRef.current()
+    window.bridge.voice.onToggle(onToggle)
+    return () => window.bridge.voice.offToggle(onToggle)
   }, [])
 
   // Push-to-talk (mode 'hold') ROBUSTE : on suit l'INTENTION (holdWantRef = touche tenue ?) et on RÉCONCILIE
@@ -348,7 +349,7 @@ export function useVoice(onText: (text: string, routedSource: string) => void, s
       void reconcile()
     }
     window.bridge.voice.onHold(onHold)
-    return () => window.bridge.voice.offHold()
+    return () => window.bridge.voice.offHold(onHold)
   }, [])
 
   // ESC annule pendant l'écoute / la transcription (rel-7). En 'downloading', on n'attache ESC QUE si une

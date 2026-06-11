@@ -44,10 +44,11 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
   // vers l'ancienne cible jusqu'au prochain focus fenêtre (misroute). Figée par capture côté useVoice.
   useEffect(() => {
     void window.bridge.settings.getApp().then((s) => setTarget((s['voice.target'] as VoiceTarget) ?? 'orchestrator'))
-    window.bridge.settings.onAppChanged((p) => {
+    const onAppChanged = (p: { key: string; value: string }) => {
       if (p.key === 'voice.target') setTarget((p.value as VoiceTarget) || 'orchestrator')
-    })
-    return () => window.bridge.settings.offAppChanged()
+    }
+    window.bridge.settings.onAppChanged(onAppChanged)
+    return () => window.bridge.settings.offAppChanged(onAppChanged)
   }, [])
 
   const registerOrchestratorBar = useCallback((api: OrchestratorBarApi | null) => {
@@ -150,7 +151,7 @@ export function VoiceProvider({ children }: { children: ReactNode }): JSX.Elemen
     }
     window.bridge.voice.onHotkeyConflict(notify)
     void window.bridge.voice.getHotkeyConflicts().then((list) => list.forEach(notify))
-    return () => window.bridge.voice.offHotkeyConflict()
+    return () => window.bridge.voice.offHotkeyConflict(notify)
   }, [])
 
   // Command mode : la cible est la barre orchestrateur (sélection/insertion). Même classe de bug que la dictée

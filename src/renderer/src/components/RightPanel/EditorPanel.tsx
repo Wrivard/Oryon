@@ -7,6 +7,7 @@ import { cn } from '../../lib/cn'
 import { useAppStore } from '../../store'
 import { buildProjectContext } from '../../lib/project-vocab'
 import { toast } from '../../store/toasts'
+import type { FsEvent } from '@shared/types'
 
 interface OpenFile {
   path: string
@@ -185,7 +186,7 @@ export function EditorPanel({ projectPath, active }: { projectPath: string; acti
   // File-watching : recharge le fichier ouvert s'il change sur disque (et non modifié) ; refresh l'arbre.
   useEffect(() => {
     window.bridge.editor.watch(projectPath)
-    window.bridge.editor.onFsEvent((ev) => {
+    const onFsEvent = (ev: FsEvent) => {
       if (ev.type === 'change') {
         const f = filesRef.current.find((x) => x.path === ev.path)
         const justWrote = (recentWrites.current.get(ev.path) ?? 0) > Date.now() - 1500
@@ -215,9 +216,10 @@ export function EditorPanel({ projectPath, active }: { projectPath: string; acti
       } else {
         setTreeRefresh((n) => n + 1)
       }
-    })
+    }
+    window.bridge.editor.onFsEvent(onFsEvent)
     return () => {
-      window.bridge.editor.offFsEvent()
+      window.bridge.editor.offFsEvent(onFsEvent)
       window.bridge.editor.unwatch(projectPath)
     }
   }, [projectPath])

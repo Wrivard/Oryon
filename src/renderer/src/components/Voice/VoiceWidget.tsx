@@ -18,8 +18,9 @@ export function VoiceWidget() {
   const [state, setState] = useState<VoiceState>('idle')
 
   useEffect(() => {
-    window.bridge.voice.onState((s) => setState(s))
-    return () => window.bridge.voice.offState()
+    const onState = (s: VoiceState) => setState(s)
+    window.bridge.voice.onState(onState)
+    return () => window.bridge.voice.offState(onState)
   }, [])
 
   return (
