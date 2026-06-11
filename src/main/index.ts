@@ -212,6 +212,23 @@ function createWindow() {
     return { action: 'deny' }
   })
 
+  // Durcissement du <webview> du panneau Browser (plan 017) : il charge des URL INTERNET arbitraires —
+  // on borne sa navigation aux schémas web (http/https/about/devtools) et on neutralise window.open
+  // (toute « nouvelle fenêtre » part dans le navigateur SYSTÈME, jamais dans une fenêtre Electron
+  // privilégiée). Posé au did-attach (couvre chaque webview créé par le renderer, partition incluse).
+  win.webContents.on('did-attach-webview', (_e, contents) => {
+    contents.setWindowOpenHandler(({ url }) => {
+      if (/^https?:\/\//i.test(url)) shell.openExternal(url)
+      return { action: 'deny' }
+    })
+    contents.on('will-navigate', (ev, url) => {
+      if (!/^(https?:|about:|devtools:)/i.test(url)) {
+        console.error('[webview] navigation bloquée (schéma non web) :', url)
+        ev.preventDefault()
+      }
+    })
+  })
+
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
