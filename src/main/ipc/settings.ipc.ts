@@ -1,8 +1,9 @@
-import { ipcMain, app, safeStorage, BrowserWindow } from 'electron'
+import { ipcMain, app, BrowserWindow } from 'electron'
 import { v4 as uuid } from 'uuid'
 import { writeFileSync, renameSync } from 'fs'
 import { join } from 'path'
 import { getDb } from '../db'
+import { ENC_PREFIX, encryptJson, decryptJson, getSetting } from '../services/secure-store'
 import { MCP_CATALOG } from '../services/mcp-catalog'
 import { testConnector, detectImportCandidates } from '../services/mcp-probe'
 import type {
@@ -34,8 +35,7 @@ export function setAppSetting(key: string, value: string): void {
 }
 /** Réglage app-global lu côté main (ex. modèle agent par défaut injecté au lancement). */
 export function appSetting(key: string): string | undefined {
-  const v = getDb().prepare('SELECT value FROM app_settings WHERE key = ?').pluck().get(key) as string | undefined
-  return v
+  return getSetting(key)
 }
 
 // ---- connecteurs MCP ----
@@ -44,30 +44,12 @@ function resolveProjectId(projectPath?: string | null): string | null {
   return (getDb().prepare('SELECT id FROM projects WHERE path = ?').pluck().get(projectPath) as string | undefined) ?? null
 }
 
-// ---- secrets (env/headers) chiffrés au repos ----
-// Chiffrés via Electron safeStorage (DPAPI sous Windows / Keychain / libsecret). Stockés préfixés
-// `enc:v1:` + base64 ; repli en JSON clair si le coffre OS est indisponible (le préfixe disambigue
-// la lecture). Déchiffrés UNIQUEMENT à la génération du config (just-in-time, écrit en 0o600) et pour
-// préremplir le formulaire d'édition (connectorSecrets) — jamais renvoyés par listConnectors.
-const ENC_PREFIX = 'enc:v1:'
-export function encryptSecrets(obj: Record<string, string> | null | undefined): string | null {
-  if (!obj || Object.keys(obj).length === 0) return null
-  const json = JSON.stringify(obj)
-  if (safeStorage.isEncryptionAvailable()) return ENC_PREFIX + safeStorage.encryptString(json).toString('base64')
-  return json
-}
-export function decryptSecrets(stored: unknown): Record<string, string> {
-  if (typeof stored !== 'string' || stored.length === 0) return {}
-  try {
-    if (stored.startsWith(ENC_PREFIX)) {
-      const buf = Buffer.from(stored.slice(ENC_PREFIX.length), 'base64')
-      return JSON.parse(safeStorage.decryptString(buf)) as Record<string, string>
-    }
-    return JSON.parse(stored) as Record<string, string>
-  } catch {
-    return {}
-  }
-}
+// ---- secrets (env/headers) de connecteurs MCP : impl partagée dans secure-store (plan 010, variante JSON). ----
+// Ré-exportés sous leurs noms historiques pour les consommateurs internes (add/update/connectorSecrets…) ET les
+// tests (tests/secrets-roundtrip.test.ts). Déchiffrés UNIQUEMENT côté main (génération de config en 0o600,
+// préremplissage du formulaire d'édition) — jamais renvoyés par listConnectors.
+export const encryptSecrets = encryptJson
+export const decryptSecrets = decryptJson
 
 /** Mappe une ligne DB vers le type public : enabled→bool, présence de secrets (jamais les VALEURS). */
 function rowToConnector(r: Record<string, unknown>): McpConnector {

@@ -1,45 +1,22 @@
-import { safeStorage } from 'electron'
-import { getDb } from '../db'
+import { encryptString, decryptString, getSetting, setSetting, delSetting } from './secure-store'
 import type { VercelProject } from '../../shared/types'
 
 // Intégration Vercel REST (passe d'optim Browser, lot B). Pas de SDK : appels `fetch` natifs vers l'API REST
 // Vercel pour lister les projets + leur URL de prod (dropdown du panneau Browser). Le token d'accès est chiffré
-// au repos via Electron safeStorage (préfixe enc:v1:, même convention que settings.ipc.ts / google-calendar.ts)
+// au repos via secure-store (Electron safeStorage)
 // et persisté dans la table clé/valeur app_settings ; il n'est JAMAIS renvoyé au renderer (seul un booléen
 // hasToken l'est). L'utilisateur fournit lui-même son token Vercel (Settings → Browser).
 
 const K_TOKEN = 'browser.vercelToken' // chiffré au repos
 const PROJECTS_ENDPOINT = 'https://api.vercel.com/v10/projects?limit=100'
 
-// ---- app_settings (clé/valeur) ----
-function get(key: string): string | undefined {
-  return getDb().prepare('SELECT value FROM app_settings WHERE key = ?').pluck().get(key) as string | undefined
-}
-function set(key: string, value: string): void {
-  getDb()
-    .prepare('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
-    .run(key, value)
-}
-function del(key: string): void {
-  getDb().prepare('DELETE FROM app_settings WHERE key = ?').run(key)
-}
-
-// ---- secret chiffré au repos (même convention que settings.ipc.ts / google-calendar.ts) ----
-const ENC_PREFIX = 'enc:v1:'
-function enc(plain: string): string {
-  if (!plain) return ''
-  if (safeStorage.isEncryptionAvailable()) return ENC_PREFIX + safeStorage.encryptString(plain).toString('base64')
-  return plain // repli en clair si le coffre OS est indisponible
-}
-function dec(stored: string | undefined): string {
-  if (!stored) return ''
-  try {
-    if (stored.startsWith(ENC_PREFIX)) return safeStorage.decryptString(Buffer.from(stored.slice(ENC_PREFIX.length), 'base64'))
-    return stored
-  } catch {
-    return ''
-  }
-}
+// ---- app_settings (clé/valeur) + secret chiffré : impl partagée dans secure-store (plan 010). ----
+// Alias locaux = diff minimal (le reste du fichier garde get/set/del/enc/dec).
+const get = getSetting
+const set = setSetting
+const del = delSetting
+const enc = encryptString
+const dec = decryptString
 
 /** Enregistre (ou efface si vide) le token Vercel, chiffré au repos. Ne renvoie jamais le token. */
 export function setVercelToken(token: string): { ok: boolean } {
