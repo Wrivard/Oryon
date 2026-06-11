@@ -75,6 +75,20 @@ export function isTransientHarnessPath(p: string): boolean {
   return s.endsWith('.lock') && (s.includes('.claude/') || s.includes('.oryon/'))
 }
 
+// Contrat de tâche déposé par l'orchestrateur à la RACINE du worktree du worker (cf. router.ts,
+// livraison par fichier des longs contrats). Untracked : il ne doit gater NI la synchro sur main
+// (refreshWorktreeToHead) NI l'evidence-gate (branchEvidence) — sinon le seul fait d'avoir reçu un
+// contrat ferait croire à un worktree « sale » / non vide.
+export const ORCHESTRATOR_TASK_FILE = 'ORCHESTRATOR-TASK.md'
+
+/** Lignes de `git status --porcelain` du worktree, EXCEPTÉ celle du contrat de tâche (untracked). */
+function statusLinesIgnoringContract(dir: string): string[] {
+  return (tryGit(dir, ['status', '--porcelain']) ?? '')
+    .split('\n')
+    .filter((l) => l.trim() !== '')
+    .filter((l) => l.slice(3).trim().replace(/^"(.*)"$/, '$1') !== ORCHESTRATOR_TASK_FILE)
+}
+
 interface WtEntry {
   path: string
   branch: string | null
@@ -223,7 +237,7 @@ export function refreshWorktreeToHead(main: string, agent: string): 'updated' | 
   if (!isGitRepo(main)) return 'skip'
   const dir = worktreeDir(main, agent)
   if (dir === main || !existsSync(dir) || !isRegistered(main, dir)) return 'skip'
-  if ((tryGit(dir, ['status', '--porcelain']) ?? '').trim()) return 'dirty'
+  if (statusLinesIgnoringContract(dir).length) return 'dirty'
   const head = (tryGit(main, ['rev-parse', 'HEAD']) ?? '').trim()
   if (!head) return 'skip'
   // MAIN-HEAD déjà ancêtre du worktree → rien à amener (is-ancestor sort 0 → tryGit ≠ null).
@@ -318,16 +332,13 @@ export function branchEvidence(main: string, agent: string): BranchEvidence {
   // + diff three-dot ne gardent que le travail réellement écrit par le worker (cf. idiome source.ipc.ts).
   const base = (tryGit(main, ['merge-base', 'HEAD', branch]) ?? '').trim() || 'HEAD'
   const ahead = parseInt((tryGit(main, ['rev-list', '--count', '--no-merges', `${base}..${branch}`]) ?? '0').trim(), 10) || 0
-  const wtStatus = existsSync(dir) ? (tryGit(dir, ['status', '--porcelain']) ?? '') : ''
-  const worktreeDirty = !!wtStatus.trim()
+  const wtLines = existsSync(dir) ? statusLinesIgnoringContract(dir) : []
+  const worktreeDirty = wtLines.length > 0
   const committed = (tryGit(main, ['diff', '--name-only', `${base}...${branch}`]) ?? '')
     .split('\n')
     .map((s) => s.trim())
     .filter(Boolean)
-  const uncommitted = wtStatus
-    .split('\n')
-    .map((l) => l.slice(3).trim())
-    .filter(Boolean)
+  const uncommitted = wtLines.map((l) => l.slice(3).trim()).filter(Boolean)
   const filesChanged = Array.from(new Set([...committed, ...uncommitted]))
   // Contamination du tronc = fichiers SUIVIS modifiés sur MAIN, HORS locks transitoires du harness (sinon un
   // `.claude/scheduled_tasks.lock` réécrit en boucle déclenchait un faux « ⚠ TRONC PRINCIPAL SALE » en continu).

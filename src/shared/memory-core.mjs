@@ -5,6 +5,7 @@
 // concurrence optimiste (mtime). Recherche plein-texte. Provenance (auteur/rôle) dans les append.
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
+import { renameRetry, writeAtomic } from './atomic-fs.mjs'
 
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
 
@@ -69,30 +70,9 @@ export function excerptOf(content) {
 
 const ensureDir = (dir) => fs.mkdir(dir, { recursive: true }).catch(() => {})
 
-// Sous Windows (MoveFileEx), fs.rename ÉCHOUE (EPERM/EBUSY) si un autre process a la destination ouverte en
-// lecture — fréquent quand 8 agents lisent/cherchent la même note pendant qu'un autre écrit. On retente.
-async function renameRetry(from, to) {
-  for (let i = 0; i < 6; i++) {
-    try {
-      await fs.rename(from, to)
-      return
-    } catch (e) {
-      const code = e && e.code
-      if ((code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') || i === 5) {
-        await fs.unlink(from).catch(() => {})
-        throw e
-      }
-      await new Promise((r) => setTimeout(r, 25 + i * 30))
-    }
-  }
-}
+// Écritures atomiques Windows-safe (tmp + rename-retry EPERM/EBUSY) : impl partagée dans atomic-fs.mjs (plan 010).
+// tmpSeq reste LOCAL : le verrou claims (plan 003) construit lui-même son tmp et n'appelle que renameRetry.
 let tmpSeq = 0
-/** Écriture atomique (temp + rename-retry) : un lecteur ne voit jamais un fichier à moitié écrit. */
-async function writeAtomic(path, content) {
-  const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${++tmpSeq}`
-  await fs.writeFile(tmp, content, 'utf8')
-  await renameRetry(tmp, path)
-}
 
 /** Lit le brut en distinguant « absent » (ENOENT → existed:false) d'une vraie erreur (propagée). */
 async function readRaw(projectDir, name) {

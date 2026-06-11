@@ -1,4 +1,6 @@
 import { BrowserWindow } from 'electron'
+import { writeFileSync, unlinkSync } from 'node:fs'
+import { join } from 'node:path'
 import { getDb } from '../../db'
 import {
   addDataObserver,
@@ -23,6 +25,7 @@ import {
   branchEvidence,
   ensureWorktree,
   provisionWorktreeDeps,
+  ORCHESTRATOR_TASK_FILE,
 } from '../worktrees'
 import { enqueueMergeBack } from './merge-back'
 import { verifyWorktree } from './green-gate'
@@ -128,6 +131,9 @@ function pasteLine(terminalId: string, line: string): void {
     if (hasLiveTerminal(terminalId)) writeTerminal(terminalId, '\r')
   }, INJECT_ENTER_DELAY)
 }
+// Seuil (caractères) au-delà duquel un contrat aplati en bracketed-paste se tronque (le MILIEU se perd) :
+// au-dessus, on livre le contrat COMPLET par fichier dans le worktree et on ne colle qu'un pointeur court.
+const CONTRACT_PASTE_MAX = 1200
 /** Résout un worker par nom (« Nell ») ou position (« #2 ») parmi les terminaux du workspace. */
 function resolveWorker(workspaceId: string, ref: string): string {
   const ids = terminalIds(workspaceId)
@@ -402,8 +408,37 @@ export async function agentAssignTask(
     docSlug && docSlug.trim()
       ? `Doc de référence : utilise search_docs({query:'…', docSlug:'${docSlug.trim()}'}) pour grounder ton implémentation sur l'API réelle (ne devine pas ; si la doc manque, report_task "blocked-pending-docs: <outil>").`
       : ''
-  const prompt = oneLinePrompt([`[task ${task.id}]`, instructions, docNote, staleNote, ...roleReminder].join(' '))
-  pasteLine(id, prompt)
+  // Anti-troncature (rapport system-feedback f89da23d, reproduit le 2026-06-11 : 3 dispatchs/6 perdus) : le
+  // bracketed-paste perd le MILIEU des longs prompts (~>1200 c). Au-delà du seuil, le contrat COMPLET (multi-
+  // ligne, lisible) est écrit dans <worktree>/ORCHESTRATOR-TASK.md et seul un POINTEUR court est collé.
+  const fullInline = oneLinePrompt([`[task ${task.id}]`, instructions, docNote, staleNote, ...roleReminder].join(' '))
+  const wtDir = isGitRepo(ws.project_path) ? worktreeDir(ws.project_path, terminalName(id)) : null
+  const contractPath = wtDir ? join(wtDir, ORCHESTRATOR_TASK_FILE) : null
+  if (contractPath && fullInline.length > CONTRACT_PASTE_MAX) {
+    const body = [`# Tâche [task ${task.id}] — ${task.title ?? ''}`, '', instructions, docNote, staleNote, ...roleReminder]
+      .filter(Boolean)
+      .join('\n\n')
+    try {
+      writeFileSync(contractPath, body, 'utf8')
+      pasteLine(
+        id,
+        oneLinePrompt(
+          `[task ${task.id}] Ton contrat COMPLET est dans le fichier ${ORCHESTRATOR_TASK_FILE} à la RACINE de ton worktree — lis-le en entier et exécute-le. ${staleNote}`,
+        ),
+      )
+    } catch {
+      pasteLine(id, fullInline) // échec d'écriture (rare) → repli inline, pas pire qu'avant
+    }
+  } else {
+    if (contractPath) {
+      try {
+        unlinkSync(contractPath)
+      } catch {
+        /* absent : rien à nettoyer */
+      }
+    } // jamais de contrat PÉRIMÉ lisible
+    pasteLine(id, fullInline)
+  }
   // CAPTURE : événement 'assigned' (outcomes.ndjson) — essai, frais vs re-dispatch, fichiers, état worktree.
   recordOutcome(ws.project_path, {
     event: 'assigned',

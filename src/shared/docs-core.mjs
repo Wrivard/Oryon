@@ -13,35 +13,12 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { safeName } from './memory-core.mjs'
+import { writeAtomic } from './atomic-fs.mjs'
 
 const MAX_CHUNK_CHARS = 8000 // cap de sous-split d'une section (jamais coupé à l'intérieur d'un bloc code)
 const MERGE_MIN_CHARS = 300 // sous ce seuil de corps, une section est fusionnée dans la précédente (anti mini-chunks)
 
-// ── Atomicité (MIRROIR de memory-core.mjs, qui garde renameRetry/writeAtomic privés ; on ne le modifie pas). ──
-// Sous Windows (MoveFileEx), fs.rename ÉCHOUE (EPERM/EBUSY) si un autre process a la destination ouverte en
-// lecture — fréquent quand plusieurs agents lisent le même docSet pendant qu'un autre écrit. On retente.
-let tmpSeq = 0
-async function renameRetry(from, to) {
-  for (let i = 0; i < 6; i++) {
-    try {
-      await fs.rename(from, to)
-      return
-    } catch (e) {
-      const code = e && e.code
-      if ((code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') || i === 5) {
-        await fs.unlink(from).catch(() => {})
-        throw e
-      }
-      await new Promise((r) => setTimeout(r, 25 + i * 30))
-    }
-  }
-}
-/** Écriture atomique (temp + rename-retry) : un lecteur ne voit jamais un fichier à moitié écrit. */
-async function writeAtomic(path, content) {
-  const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${++tmpSeq}`
-  await fs.writeFile(tmp, content, 'utf8')
-  await renameRetry(tmp, path)
-}
+// Écritures atomiques Windows-safe (tmp + rename-retry EPERM/EBUSY) : impl partagée dans atomic-fs.mjs (plan 010).
 
 /** Dossier du store GLOBAL de docs (toutes apps). mkdir récursif (best-effort) puis renvoie le chemin. */
 export function docsDir() {
