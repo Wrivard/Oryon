@@ -87,8 +87,9 @@ export function SystemFeedbackView(): JSX.Element {
   // Montage + abonnement live : un orchestrateur qui dépose/résout un rapport émet 'system-feedback:changed'.
   useEffect(() => {
     void load()
-    window.bridge.systemFeedback.onChanged(() => void load())
-    return () => window.bridge.systemFeedback.offChanged()
+    const onChanged = () => void load()
+    window.bridge.systemFeedback.onChanged(onChanged)
+    return () => window.bridge.systemFeedback.offChanged(onChanged)
   }, [])
 
   const filtered = useMemo(() => {

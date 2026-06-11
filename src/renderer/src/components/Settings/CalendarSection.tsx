@@ -54,8 +54,9 @@ export function CalendarSection() {
   // Statut initial + rafraîchissement quand le main signale un changement (connect/disconnect/expiration).
   useEffect(() => {
     void refresh()
-    window.bridge.calendar.onChanged(() => void refresh())
-    return () => window.bridge.calendar.offChanged()
+    const onChanged = () => void refresh()
+    window.bridge.calendar.onChanged(onChanged)
+    return () => window.bridge.calendar.offChanged(onChanged)
   }, [refresh])
 
   const saveCreds = async () => {

@@ -107,8 +107,9 @@ export function useVoiceCommand(target: CommandTarget) {
   // Abonnement IPC stable (enregistré une seule fois) : le handler appelle le toggle courant via ref → plus de
   // removeAllListeners + ré-abonnement à chaque changement d'état.
   useEffect(() => {
-    window.bridge.voice.onCommandKey(() => toggleRef.current())
-    return () => window.bridge.voice.offCommandKey()
+    const onCommandKey = () => toggleRef.current()
+    window.bridge.voice.onCommandKey(onCommandKey)
+    return () => window.bridge.voice.offCommandKey(onCommandKey)
   }, [])
 
   // Échap annule pendant l'écoute / le traitement.

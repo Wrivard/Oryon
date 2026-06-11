@@ -153,11 +153,12 @@ export function CalendarView(): JSX.Element {
   // Montage + abonnement live (connexion/déconnexion ⇒ on rafraîchit statut & events).
   useEffect(() => {
     void refreshStatus()
-    window.bridge.calendar.onChanged(() => {
+    const onChanged = () => {
       void refreshStatus()
       setRefreshTick((t) => t + 1)
-    })
-    return () => window.bridge.calendar.offChanged()
+    }
+    window.bridge.calendar.onChanged(onChanged)
+    return () => window.bridge.calendar.offChanged(onChanged)
   }, [])
 
   // Liste des calendriers (légende + filtre) une fois connecté.

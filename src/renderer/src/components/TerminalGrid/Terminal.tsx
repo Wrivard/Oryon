@@ -165,7 +165,7 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
     let buf = ''
     let sawShell = false
     let sawClaude = false
-    window.bridge.terminals.onData(term.id, (data) => {
+    const onTermData = (data: string) => {
       xterm.write(data)
       buf = (buf + data).slice(-4000)
       if (!sawShell && /(PS .*>|[$%>]\s?$)/m.test(buf)) {
@@ -179,8 +179,10 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
         //  une corruption d'argv au lancement, corrigée à la racine dans claude-launcher.appendSystemPromptFlag ;
         //  ce clear ne servait plus et pouvait interrompre claude s'il firait sur « esc to interrupt ».)
       }
-    })
-    window.bridge.terminals.onExit(term.id, () => setStatus(term.id, 'exited'))
+    }
+    window.bridge.terminals.onData(term.id, onTermData)
+    const onTermExit = () => setStatus(term.id, 'exited')
+    window.bridge.terminals.onExit(term.id, onTermExit)
     const inputSub = xterm.onData((data) => window.bridge.terminals.write(term.id, data))
 
     // Defer fit()+spawn au frame suivant : le conteneur doit être dimensionné AVANT fit().
@@ -263,8 +265,8 @@ export function Terminal({ term, focused, active = true }: { term: TermRow; focu
       el.removeEventListener('wheel', onWheel, true)
       offBuf.dispose()
       ro.disconnect()
-      window.bridge.terminals.offData(term.id)
-      window.bridge.terminals.offExit(term.id)
+      window.bridge.terminals.offData(term.id, onTermData)
+      window.bridge.terminals.offExit(term.id, onTermExit)
       inputSub.dispose()
       window.bridge.terminals.kill(term.id)
       xterm.dispose()

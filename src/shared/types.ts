@@ -678,9 +678,9 @@ export interface BridgeApi {
     // on*/off* par id : seules des données sérialisables traversent le contextBridge
     // (on ne dépend pas du proxy d'une fonction de retour).
     onData: (id: string, cb: (data: string) => void) => void
-    offData: (id: string) => void
+    offData: (id: string, cb?: (data: string) => void) => void
     onExit: (id: string, cb: (code: number) => void) => void
-    offExit: (id: string) => void
+    offExit: (id: string, cb?: (code: number) => void) => void
   }
   dialog: {
     pickFolder: () => Promise<string | null>
@@ -695,22 +695,22 @@ export interface BridgeApi {
     watch: (rootPath: string) => void
     unwatch: (rootPath: string) => void
     onFsEvent: (cb: (e: FsEvent) => void) => void
-    offFsEvent: () => void
+    offFsEvent: (cb?: (e: FsEvent) => void) => void
   }
   browser: {
     /** Lance la commande dev du workspace, parse le port localhost. */
     startDevServer: (workspaceId: string) => Promise<DevServerResult>
     stopDevServer: (workspaceId: string) => Promise<void>
     onDevLog: (cb: (line: string) => void) => void
-    offDevLog: () => void
+    offDevLog: (cb?: (line: string) => void) => void
     /** Demande de navigation du panneau Browser poussée par le main (commande MCP open_browser). */
     onNavigate: (cb: (data: { workspaceId: string; url: string }) => void) => void
-    offNavigate: () => void
+    offNavigate: (cb?: (data: { workspaceId: string; url: string }) => void) => void
     /** Console de la webview → main (ring lu par l'outil MCP browser_console). */
     reportConsole: (data: { workspaceId: string; level: string; message: string; line?: number; source?: string }) => void
     /** Capture à la demande (outil MCP browser_screenshot) : main demande, le renderer capture + renvoie le PNG. */
     onCapture: (cb: (data: { workspaceId: string; reqId: string }) => void) => void
-    offCapture: () => void
+    offCapture: (cb?: (data: { workspaceId: string; reqId: string }) => void) => void
     sendCaptureResult: (reqId: string, png: Uint8Array, error?: string) => void
     // ── Optim Browser : récents/favoris (A), Vercel (B), navigation externe (C), console (D) ──
     /** Préférences persistées du workspace : récents + favoris + dernière URL ouverte. */
@@ -740,7 +740,7 @@ export interface BridgeApi {
     /** Stoppe le travail en cours du workspace (interrompt les workers, remet les in-progress en todo). */
     stop: (workspaceId: string) => Promise<void>
     onEvent: (cb: (e: OrchestratorEvent) => void) => void
-    offEvent: () => void
+    offEvent: (cb?: (e: OrchestratorEvent) => void) => void
   }
   source: {
     /** État des changements du working tree (git si repo, sinon isGit=false). */
@@ -774,7 +774,7 @@ export interface BridgeApi {
     setChannel: (channel: UpdateChannel) => Promise<UpdaterState>
     getState: () => Promise<UpdaterState>
     onEvent: (cb: (ev: UpdateEvent) => void) => void
-    offEvent: () => void
+    offEvent: (cb?: (ev: UpdateEvent) => void) => void
   }
   /** Oryon Memory (Phase 5) : notes markdown locales (.oryon/memory) + graphe de [[wikilinks]], partagées avec les agents (MCP). */
   memory: {
@@ -793,7 +793,7 @@ export interface BridgeApi {
     watch: (projectPath: string) => void
     unwatch: () => void
     onChanged: (cb: () => void) => void
-    offChanged: () => void
+    offChanged: (cb?: () => void) => void
   }
   /** Oryon Docs (Phase 4) : docs tierces importées ($0), lecture seule + retrieval lexical. Store GLOBAL ~/.oryon/docs (toutes apps). */
   docs: {
@@ -810,10 +810,10 @@ export interface BridgeApi {
     delete: (slug: string) => Promise<{ deleted: boolean }>
     /** Store modifié (écritures UI OU agents MCP) → rafraîchir la liste. */
     onChanged: (cb: () => void) => void
-    offChanged: () => void
+    offChanged: (cb?: () => void) => void
     /** Progression d'un import en cours (phases probe/crawl/fetch/chunk/done + erreurs par-page). */
     onProgress: (cb: (p: DocsImportProgress) => void) => void
-    offProgress: () => void
+    offProgress: (cb?: (p: DocsImportProgress) => void) => void
   }
   /** Google Calendar (read-only, OAuth PKCE Desktop) : connexion + events affichés dans la vue Calendar. */
   calendar: {
@@ -831,14 +831,14 @@ export interface BridgeApi {
     events: (opts: { timeMin: string; timeMax: string; calendarId?: string }) => Promise<CalendarEvent[]>
     /** Connexion/déconnexion changée (main → renderer) → rafraîchir la vue. */
     onChanged: (cb: () => void) => void
-    offChanged: () => void
+    offChanged: (cb?: () => void) => void
   }
   /** System Feedback : store GLOBAL cross-workspace des rapports de l'orchestrateur sur le SYSTÈME Oryon (vue de revue). */
   systemFeedback: {
     list: (filter?: SystemFeedbackFilter) => Promise<SystemFeedbackReport[]>
     updateStatus: (id: string, status: SystemFeedbackStatus, note?: string) => Promise<{ ok: boolean }>
     onChanged: (cb: () => void) => void
-    offChanged: () => void
+    offChanged: (cb?: () => void) => void
   }
   settings: {
     /** Réglages app-global (clé/valeur). */
@@ -846,7 +846,7 @@ export interface BridgeApi {
     setApp: (key: string, value: string) => Promise<void>
     /** Réglage app-global modifié (main → renderer) : applique un changement live sans attendre un focus fenêtre. */
     onAppChanged: (cb: (p: { key: string; value: string }) => void) => void
-    offAppChanged: () => void
+    offAppChanged: (cb?: (p: { key: string; value: string }) => void) => void
     /** Connecteurs MCP visibles pour un projet (par chemin) : scope 'app' + scope 'project' de ce projet. */
     listConnectors: (projectPath?: string | null) => Promise<McpConnector[]>
     addConnector: (input: McpConnectorInput) => Promise<McpConnector>
@@ -924,19 +924,19 @@ export interface BridgeApi {
 
     /** Hotkey dédiée du command mode (main → renderer). */
     onCommandKey: (cb: () => void) => void
-    offCommandKey: () => void
+    offCommandKey: (cb?: () => void) => void
     /** Reçoit les démarrages/arrêts demandés par la hotkey globale ou le widget (main → renderer). */
     onToggle: (cb: () => void) => void
-    offToggle: () => void
+    offToggle: (cb?: () => void) => void
     /** Push-to-talk (mode 'hold') : down:true au keydown (démarrer), down:false au keyup (arrêter). main → renderer. */
     onHold: (cb: (down: boolean) => void) => void
-    offHold: () => void
+    offHold: (cb?: (down: boolean) => void) => void
     /** Widget → main : demande un toggle (rediffusé à la fenêtre principale). */
     requestToggle: () => void
     /** Fenêtre principale → main → widget : pousse l'état courant de la dictée. */
     reportState: (state: VoiceState) => void
     onState: (cb: (state: VoiceState) => void) => void
-    offState: () => void
+    offState: (cb?: (state: VoiceState) => void) => void
     /** Affiche/cache le widget flottant (Settings). */
     setWidget: (visible: boolean) => Promise<void>
     /** Ré-enregistre les hotkeys globales depuis les réglages courants (sans redémarrage). */
@@ -945,6 +945,6 @@ export interface BridgeApi {
     getHotkeyConflicts: () => Promise<{ accel: string; mode: string }[]>
     /** Conflit de raccourci global (accélérateur déjà pris par une autre appli) : main → renderer. */
     onHotkeyConflict: (cb: (info: { accel: string; mode: string }) => void) => void
-    offHotkeyConflict: () => void
+    offHotkeyConflict: (cb?: (info: { accel: string; mode: string }) => void) => void
   }
 }

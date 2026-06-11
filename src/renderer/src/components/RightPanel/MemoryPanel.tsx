@@ -95,7 +95,7 @@ export function MemoryPanel({ projectPath }: { projectPath: string }) {
   // Watch : reflète en direct les écritures des AGENTS (MCP). Recharge la liste/graphe et la note ouverte si non éditée.
   useEffect(() => {
     window.bridge.memory.watch(projectPath)
-    window.bridge.memory.onChanged(() => {
+    const onChanged = () => {
       void reload()
       const sel = selectedRef.current
       if (sel && contentRef.current === loadedRef.current) {
@@ -104,9 +104,10 @@ export function MemoryPanel({ projectPath }: { projectPath: string }) {
           setContent(c)
         }).catch(() => {})
       }
-    })
+    }
+    window.bridge.memory.onChanged(onChanged)
     return () => {
-      window.bridge.memory.offChanged()
+      window.bridge.memory.offChanged(onChanged)
       window.bridge.memory.unwatch()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
