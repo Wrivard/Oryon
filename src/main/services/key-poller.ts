@@ -38,7 +38,7 @@ function loadGks(): GksFn | null {
     // SHORT GetAsyncKeyState(int vKey) — __stdcall ; bit de poids fort (0x8000) = touche actuellement enfoncée.
     gks = user32.func('__stdcall', 'GetAsyncKeyState', 'int16', ['int']) as unknown as GksFn
   } catch (e) {
-    console.error('[key-poller] koffi/GetAsyncKeyState indisponible — repli uiohook/globalShortcut :', (e as Error).message)
+    console.error('[key-poller] koffi/GetAsyncKeyState indisponible — repli globalShortcut :', (e as Error).message)
     gks = null
   }
   return gks
@@ -89,7 +89,7 @@ let watches: (PollWatch & { active: boolean })[] = []
 
 /**
  * (Re)démarre le polling avec ces watches. Renvoie false si koffi/GetAsyncKeyState est indisponible (→ l'appelant
- * fait son repli uiohook/globalShortcut). Lenient sur les modificateurs : on exige que les modificateurs REQUIS
+ * fait son repli globalShortcut — uiohook retiré, plan 012). Lenient sur les modificateurs : on exige que les REQUIS
  * soient enfoncés, sans imposer que les autres soient relâchés (évite un flicker si l'utilisateur tient un modif.).
  */
 export function startKeyPoller(specs: PollWatch[]): boolean {
