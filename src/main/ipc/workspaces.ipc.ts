@@ -15,6 +15,21 @@ import {
   type WorkspaceWithTerminals,
 } from '../../shared/types'
 
+/**
+ * ensureWorktree tolérant à la CRÉATION des lignes terminals : ensureWorktree LÈVE désormais sur échec
+ * (plan 011) ; à la création on ALERTE et on retourne null plutôt que de faire échouer tout le workspace —
+ * le chokepoint terminals:create (re)garantira le worktree au spawn (ou refusera le worker). JAMAIS de repli
+ * silencieux sur le tronc : worktree_path=null ⇒ le chokepoint impose le worktree côté main, pas le renderer.
+ */
+function safeEnsureWorktree(projectPath: string, name: string): string | null {
+  try {
+    return ensureWorktree(projectPath, name)
+  } catch (e) {
+    console.error(`[workspaces] worktree initial pour ${name} échoué (sera (re)tenté au spawn) :`, (e as Error).message)
+    return null
+  }
+}
+
 // Grille = workers seulement. Le terminal orchestrateur (role='orchestrator', 9e dédié) est exclu ici
 // et rendu à part dans l'onglet Orchestrator (cf. workspaces:getOrchestrator + OrchestratorPanel).
 function listTerminals(workspaceId: string): Terminal[] {
@@ -90,7 +105,7 @@ export function registerWorkspacesIpc() {
         cwd: data.projectPath,
         autostart_cmd: autostart,
         pane_index: i,
-        worktree_path: isGit ? ensureWorktree(data.projectPath, name) : null,
+        worktree_path: isGit ? safeEnsureWorktree(data.projectPath, name) : null,
       }
     })
 
@@ -177,7 +192,7 @@ export function registerWorkspacesIpc() {
       cwd: projectPath,
       autostart_cmd: buildClaudeCommand(),
       pane_index: nextIndex,
-      worktree_path: isGitRepo(projectPath) ? ensureWorktree(projectPath, name) : null,
+      worktree_path: isGitRepo(projectPath) ? safeEnsureWorktree(projectPath, name) : null,
     }
     db.prepare(
       `INSERT INTO terminals (id, workspace_id, name, color, role, cwd, autostart_cmd, pane_index, worktree_path)

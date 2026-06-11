@@ -121,12 +121,23 @@ function branchExists(main: string, branch: string): boolean {
 }
 
 /**
+ * Worktree git SAIN : HEAD résoluble ET index lisible. Un worktree dont les refs sont remplies de 0x00
+ * (corruption vue en prod, rapport 1975b0b1) passe `isRegistered`+`existsSync` mais fait échouer tout git
+ * ultérieur — on le détecte ICI pour le recréer proprement au lieu de spawner un claude dans un cwd cassé.
+ */
+function isWorktreeHealthy(dir: string): boolean {
+  return tryGit(dir, ['rev-parse', 'HEAD']) !== null && tryGit(dir, ['status', '--porcelain']) !== null
+}
+
+/**
  * Idempotent : garantit un worktree pour `agent` et retourne son chemin.
  * - projet non-git → retourne `main` (repli cwd partagé documenté).
  * - worktree déjà enregistré ET présent → retourne tel quel (JAMAIS de reset : un respawn/double-mount
  *   StrictMode réattache le travail existant). Le reset n'arrive que sur un fleet-reset explicite (à part).
  * - branche déjà présente (run précédent) → réattache SANS reset (commits non mergés préservés).
  * - sinon → crée la branche depuis `base` (HEAD par défaut, résolu dynamiquement — jamais codé en dur).
+ * - worktree irrécupérable (création échouée / corruption non réparable) → LÈVE (jamais de repli silencieux
+ *   sur le tronc pour un worker, cf. plan 011) ; SEUL le cas « projet non-git » retourne encore `main`.
  * Un enregistrement périmé (dir supprimé hors-bande) déclenche `worktree prune` + 1 retry.
  */
 export function ensureWorktree(main: string, agent: string, base?: string): string {
@@ -135,8 +146,19 @@ export function ensureWorktree(main: string, agent: string, base?: string): stri
   const branch = branchFor(agent)
 
   if (isRegistered(main, dir) && existsSync(dir)) {
-    provisionWorktreeDeps(main, dir)
-    return dir
+    if (isWorktreeHealthy(dir)) {
+      provisionWorktreeDeps(main, dir)
+      return dir
+    }
+    // Enregistré + présent mais git CORROMPU (refs 0x00 / index illisible) : on démonte et on laisse la
+    // création normale ci-dessous recréer un worktree propre. La branche n'est supprimée que si SA ref est
+    // elle-même corrompue (sinon on la CONSERVE → réattache le travail existant).
+    console.error(`[worktrees] worktree corrompu détecté pour ${agent} (HEAD/index illisible) → recréation`)
+    removeWorktree(main, agent)
+    tryGit(main, ['worktree', 'prune'])
+    if (tryGit(main, ['rev-parse', '--verify', branch]) === null) {
+      tryGit(main, ['update-ref', '-d', `refs/heads/${branch}`])
+    }
   }
 
   const baseSha = (tryGit(main, ['rev-parse', base ?? 'HEAD']) ?? '').trim()
@@ -158,13 +180,15 @@ export function ensureWorktree(main: string, agent: string, base?: string): stri
     try {
       add()
     } catch (e) {
-      console.error(`[worktrees] échec pour ${agent}, repli sur le projet principal :`, (e as Error).message)
-      return main
+      // PLUS de repli silencieux sur le tronc (plan 011) : un WORKER lancé dans l'arbre principal = contamination
+      // réelle (rapport 1975b0b1 — Cole a exécuté une tâche DANS le tronc). On LÈVE → l'appelant (chokepoint
+      // terminals:create / agentRestartAgent) REFUSE le spawn et alerte au lieu de retomber sur cwd=main.
+      throw new Error(`worktree irrécupérable pour ${agent} : ${(e as Error).message}`)
     }
   }
-  const ready = existsSync(dir) ? dir : main
-  if (ready !== main) provisionWorktreeDeps(main, ready)
-  return ready
+  if (!existsSync(dir)) throw new Error(`worktree irrécupérable pour ${agent} : dossier absent après création`)
+  provisionWorktreeDeps(main, dir)
+  return dir
 }
 
 /**
