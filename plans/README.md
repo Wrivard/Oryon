@@ -12,13 +12,13 @@ tient CE fichier à jour — les exécuteurs ne le modifient pas.
 |------|-------|-------|------|--------|-----------|--------|
 | 001 | CI sur push/PR (typecheck+build) + refresh release.yml | 1 | P1 | S | — | DONE (Kai, mergé) |
 | 002 | Pipeline commandes MCP : atomique, ~0 latence, FIFO | 1 | P1 | S–M | — | DONE (Cole, mergé 2c9f720) |
-| 003 | claims.json : verrou inter-processus + TTL + releases loggées | 1 | P1 | M | — | EN COURS (Nell) |
-| 004 | Bridge preload : désabonnements ciblés (19 canaux) | 1 | P1 | M | — | EN COURS (Jude) |
+| 003 | claims.json : verrou inter-processus + TTL + releases loggées | 1 | P1 | M | — | EN COURS (Nell — 3 dispatchs perdus par troncature avant livraison réelle) |
+| 004 | Bridge preload : désabonnements ciblés (19 canaux) | 1 | P1 | M | — | EN COURS (Jude — idem troncature) |
 | 005 | README.md + CLAUDE.md | 1 | P2 | S–M | — | DONE (Lia, mergé 7b98e56) |
-| 006 | Archive incrémentale + persistance merges reportés | 1 | P3 | M | — | EN COURS (Gus) |
-| 007 | Socle de tests (vitest + caractérisation launcher/cores/chiffrement) | 2 | P1 | M | 001 | TODO |
+| 006 | Archive incrémentale + persistance merges reportés | 1 | P3 | M | — | DONE (Gus, mergé fc90f8a — bonus : fix du bug needsGzip `prev.bytes`) |
+| 007 | Socle de tests (vitest + caractérisation launcher/cores/chiffrement) | 2 | P1 | M | 001 | DONE (Kai, mergé ba499aa — 15 tests) |
 | 008 | Contrats assign_task livrés par FICHIER (anti-troncature) | 2 | P1 | M | 003 | TODO |
-| 009 | Coalescing PTY→IPC (flux terminaux) | 2 | P2 | S–M | — | EN COURS (Roan — Cruz écarté : branche périmée, cf. note mémoire « backlog ») |
+| 009 | Coalescing PTY→IPC (flux terminaux) | 2 | P2 | S–M | — | DONE (Roan, mergé 23a05cd — Cruz écarté : branche périmée, cf. backlog) |
 | 010 | Dé-dup helpers (secrets-crypto ×3, app-settings ×3, atomic-fs ×3) | 2 | P2 | M | 003 | TODO |
 | 011 | Spawn/worktree : cwd=worktree, health-check, env identité | 3 | P1 | M | 008 | TODO |
 | 012 | Retrait uiohook-napi (+ unpin Python CI) | 3 | P2 | M | 001, 007 | TODO |
