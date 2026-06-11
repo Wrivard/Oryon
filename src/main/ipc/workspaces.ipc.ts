@@ -1,5 +1,5 @@
 import { ipcMain } from 'electron'
-import { v4 as uuid } from 'uuid'
+import { randomUUID as uuid } from 'node:crypto'
 import { getDb } from '../db'
 import { buildClaudeCommand, AGENT_MODEL } from '../services/claude-launcher'
 import { ORCHESTRATOR_TERMINAL_SYSTEM } from '../services/orchestrator/roles'

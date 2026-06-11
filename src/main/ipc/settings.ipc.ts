@@ -1,5 +1,5 @@
 import { ipcMain, app, BrowserWindow } from 'electron'
-import { v4 as uuid } from 'uuid'
+import { randomUUID as uuid } from 'node:crypto'
 import { writeFileSync, renameSync } from 'fs'
 import { join } from 'path'
 import { getDb } from '../db'
