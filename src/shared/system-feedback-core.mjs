@@ -18,30 +18,9 @@ import { promises as fs, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
+import { writeAtomic } from './atomic-fs.mjs'
 
-// ── Atomicité (MIRROIR de docs-core.mjs/memory-core.mjs). Sous Windows (MoveFileEx), fs.rename ÉCHOUE
-// (EPERM/EBUSY) si un autre process tient la destination ouverte en lecture — on retente. ──
-let tmpSeq = 0
-async function renameRetry(from, to) {
-  for (let i = 0; i < 6; i++) {
-    try {
-      await fs.rename(from, to)
-      return
-    } catch (e) {
-      const code = e && e.code
-      if ((code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') || i === 5) {
-        await fs.unlink(from).catch(() => {})
-        throw e
-      }
-      await new Promise((r) => setTimeout(r, 25 + i * 30))
-    }
-  }
-}
-async function writeAtomic(path, content) {
-  const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${++tmpSeq}`
-  await fs.writeFile(tmp, content, 'utf8')
-  await renameRetry(tmp, path)
-}
+// Écritures atomiques Windows-safe (tmp + rename-retry EPERM/EBUSY) : impl partagée dans atomic-fs.mjs (plan 010).
 
 // Chaîne d'écritures in-process : sérialise append/rewrite pour qu'un read-modify-write ne perde jamais un
 // append concurrent et que deux rewrites ne se clobberent pas. Une tâche qui échoue ne casse pas la chaîne.
