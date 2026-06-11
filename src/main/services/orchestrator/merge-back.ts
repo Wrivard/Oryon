@@ -8,7 +8,7 @@
 
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { mkdirSync, appendFileSync } from 'fs'
+import { mkdirSync, appendFileSync, writeFileSync, renameSync, readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import type { MergeResult } from '../../../shared/types'
 import { worktreeDir, branchFor, listAgentWorktrees, refreshWorktreeToHead, isTransientHarnessPath } from '../worktrees'
@@ -89,6 +89,7 @@ async function integrate(job: MergeBackJob): Promise<void> {
     //    drainPendingMerges() (tick mcp-export 2s) le rejoue dès que MAIN redevient propre. Branche conservée.
     if (!(await isClean(mainPath))) {
       pending.set(pendingKey(job), job)
+      savePending()
       job.onConflict(
         `#${task} : projet principal sale — intégration de \`${branch}\` REPORTÉE (auto-retry dès que MAIN sera propre ; branche conservée).`,
       )
@@ -191,7 +192,84 @@ const pending = new Map<string, MergeBackJob>()
 // Clé composite (repo + branche). Plusieurs workspaces partagent le même pool de noms d'agents → la même
 // branche `oryon/agent-<nom>` existe dans des repos distincts ; une clé par branche seule collisionnerait
 // (un merge reporté en écraserait un autre, silencieusement perdu). mainPath (racine du projet) sépare les repos.
-const pendingKey = (j: MergeBackJob): string => `${j.mainPath} ${j.branch}`
+const pendingKey = (j: MergeBackJob): string => `${j.mainPath} ${j.branch}`
+
+// --- Persistance des merges reportés (survit à un crash/quit avant le drain) -----------------------------
+// La Map `pending` est en mémoire : sans persistance, un report perdu au crash laisse la task 'in-review' et
+// n'est rejouée que si un humain ré-approuve. On sérialise la partie NON-callback par projet (un fichier
+// .oryon/pending-merges.json par mainPath) et on réhydrate LAZY au premier contact d'un projet avec le module
+// (enqueueMergeBack/mergeAgentBranch) — JAMAIS via mcp-export (un autre plan tient ce fichier en parallèle).
+interface SerializedMergeJob {
+  mainPath: string
+  worktree: string
+  branch: string
+  agent: string
+  task: string
+}
+const pendingPath = (mainPath: string): string => join(mainPath, '.oryon', 'pending-merges.json')
+// Projets pour lesquels un fichier de persistance peut exister → savePending y réécrit (même `[]` si drainé).
+const persistedProjects = new Set<string>()
+// Projets déjà réhydratés (lecture one-shot au boot) → réhydratation idempotente par mainPath.
+const rehydratedProjects = new Set<string>()
+
+function writeFileAtomicLocal(p: string, content: string): void {
+  try {
+    mkdirSync(dirname(p), { recursive: true })
+    const tmp = `${p}.tmp`
+    writeFileSync(tmp, content)
+    renameSync(tmp, p)
+  } catch {
+    /* best-effort : ne jamais casser un merge sur la persistance */
+  }
+}
+function readJsonLocal<T>(p: string): T | null {
+  try {
+    return JSON.parse(readFileSync(p, 'utf8')) as T
+  } catch {
+    return null
+  }
+}
+
+/** Écrit l'état sérialisable de `pending` groupé par projet (atomique). Appelé à CHAQUE mutation de `pending`. */
+function savePending(): void {
+  const byMain = new Map<string, SerializedMergeJob[]>()
+  for (const mp of persistedProjects) byMain.set(mp, []) // projet drainé → réécrit explicitement en `[]`
+  for (const j of pending.values()) {
+    persistedProjects.add(j.mainPath)
+    const list = byMain.get(j.mainPath) ?? []
+    list.push({ mainPath: j.mainPath, worktree: j.worktree, branch: j.branch, agent: j.agent, task: j.task })
+    byMain.set(j.mainPath, list)
+  }
+  for (const [mp, list] of byMain) writeFileAtomicLocal(pendingPath(mp), JSON.stringify(list, null, 2))
+}
+
+/**
+ * Réhydrate (LAZY, une fois par projet) les merges reportés persistés dans `pending`, avec des callbacks PAR
+ * DÉFAUT (le job d'origine et ses closures router sont perdus au crash). Le vivant gagne : on ne réhydrate
+ * jamais une clé déjà présente dans `pending`. Lecture pure (n'appelle pas savePending) → aucun clobber.
+ */
+export function rehydratePendingMerges(mainPath: string): void {
+  if (rehydratedProjects.has(mainPath)) return
+  rehydratedProjects.add(mainPath)
+  persistedProjects.add(mainPath)
+  const list = readJsonLocal<SerializedMergeJob[]>(pendingPath(mainPath))
+  if (!Array.isArray(list)) return
+  for (const s of list) {
+    if (!s || !s.mainPath || !s.branch) continue
+    const job: MergeBackJob = {
+      mainPath: s.mainPath,
+      worktree: s.worktree,
+      branch: s.branch,
+      agent: s.agent,
+      task: s.task,
+      onDone: (m) => console.error('[merge-back] merge réhydraté OK :', m),
+      onConflict: (m) => console.error('[merge-back] merge réhydraté en conflit :', m),
+    }
+    const key = pendingKey(job)
+    if (pending.has(key)) continue // le vivant gagne sur le persisté
+    pending.set(key, job)
+  }
+}
 
 /** Rejoue les merges en attente dès que MAIN est propre (appelé périodiquement par mcp-export, tick 2s). */
 export async function drainPendingMerges(): Promise<void> {
@@ -202,6 +280,7 @@ export async function drainPendingMerges(): Promise<void> {
     if (await isClean(j.mainPath)) void enqueueMergeBack(j)
     else pending.set(pendingKey(j), j) // toujours sale → reste en attente
   }
+  savePending() // net après drain : jobs rejoués retirés, jobs encore sales conservés, projets drainés → `[]`
 }
 
 /** Après un merge réussi : amène les AUTRES worktrees d'agents (propres) à MAIN-HEAD (F7, anti stale-fork). */
@@ -217,12 +296,14 @@ function refreshOtherWorktrees(main: string, justMerged: string): void {
 }
 
 export function enqueueMergeBack(job: MergeBackJob): Promise<void> {
+  rehydratePendingMerges(job.mainPath) // 1er contact du projet → recharge ses reports persistés (lazy, idempotent)
   chain = chain.then(() => integrate(job)).catch(() => {})
   return chain
 }
 
 /** Merge manuel d'une branche d'agent (vue Source) — passe par la MÊME chaîne sérialisée/conflict-safe. */
 export function mergeAgentBranch(main: string, branch: string): Promise<MergeResult> {
+  rehydratePendingMerges(main) // 1er contact du projet → recharge ses reports persistés (lazy, idempotent)
   const agent = branch.startsWith('oryon/agent-') ? branch.slice('oryon/agent-'.length) : branch
   return new Promise<MergeResult>((resolve) => {
     void enqueueMergeBack({
