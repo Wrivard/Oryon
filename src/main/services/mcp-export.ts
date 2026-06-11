@@ -11,6 +11,7 @@ import { navigateBrowser, requestBrowserScreenshot, appendAppConsole } from '../
 import { recordSystemFeedback, resolveSystemFeedback } from '../ipc/system-feedback.ipc'
 import { importDoc } from './docs-import'
 import * as docsImportCmd from './docs-import-command.mjs'
+import { COMMAND_TYPES } from '../../shared/command-types.mjs'
 import {
   agentMailbox,
   setTaskStatus,
@@ -144,7 +145,9 @@ async function processCommand(path: string): Promise<void> {
   processedCommands.add(path)
   try {
     const cmd = JSON.parse(readFileSync(path, 'utf8'))
-    if (cmd.type === 'mailbox') {
+    if (!COMMAND_TYPES.includes(cmd.type)) {
+      console.error('[mcp-export] type de commande inconnu (pas dans COMMAND_TYPES ou handler manquant) :', cmd.type, path)
+    } else if (cmd.type === 'mailbox') {
       agentMailbox(cmd.workspaceId, cmd.fromAgent, cmd.body)
     } else if (cmd.type === 'update-task-status') {
       setTaskStatus(cmd.taskId, cmd.status)
@@ -199,6 +202,8 @@ async function processCommand(path: string): Promise<void> {
       await recordSystemFeedback(cmd)
     } else if (cmd.type === 'resolve-system-issue') {
       await resolveSystemFeedback(cmd.issueId, cmd.status, cmd.note ?? null)
+    } else {
+      console.error('[mcp-export] type de commande inconnu (pas dans COMMAND_TYPES ou handler manquant) :', cmd.type, path)
     }
     try {
       unlinkSync(path)
@@ -263,10 +268,17 @@ export function initMcpExport(): void {
   // Balaie les commandes résiduelles d'un run précédent (app fermée mid-traitement, ex. un long docs-import) :
   // les rejouer au boot serait incorrect (état périmé) — on les supprime, et ignoreInitial empêche tout replay.
   try {
-    for (const f of readdirSync(commandsDir)) if (f.endsWith('.json')) unlinkSync(join(commandsDir, f))
+    for (const f of readdirSync(commandsDir)) if (f.endsWith('.json') || f.endsWith('.json.tmp')) unlinkSync(join(commandsDir, f))
   } catch {
     /* dossier vide / illisible : rien à balayer */
   }
-  commandWatcher = chokidar.watch(join(commandsDir, '*.json'), { awaitWriteFinish: true, ignoreInitial: true })
-  commandWatcher.on('add', processCommand)
+  // Écritures côté serveur MCP désormais ATOMIQUES (tmp+rename, cf. command-types.mjs) →
+  // plus besoin de l'attente de stabilisation chokidar (qui coûtait ~2 s de stabilityThreshold PAR commande).
+  // File FIFO : une commande à la fois, dans l'ordre d'arrivée (processCommand est async ;
+  // sans chaîne, deux fichiers proches s'entrelacent et l'ordre des mutations n'est pas garanti).
+  commandWatcher = chokidar.watch(join(commandsDir, '*.json'), { ignoreInitial: true })
+  let cmdChain: Promise<void> = Promise.resolve()
+  commandWatcher.on('add', (p: string) => {
+    cmdChain = cmdChain.then(() => processCommand(p)).catch(() => {})
+  })
 }
