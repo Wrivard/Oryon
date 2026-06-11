@@ -11,7 +11,7 @@ import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotoc
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { z } from 'zod'
-import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync, unlinkSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, writeFileSync, appendFileSync, unlinkSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import * as memory from '../shared/memory-core.mjs'
 import * as archive from './archive-read.mjs'
@@ -590,11 +590,8 @@ server.tool(
     if (!workspaceId) {
       return text(JSON.stringify({ queued: false, error: 'Workspace not found — Oryon agent name not registered' }))
     }
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
-    const cmd = { id, type: 'mailbox', workspaceId, fromAgent: from, body }
     try {
-      mkdirSync(join(STATE_DIR, 'commands'), { recursive: true })
-      writeFileSync(join(STATE_DIR, 'commands', `${id}.json`), JSON.stringify(cmd, null, 2))
+      const id = queueCommand({ type: 'mailbox', workspaceId, fromAgent: from, body })
       return text(JSON.stringify({ queued: true, id, workspaceId }))
     } catch (e) {
       return text(JSON.stringify({ queued: false, error: String(e) }))
@@ -610,11 +607,8 @@ server.tool(
     status: z.enum(['todo', 'in-progress', 'in-review', 'complete', 'cancelled', 'blocked']),
   },
   async ({ taskId, status }) => {
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
-    const cmd = { id, type: 'update-task-status', taskId, status }
     try {
-      mkdirSync(join(STATE_DIR, 'commands'), { recursive: true })
-      writeFileSync(join(STATE_DIR, 'commands', `${id}.json`), JSON.stringify(cmd, null, 2))
+      const id = queueCommand({ type: 'update-task-status', taskId, status })
       return text(JSON.stringify({ queued: true, id, taskId, status }))
     } catch (e) {
       return text(JSON.stringify({ queued: false, error: String(e) }))
@@ -631,12 +625,21 @@ function currentWorkspaceId() {
   return meta.terminals?.find((t) => t.name === process.env.ORYON_AGENT_NAME)?.workspace_id
 }
 /** Enfile une commande MCP→main (fichier JSON surveillé par mcp-export). */
+// Tout nouveau type émis ici DOIT être ajouté à src/shared/command-types.mjs + un handler dans mcp-export.processCommand.
 function queueCommand(cmd) {
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
   const full = { id, ...cmd }
-  mkdirSync(join(STATE_DIR, 'commands'), { recursive: true })
-  writeFileSync(join(STATE_DIR, 'commands', `${id}.json`), JSON.stringify(full, null, 2))
-  return id
+  const dir = join(STATE_DIR, 'commands')
+  mkdirSync(dir, { recursive: true })
+  // Écriture ATOMIQUE (tmp → rename) : le watcher main ne voit JAMAIS un JSON partiel,
+  // ce qui permet de surveiller sans awaitWriteFinish (latence ~0 au lieu de ~2 s).
+  const tmp = join(dir, `${id}.json.tmp`)
+  writeFileSync(tmp, JSON.stringify(full, null, 2))
+  let lastErr
+  for (let i = 0; i < 5; i++) {
+    try { renameSync(tmp, join(dir, `${id}.json`)); return id } catch (e) { lastErr = e }
+  }
+  throw lastErr
 }
 
 orchestratorTool(
