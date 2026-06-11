@@ -1,13 +1,13 @@
-import { safeStorage, shell } from 'electron'
+import { shell } from 'electron'
 import { createServer } from 'http'
 import { createHash, randomBytes } from 'crypto'
-import { getDb } from '../db'
+import { encryptString, decryptString, getSetting, setSetting, delSetting } from './secure-store'
 import type { CalendarAuthStatus, CalendarEvent, CalendarListEntry } from '../../shared/types'
 
 // Google Calendar (feature Calendar, read-only v1). Intégration SANS dépendance native ni SDK googleapis :
 // OAuth 2.0 PKCE pour client « Desktop » (navigateur système + redirection loopback http://127.0.0.1:PORT),
 // puis appels REST Calendar v3 en `fetch` natif. Les secrets (client secret + refresh token) sont chiffrés
-// au repos via Electron safeStorage (préfixe enc:v1:, comme settings.ipc.ts) et persistés dans la table
+// au repos via secure-store (Electron safeStorage) et persistés dans la table
 // clé/valeur app_settings ; le client ID et l'email du compte y sont stockés en clair. Le jeton d'accès n'est
 // gardé qu'en mémoire (rafraîchi à la demande). L'utilisateur fournit lui-même son client OAuth Google
 // (Client ID/Secret) via la section Settings → calendar:setCredentials.
@@ -37,35 +37,13 @@ let colorsCache: GColors | null = null
 let calListCache: CalendarListEntry[] | null = null
 let calListExp = 0
 
-// ---- app_settings (clé/valeur) ----
-function get(key: string): string | undefined {
-  return getDb().prepare('SELECT value FROM app_settings WHERE key = ?').pluck().get(key) as string | undefined
-}
-function set(key: string, value: string): void {
-  getDb()
-    .prepare('INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
-    .run(key, value)
-}
-function del(key: string): void {
-  getDb().prepare('DELETE FROM app_settings WHERE key = ?').run(key)
-}
-
-// ---- secrets chiffrés au repos (même convention que settings.ipc.ts) ----
-const ENC_PREFIX = 'enc:v1:'
-function enc(plain: string): string {
-  if (!plain) return ''
-  if (safeStorage.isEncryptionAvailable()) return ENC_PREFIX + safeStorage.encryptString(plain).toString('base64')
-  return plain // repli en clair si le coffre OS est indisponible
-}
-function dec(stored: string | undefined): string {
-  if (!stored) return ''
-  try {
-    if (stored.startsWith(ENC_PREFIX)) return safeStorage.decryptString(Buffer.from(stored.slice(ENC_PREFIX.length), 'base64'))
-    return stored
-  } catch {
-    return ''
-  }
-}
+// ---- app_settings (clé/valeur) + secrets chiffrés : impl partagée dans secure-store (plan 010). ----
+// Alias locaux = diff minimal (le reste du fichier garde get/set/del/enc/dec).
+const get = getSetting
+const set = setSetting
+const del = delSetting
+const enc = encryptString
+const dec = decryptString
 
 function getClientId(): string {
   return get(K_CLIENT_ID) ?? ''
