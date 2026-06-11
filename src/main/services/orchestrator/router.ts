@@ -870,20 +870,24 @@ export function agentRestartAgent(workspaceId: string, terminalRef: string): voi
   stallNotified.delete(id)
 
   // R5 : ré-établit le worktree de l'agent + ses junctions (node_modules/.claude/skills) AVANT de recréer le PTY.
-  // Sinon un restart consécutif à la disparition du worktree relancerait claude dans un cwd cassé. Idempotent si
-  // déjà présent. (La task in-progress, elle, a été remise en todo par l'exit-observer au kill ci-dessus — R7.)
-  if (row.worktree_path && isGitRepo(row.cwd)) {
+  // ensureWorktree LÈVE désormais si le worktree est irrécupérable (plan 011) → on REFUSE de relancer (jamais de
+  // claude WORKER dans le tronc, bug 1234317c) : on alerte l'orchestrateur et on s'arrête. shellCwd = LE retour
+  // d'ensureWorktree (worktree fraîchement vérifié/recréé), pas la valeur DB possiblement périmée. (La task
+  // in-progress a été remise en todo par l'exit-observer au kill ci-dessus — R7.)
+  let shellCwd = row.cwd
+  if (row.role !== 'orchestrator' && isGitRepo(row.cwd)) {
     try {
-      const wt = ensureWorktree(row.cwd, row.name)
-      provisionWorktreeDeps(row.cwd, wt)
+      shellCwd = ensureWorktree(row.cwd, row.name)
+      provisionWorktreeDeps(row.cwd, shellCwd)
     } catch (e) {
-      tellOrch(`[oryon] ⚠ restart_agent : ré-provision du worktree de ${row.name} a échoué — ${(e as Error).message}`)
+      tellOrch(`[oryon] ⚠ restart_agent : worktree irrécupérable pour ${row.name} — relance ANNULÉE (${(e as Error).message}). Inspecte/recrée le worktree avant de réessayer.`)
+      return
     }
   }
 
   // Reconstruit l'autostart EXACTEMENT comme terminals.ipc.ts (sinon le claude relancé n'aurait pas le serveur
-  // oryon — soit tout le but du restart). Shell dans le worktree ; ancre MCP = projet principal (colonne cwd).
-  const shellCwd = row.worktree_path || row.cwd
+  // oryon — soit tout le but du restart). Shell dans le worktree (shellCwd résolu ci-dessus) ; ancre MCP =
+  // projet principal (colonne cwd).
   let autostart = row.autostart_cmd || null
   if (autostart && /^claude(\s|$)/.test(autostart.trim())) {
     ensureClaudeReady(shellCwd)
@@ -894,7 +898,7 @@ export function agentRestartAgent(workspaceId: string, terminalRef: string): voi
     if (mcpFile && !/--mcp-config/.test(autostart)) autostart += ` --strict-mcp-config --mcp-config '${mcpFile.replace(/'/g, "''")}'`
     autostart = enforceAgentSpawn(autostart)
   }
-  const env: Record<string, string> = { ORYON_AGENT_NAME: row.name, ORYON_WORKSPACE_ID: workspaceId }
+  const env: Record<string, string> = { ORYON_AGENT_NAME: row.name, ORYON_WORKSPACE_ID: workspaceId, ORYON_TERMINAL_ID: id }
   if (row.role) env.ORYON_AGENT_ROLE = row.role
 
   // Recâble le flux PTY vers le renderer sur les MÊMES canaux que terminals:create (le composant Terminal de ce
