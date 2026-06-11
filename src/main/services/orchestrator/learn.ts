@@ -1,4 +1,4 @@
-import { v4 as uuid } from 'uuid'
+import { randomUUID as uuid } from 'node:crypto'
 import { getDb } from '../../db'
 import { appSetting } from '../../ipc/settings.ipc'
 import { voiceCliOneShot } from './cli'

@@ -1,5 +1,5 @@
 import { ipcMain, BrowserWindow } from 'electron'
-import { v4 as uuid } from 'uuid'
+import { randomUUID as uuid } from 'node:crypto'
 import { getDb } from '../db'
 import { createVoiceWidget, destroyVoiceWidget, sendVoiceState, isVoiceWidget } from '../services/voice-widget'
 import { injectText } from '../services/text-injection'
