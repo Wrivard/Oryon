@@ -75,3 +75,8 @@ factuel. Chaque règle ci-dessous est vérifiable dans le code (un chemin réel 
 - **L'app INSTALLÉE ≠ ce dépôt.** Les changements ne prennent effet qu'au prochain build /
   release (l'installeur empaquette `out/`, pas les sources). Modifier le code ici ne change
   rien à l'app déjà installée tant qu'une nouvelle version n'est pas construite.
+- **Natifs = prébuilts only.** `postinstall` lance `electron-builder install-app-deps`
+  (prebuild-aware) ; ne JAMAIS revenir à `electron-rebuild -f` (forçait node-gyp →
+  échec sans MSVC local). Conséquence : monter Electron exige qu'un prébuilt
+  better-sqlite3 existe pour la nouvelle ABI (cf. releases WiseLibs/better-sqlite3 —
+  c'est ce qui borne aujourd'hui à Electron 41/ABI 145 ; re-bump 42+ dès v146 publiée).

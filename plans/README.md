@@ -22,11 +22,11 @@ tient CE fichier à jour — les exécuteurs ne le modifient pas.
 | 010 | Dé-dup helpers (secrets-crypto ×3, app-settings ×3, atomic-fs ×3) | 2 | P2 | M | 003 | DONE (Lia, mergé 3933fde) |
 | 011 | Spawn/worktree : cwd=worktree, health-check, env identité | 3 | P1 | M | 008 | DONE (Cole, mergé 7ae639f) |
 | 012 | Retrait uiohook-napi (+ unpin Python CI) | 3 | P2 | M | 001, 007 | DONE (Gus, mergé ee7e74d + retouche aa7de89) |
-| 013 | Intégrité ledger : taskId transactionnel + attribution par jeton + demote mort-né | 4 | P1 | M–L | 002, 011 | EN COURS (Roan) |
-| 014 | uuid → crypto.randomUUID (dep supprimée) | 5 | P3 | S | 012, 013 | TODO |
+| 013 | Intégrité ledger : taskId transactionnel + attribution par jeton + demote mort-né | 4 | P1 | M–L | 002, 011 | DONE (Roan, mergé 0037033 — + fix du piège stallNotified) |
+| 014 | uuid → crypto.randomUUID (dep supprimée) | 5 | P3 | S | 012, 013 | DONE (Jude, mergé 3f2f2a0) |
 | 015 | Hygiène repo (.dev.log ignoré, dev.cmd tracké, scripts a11y retirés) | 0 | P3 | S | — | DONE (7372d50) |
 | 016 | Lockfile unique npm (suppression pnpm-lock.yaml) | 0 | P3 | S | — | DONE (dbaf52c) |
-| 017 | Upgrade Electron (32 EOL → courant) + durcissement webview | finale | P1 | L | tout le reste | TODO (orchestrateur) |
+| 017 | Upgrade Electron (32 EOL → courant) + durcissement webview | finale | P1 | L | tout le reste | DONE (orchestrateur, 7c71eed — Electron 41.7.2 + better-sqlite3 12 prébuilt + postinstall install-app-deps + webview will-navigate/window-open ; cible 42 dès prébuilt ABI v146 publié, cf. backlog) |
 
 Statuts : TODO | EN COURS | DONE | BLOQUÉ (raison) | REJETÉ (raison).
 « (orchestrateur) » = exécuté directement par l'orchestrateur, pas par un worker.

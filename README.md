@@ -67,7 +67,7 @@ docs-plans/        rapports d'audit historiques
 plans/             plans d'implémentation numérotés (voir plans/README.md)
 ```
 
-Stack : Electron 32 + electron-vite 2, TypeScript 5.5, React 18 + Zustand 5 + Tailwind 3,
+Stack : Electron 41 + electron-vite 2, TypeScript 5.5, React 18 + Zustand 5 + Tailwind 3,
 better-sqlite3, @lydell/node-pty, serveur MCP stdio (`@modelcontextprotocol/sdk`), koffi
 (FFI Win32 : hotkeys / injection clavier), `@huggingface/transformers` (Whisper local) +
 Groq STT, electron-updater.
