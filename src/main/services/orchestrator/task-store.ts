@@ -63,7 +63,7 @@ export function getTask(id: string): Task | undefined {
 
 export function updateTask(
   id: string,
-  fields: Partial<Pick<Task, 'status' | 'assigned_terminal_id' | 'instructions'>>,
+  fields: Partial<Pick<Task, 'status' | 'assigned_terminal_id' | 'instructions' | 'title'>>,
 ): void {
   const sets: string[] = []
   const params: Record<string, unknown> = { id, updated_at: Date.now() }

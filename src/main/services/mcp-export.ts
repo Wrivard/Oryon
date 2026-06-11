@@ -163,10 +163,14 @@ async function processCommand(path: string): Promise<void> {
         cmd.readOnly ?? undefined,
       )
     } else if (cmd.type === 'report-task') {
-      await agentReportTask(cmd.workspaceId, cmd.fromAgent ?? null, cmd.status, cmd.summary ?? '', {
-        filesChanged: cmd.filesChanged ?? null,
-        committed: cmd.committed ?? null,
-      })
+      await agentReportTask(
+        cmd.workspaceId,
+        cmd.fromAgent ?? null,
+        cmd.status,
+        cmd.summary ?? '',
+        { filesChanged: cmd.filesChanged ?? null, committed: cmd.committed ?? null },
+        cmd.taskId ?? null,
+      )
     } else if (cmd.type === 'approve-task') {
       agentApproveTask(cmd.taskId)
     } else if (cmd.type === 'broadcast-command') {
