@@ -15,11 +15,12 @@ permissions:
 
 jobs:
   build-win:
-    runs-on: windows-latest
+    # Pin explicite : GitHub redirige `windows-latest` vers l'image Windows Server 2025 (VS 2026) entre le 8 et le 15 juin 2026 → on épingle pour ne pas migrer d'image par surprise.
+    runs-on: windows-2025
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
           cache: 'npm'
@@ -28,7 +29,7 @@ jobs:
       # Python 3.12+ que le runner windows-latest fournit par défaut → « ModuleNotFoundError: No module named
       # 'distutils' ». On épingle Python 3.11 (distutils inclus). (better-sqlite3/node-pty utilisent des prébuilts
       # reconnus → pas de compilation ; seul uiohook-napi est recompilé depuis les sources.)
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
