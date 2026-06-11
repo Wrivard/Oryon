@@ -165,8 +165,9 @@ export function BrowserPanel({ workspaceId }: { workspaceId: string }) {
   }
 
   useEffect(() => {
-    window.bridge.browser.onDevLog((line) => setLogs((l) => (l + line).slice(-8000)))
-    return () => window.bridge.browser.offDevLog()
+    const onDevLog = (line: string) => setLogs((l) => (l + line).slice(-8000))
+    window.bridge.browser.onDevLog(onDevLog)
+    return () => window.bridge.browser.offDevLog(onDevLog)
   }, [])
 
   // Au mount : charge récents/favoris + restaure la dernière URL ouverte (si rien n'est déjà chargé).
@@ -197,7 +198,7 @@ export function BrowserPanel({ workspaceId }: { workspaceId: string }) {
 
   // browser_screenshot (MCP) : le main demande une capture → on capture la webview et renvoie le PNG.
   useEffect(() => {
-    window.bridge.browser.onCapture(async ({ workspaceId: wsId, reqId }) => {
+    const onCapture = async ({ workspaceId: wsId, reqId }: { workspaceId: string; reqId: string }) => {
       if (wsId !== workspaceId) return
       const w = webviewRef.current
       try {
@@ -210,8 +211,9 @@ export function BrowserPanel({ workspaceId }: { workspaceId: string }) {
       } catch (err) {
         window.bridge.browser.sendCaptureResult(reqId, new Uint8Array(), String(err))
       }
-    })
-    return () => window.bridge.browser.offCapture()
+    }
+    window.bridge.browser.onCapture(onCapture)
+    return () => window.bridge.browser.offCapture(onCapture)
   }, [workspaceId, url])
 
   // Suivi de navigation de la webview : barre d'adresse en direct + persistance récents/last-url + état back/forward.

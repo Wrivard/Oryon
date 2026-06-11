@@ -15,6 +15,7 @@ import { useAppStore } from './store'
 import { useUiStore } from './store/ui'
 import { useUpdateStore } from './store/update'
 import { fadeUp, staggerContainer } from './lib/motion'
+import type { OrchestratorEvent, UpdateEvent } from '@shared/types'
 
 function AppContent() {
   const [railCollapsed, setRailCollapsed] = useState(false)
@@ -44,7 +45,7 @@ function AppContent() {
   // workspaces (un swarm de fond qui progresse fait clignoter le rail), mais on n'alimente le board affiché
   // (tasks/mailbox) que pour le workspace actif.
   useEffect(() => {
-    window.bridge.orchestrator.onEvent((e) => {
+    const onEvent = (e: OrchestratorEvent) => {
       const st = useAppStore.getState()
       if (e.type === 'tasks') {
         st.setWorkspaceActivity(
@@ -55,23 +56,26 @@ function AppContent() {
       } else if (e.workspaceId === st.activeWorkspaceId) {
         st.addMailbox(e.message)
       }
-    })
-    return () => window.bridge.orchestrator.offEvent()
+    }
+    window.bridge.orchestrator.onEvent(onEvent)
+    return () => window.bridge.orchestrator.offEvent(onEvent)
   }, [])
 
   // open_browser (MCP) → ouvre l'URL dans le panneau Browser (ramène le workspace + bascule l'onglet).
   useEffect(() => {
-    window.bridge.browser.onNavigate(({ workspaceId, url }) => {
+    const onNavigate = ({ workspaceId, url }: { workspaceId: string; url: string }) => {
       useAppStore.getState().requestOpenBrowser(workspaceId, url)
-    })
-    return () => window.bridge.browser.offNavigate()
+    }
+    window.bridge.browser.onNavigate(onNavigate)
+    return () => window.bridge.browser.offNavigate(onNavigate)
   }, [])
 
   // Sync auto-update : état poussé par le main → store (toast + page Réglages).
   useEffect(() => {
     void window.bridge.update.getState().then((st) => useUpdateStore.getState().apply(st))
-    window.bridge.update.onEvent((ev) => useUpdateStore.getState().apply(ev.state))
-    return () => window.bridge.update.offEvent()
+    const onEvent = (ev: UpdateEvent) => useUpdateStore.getState().apply(ev.state)
+    window.bridge.update.onEvent(onEvent)
+    return () => window.bridge.update.offEvent(onEvent)
   }, [])
 
   // (Re)chargement des tasks/mailbox au changement de workspace.

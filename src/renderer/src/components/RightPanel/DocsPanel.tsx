@@ -236,11 +236,11 @@ export function DocsPanel() {
   // Montage + abonnements live (docs:changed = écritures UI/agents ; docs:import-progress = progression).
   useEffect(() => {
     void reload()
-    window.bridge.docs.onChanged(() => {
+    const onChanged = () => {
       setAgentImporting(false) // une écriture terminée (agent ou UI) clôt l'indicateur ambiant
       void reload()
-    })
-    window.bridge.docs.onProgress((p) => {
+    }
+    const onProgress = (p: DocsImportProgress) => {
       if (!importingRef.current) {
         // Import lancé par un agent (pas ce panneau) : pas de vue progression modale, juste un badge ambiant.
         setAgentImporting(p.phase !== 'done' && p.phase !== 'error')
@@ -248,10 +248,12 @@ export function DocsPanel() {
       }
       setProgress((prev) => [...prev, p])
       if (p.phase === 'error') setImportFailed(p.error || p.message)
-    })
+    }
+    window.bridge.docs.onChanged(onChanged)
+    window.bridge.docs.onProgress(onProgress)
     return () => {
-      window.bridge.docs.offChanged()
-      window.bridge.docs.offProgress()
+      window.bridge.docs.offChanged(onChanged)
+      window.bridge.docs.offProgress(onProgress)
     }
   }, [])
 
