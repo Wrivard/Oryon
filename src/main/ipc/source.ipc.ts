@@ -2,7 +2,7 @@ import { ipcMain } from 'electron'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { readFileSync, existsSync, mkdirSync, renameSync, appendFileSync } from 'fs'
-import { join, extname, dirname } from 'path'
+import { join, extname, dirname, resolve } from 'path'
 import type {
   SourceStatus,
   SourceFileChange,
@@ -86,10 +86,13 @@ function numstatDest(p: string): string {
   return parts[parts.length - 1]
 }
 
+// Racine STRICTE (toplevel == projectPath), aligné sur worktrees.isGitRepo : sinon, pour un workspace
+// non-git sous un repo parent (ex. profil home cloné par accident), le panneau Source afficherait le
+// status/log du repo PARENT — et reject/revert y opérerait. Même bug que le rapport système 18c2f69d.
 async function isGitRepo(projectPath: string): Promise<boolean> {
   try {
-    const out = await git(projectPath, ['rev-parse', '--is-inside-work-tree'])
-    return out.trim() === 'true'
+    const out = await git(projectPath, ['rev-parse', '--show-toplevel'])
+    return !!out.trim() && resolve(out.trim()).toLowerCase() === resolve(projectPath).toLowerCase()
   } catch {
     return false
   }

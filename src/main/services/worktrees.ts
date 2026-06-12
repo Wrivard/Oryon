@@ -14,7 +14,7 @@
 
 import { execFileSync } from 'child_process'
 import { existsSync, lstatSync, mkdirSync, rmdirSync, symlinkSync } from 'fs'
-import { join } from 'path'
+import { join, resolve } from 'path'
 import type { AgentBranch } from '../../shared/types'
 
 const AGENT_BRANCH_PREFIX = 'oryon/agent-'
@@ -41,9 +41,17 @@ function tryGit(cwd: string, args: string[]): string | null {
   }
 }
 
+// Vrai SEULEMENT si p est LA RACINE d'un repo git — pas simplement « dans » un repo. La distinction est
+// vitale : --is-inside-work-tree répond true dans un sous-dossier de n'importe quel repo PARENT. Vécu 2×
+// (rapport système 18c2f69d) : le profil utilisateur entier était un clone accidentel d'un repo CLIENT →
+// pour un workspace non-git sous le home, git remontait au .git parent et les worktrees/branches
+// oryon/agent-* se créaient DANS le repo client, à l'insu de tous. Racine ≠ p ⇒ false : Oryon traite le
+// projet comme non-git (mode séquentiel, message « git init ») au lieu de polluer le repo parent.
+// (Comparaison insensible à la casse : NTFS ; resolve() normalise slashes git C:/x ↔ Windows C:\x.)
 export function isGitRepo(p: string): boolean {
   try {
-    return git(p, ['rev-parse', '--is-inside-work-tree']).trim() === 'true'
+    const top = git(p, ['rev-parse', '--show-toplevel']).trim()
+    return !!top && resolve(top).toLowerCase() === resolve(p).toLowerCase()
   } catch {
     return false
   }
