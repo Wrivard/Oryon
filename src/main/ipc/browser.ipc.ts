@@ -44,6 +44,11 @@ function flushConsole(): void {
 let appBuf = ''
 let appDirty = false
 let appFlushTimer: ReturnType<typeof setTimeout> | null = null
+// Boîte noire : au PREMIER flush de la session, l'app-console.log de l'instance PRÉCÉDENTE est tournée en
+// app-console.prev.log au lieu d'être écrasée. C'est le seul témoin qui survit à une mort brutale de l'app
+// (ex. kill Chromium « GPU process isn't usable » : aucun dump, aucun événement WER — vécu 2026-06-12, le
+// log de l'instance morte avait été détruit par le redémarrage et le diagnostic a dû se faire sans lui).
+let appPrevRotated = false
 function flushAppConsole(): void {
   appFlushTimer = null
   if (!appDirty) return
@@ -52,6 +57,10 @@ function flushAppConsole(): void {
     mkdirSync(dir, { recursive: true })
   } catch {
     /* ignore */
+  }
+  if (!appPrevRotated) {
+    appPrevRotated = true
+    try { renameSync(join(dir, 'app-console.log'), join(dir, 'app-console.prev.log')) } catch { /* 1er boot : rien à tourner */ }
   }
   writeFileAtomic(join(dir, 'app-console.log'), appBuf)
   appDirty = false

@@ -88,6 +88,20 @@ if (isWin) {
   if (existsSync(SANDBOX_OFF_FLAG)) app.commandLine.appendSwitch('no-sandbox')
 }
 
+// ── GPU-fallback ──────────────────────────────────────────────────────────────────────────────────────
+// Chromium TUE toute l'app quand son process GPU crashe 3× (« The GPU process isn't usable. Goodbye. ») —
+// une mort SANS dump WER ni événement Windows, vécue comme « Oryon crashe ». Observé 2026-06-11/12 sur
+// machine no-sandbox : l'app meurt quelques secondes après le chargement/capture du <webview> du panneau
+// Browser (Electron 41/Chromium 142). Même patron que le sandbox-fallback ci-dessus : un crash GPU CONFIRMÉ
+// (child-process-gone, plus bas) pose un flag persistant → les lancements suivants passent en rendu
+// LOGICIEL (très bien pour des terminaux/du texte ; Whisper retombe sur WASM ; le webview passe par
+// SwiftShader). Supprimer le flag pour retenter l'accélération matérielle.
+const GPU_OFF_FLAG = join(app.getPath('userData'), 'disable-gpu.flag')
+if (existsSync(GPU_OFF_FLAG)) {
+  app.disableHardwareAcceleration()
+  console.error('[gpu] accélération matérielle désactivée (disable-gpu.flag présent — le supprimer pour retenter le GPU)')
+}
+
 const clearStartupCrumb = (): void => {
   try { rmSync(STARTUP_CRUMB, { force: true }) } catch { /* ignore */ }
 }
@@ -105,10 +119,35 @@ function fallbackToNoSandbox(reason: string): void {
   app.relaunch()
   app.exit(0)
 }
-// Fast-path : GPU/utility tué par DLL bloquée → bascule immédiate (le renderer est couvert par
-// render-process-gone dans createWindow). Sur machine saine, cet event ne se produit pas.
+// Morts de process enfants (GPU/utility/network…) : TOUJOURS journalisées dans le ring (read_app_log +
+// boîte noire app-console.prev.log) — avant ce log, un crash GPU était strictement invisible en prod.
+// Fast-path DLL bloquée → bascule no-sandbox immédiate (le renderer est couvert par render-process-gone
+// dans createWindow). Crash GPU : dès le 1er crash CONFIRMÉ on pose le flag (cf. GPU_OFF_FLAG plus haut —
+// protège tous les lancements SUIVANTS) ; au 2e de la MÊME session on relance nous-mêmes, AVANT le 3e où
+// Chromium tuerait l'app sans préavis. Si on perd la course (« Goodbye » au 3e), le flag déjà posé fait
+// converger : le prochain lancement démarre en rendu logiciel.
+let gpuCrashCount = 0
 app.on('child-process-gone', (_e, details) => {
-  if (isDllNotFound(details.exitCode)) fallbackToNoSandbox(`${details.type}:${details.reason}:${details.exitCode}`)
+  const gone = `[child] process ${details.type} mort : reason=${details.reason} exitCode=${details.exitCode}${details.serviceName ? ` service=${details.serviceName}` : ''}`
+  console.error(gone)
+  try { appendAppConsole('error', gone, 'main') } catch { /* ring indispo */ }
+  if (isDllNotFound(details.exitCode)) {
+    fallbackToNoSandbox(`${details.type}:${details.reason}:${details.exitCode}`)
+    return
+  }
+  if (details.type === 'GPU' && ['crashed', 'abnormal-exit', 'oom', 'launch-failed'].includes(details.reason)) {
+    gpuCrashCount++
+    if (!existsSync(GPU_OFF_FLAG)) {
+      try {
+        writeFileSync(GPU_OFF_FLAG, `auto: process GPU ${details.reason} (exitCode=${details.exitCode}) le ${new Date().toISOString()} — supprimer ce fichier pour retenter l'accélération matérielle\n`)
+      } catch { /* ignore */ }
+    }
+    if (gpuCrashCount >= 2) {
+      console.error('[gpu] 2e crash GPU de la session → relance en rendu logiciel (flag posé)')
+      app.relaunch()
+      app.exit(0)
+    }
+  }
 })
 
 // Port debug CDP — DEV UNIQUEMENT (jamais dans un build de production). Permet l'inspection/vérif headless.
@@ -179,7 +218,9 @@ function createWindow() {
     console.error(`[window] did-fail-load code=${code} desc=${desc} url=${url}`),
   )
   win.webContents.on('render-process-gone', (_e, details) => {
-    console.error(`[window] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`)
+    const gone = `[window] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`
+    console.error(gone)
+    try { appendAppConsole('error', gone, 'main') } catch { /* ring indispo */ }
     // Renderer tué par une DLL injectée bloquée par le sandbox → bascule no-sandbox (cf. en-tête du fichier).
     if (isDllNotFound(details.exitCode)) {
       fallbackToNoSandbox(`renderer:${details.reason}:${details.exitCode}`)
@@ -217,6 +258,13 @@ function createWindow() {
   // (toute « nouvelle fenêtre » part dans le navigateur SYSTÈME, jamais dans une fenêtre Electron
   // privilégiée). Posé au did-attach (couvre chaque webview créé par le renderer, partition incluse).
   win.webContents.on('did-attach-webview', (_e, contents) => {
+    // Mort du renderer du webview journalisée dans le ring : c'est le contenu le plus instable de l'app
+    // (URL internet/dev-server arbitraires) et le déclencheur observé des crashs GPU (cf. GPU_OFF_FLAG).
+    contents.on('render-process-gone', (_ev, d) => {
+      const gone = `[webview] render-process-gone reason=${d.reason} exitCode=${d.exitCode}`
+      console.error(gone)
+      try { appendAppConsole('error', gone, 'main') } catch { /* ring indispo */ }
+    })
     contents.setWindowOpenHandler(({ url }) => {
       if (/^https?:\/\//i.test(url)) shell.openExternal(url)
       return { action: 'deny' }
