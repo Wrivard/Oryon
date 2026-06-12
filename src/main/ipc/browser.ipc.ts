@@ -71,6 +71,17 @@ export function appendAppConsole(level: number | string, message: string, source
   const t = new Date().toISOString().slice(11, 23)
   appBuf = (appBuf + `${t} [${level}] ${message}${loc}\n`).slice(-CONSOLE_CAP)
   appDirty = true
+  // Niveau ERREUR (3 = console-message renderer, 'error' = appels main) : flush IMMÉDIAT. Le debounce de
+  // 500 ms a une fenêtre aveugle fatale pour une boîte noire : quand l'app meurt juste après l'événement,
+  // la ligne décisive n'atteignait jamais le disque (vécu pendant l'autopsie des morts du 2026-06-12).
+  if (level === 'error' || level === 3) {
+    if (appFlushTimer) {
+      clearTimeout(appFlushTimer)
+      appFlushTimer = null
+    }
+    flushAppConsole()
+    return
+  }
   if (!appFlushTimer) appFlushTimer = setTimeout(flushAppConsole, 500)
 }
 
@@ -136,6 +147,9 @@ export function registerBrowserIpc() {
   // Résultat de capture webview (renderer → main) → écrit mcp-state/screenshots/<reqId>.png (poll par l'outil).
   ipcMain.on('browser:capture-result', (_e, d: { reqId: string; png?: Uint8Array; error?: string }) => {
     if (!d?.reqId) return
+    // Trace boîte noire : les morts silencieuses observées tombent dans les secondes qui suivent une capture
+    // webview — dater précisément chaque capture rend le post-mortem autonome (sans relire les transcripts).
+    appendAppConsole('log', `[browser] capture ${d.reqId} : ${d.png?.length ? `${d.png.length} octets` : `ERREUR ${d.error ?? 'vide'}`}`, 'main')
     const dir = join(mcpStateDir(), 'screenshots')
     try {
       mkdirSync(dir, { recursive: true })

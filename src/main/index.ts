@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, shell, session, protocol, ipcMain } from 'electron'
+import { app, BrowserWindow, Menu, shell, session, protocol, ipcMain, crashReporter } from 'electron'
 import { join, extname, resolve, sep } from 'path'
 import { readFile } from 'fs/promises'
 import { existsSync, writeFileSync, rmSync, readFileSync } from 'fs'
@@ -15,6 +15,14 @@ import { appendAppConsole } from './ipc/browser.ipc'
 import { registerVoiceHotkeys, stopVoiceHotkeys, getVoiceHotkeyConflicts } from './services/voice-hotkey'
 import { createVoiceWidget, destroyVoiceWidget } from './services/voice-widget'
 import { initUpdater } from './services/updater'
+import { reportLastDeath, startHeartbeat, markCleanShutdown } from './services/black-box'
+
+// ── Autopsie des morts silencieuses ────────────────────────────────────────────────────────────────────
+// Dumps locaux pour TOUT crash natif (main/GPU/renderer/utility) → userData/Crashpad/reports, AUCUN upload
+// (diagnostic local pur, coût zéro). Croisé avec le heartbeat de black-box.ts : dump présent = crash natif
+// (module identifiable) ; heartbeat coupé SANS dump NI exit-code.txt = kill EXTERNE du process (antivirus,
+// injecteur de DLL — historique documenté sur cette machine, cf. sandbox-fallback plus bas).
+crashReporter.start({ uploadToServer: false })
 
 // ── Filet anti-crash du PROCESS MAIN ───────────────────────────────────────────────────────────────────
 // Sans ces handlers, une exception non capturée ou un rejet de promesse non géré dans le main TUE le process
@@ -287,6 +295,9 @@ function createWindow() {
 
 app.whenReady().then(() => {
   if (!gotSingleInstanceLock) return // 2e instance du même build : on a déjà demandé le quit, ne rien initialiser.
+  // Autopsie AVANT le premier battement (sinon le heartbeat frais écraserait la preuve de la mort précédente).
+  reportLastDeath()
+  startHeartbeat()
   try {
     initDb()
   } catch (err) {
@@ -405,6 +416,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  markCleanShutdown() // EN PREMIER : un crash plus loin dans ce handler ne doit pas compter comme mort brutale
   stopVoiceHotkeys()
   destroyVoiceWidget()
   sweepArchiveSync() // capture finale des transcripts (delta depuis le dernier sweep) AVANT de tuer les agents + fermer la DB

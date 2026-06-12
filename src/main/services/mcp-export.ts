@@ -180,8 +180,11 @@ async function processCommand(path: string): Promise<void> {
     } else if (cmd.type === 'add-connector') {
       agentAddConnector(cmd.workspaceId, cmd.connector)
     } else if (cmd.type === 'browser-open') {
+      // Trace boîte noire : les morts silencieuses observées suivent la séquence open→screenshot (cf. black-box.ts).
+      appendAppConsole('log', `[browser] open ${cmd.url} (ws ${cmd.workspaceId})`, 'main')
       navigateBrowser(cmd.workspaceId, cmd.url)
     } else if (cmd.type === 'browser-screenshot') {
+      appendAppConsole('log', `[browser] screenshot demandé (ws ${cmd.workspaceId}, req ${cmd.reqId})`, 'main')
       requestBrowserScreenshot(cmd.workspaceId, cmd.reqId)
     } else if (cmd.type === 'docs-import') {
       // Import déclenché par l'outil MCP `import_doc` (orchestrateur). L'issue est déposée sous
