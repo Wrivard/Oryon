@@ -53,6 +53,7 @@ const interrupting = new Set<string>() // terminaux en cours d'ESC (non réutili
 const stallNotified = new Set<string>() // terminaux déjà signalés "silencieux" (watchdog WC) — anti-spam
 const terminalAssignedAt = new Map<string, number>() // R3 : ts du dernier dispatch → détecte un worker MORT-NÉ (jamais émis)
 const attemptByTask = new Map<string, number>() // capture : nb d'essais par task (assign/re-dispatch) pour outcomes.ndjson
+const terminalRecycle = new Set<string>() // terminaux déjà servis cette session → /clear avant une NOUVELLE tâche (recyclage worker : contexte frais par tâche). Vidé à la sortie du PTY.
 const readOnlyByTask = new Map<string, boolean>() // SPEC-B : tasks de consultation (aucun commit attendu) → skip l'evidence-gate « branche vide »
 const STALL_MS = 5 * 60_000 // worker busy sans flux depuis 5 min → surfacé à l'orchestrateur (JAMAIS tué)
 const DEADBORN_DEMOTE_MS = 10 * 60_000 // mort-né (0 octet depuis le dispatch) muet > 10 min (> STALL_MS : la notif précède) → tâche rétrogradée
@@ -159,6 +160,7 @@ export function initOrchestrator(): void {
     terminalBusy.delete(id)
     terminalLastData.delete(id)
     terminalAssignedAt.delete(id)
+    terminalRecycle.delete(id) // PTY mort = session perdue → la prochaine tâche du futur spawn repart fraîche (pas de /clear inutile)
     stallNotified.delete(id)
     // R7 : un terminal qui MEURT laissait sa task in-progress orpheline (zombie dans le board) ET, sur
     // restart_agent (kill→recreate), la task restait collée au worker mort (P1-4). On la REMET en todo +
@@ -354,6 +356,13 @@ export async function agentAssignTask(
   // ouverte, c'est un AUTRE travail → on rétrograde la vieille au board (todo + détachée ; claims libérés par le
   // flux existant) et on en crée une fraîche, au lieu d'empiler outcomes/titre mensonger sur le même id.
   const reuse = open && (!wantTitle || wantTitle === (open.title ?? '').trim())
+  // Recyclage worker : ce terminal a-t-il DÉJÀ servi cette session ? (lu AVANT de le (re)marquer.) recycling =
+  // NOUVELLE tâche (pas un re-dispatch de la même = !reuse) sur un worker à historique → on /clear son contexte
+  // avant de livrer (cf. deliverContract) → contexte FRAIS par tâche, comme le promet le rôle (faux jusqu'ici :
+  // le contrat se collait par-dessus toute la conversation précédente). Un re-dispatch (reuse) GARDE son contexte
+  // (il doit corriger son propre travail). 1re tâche après spawn : has(id)=false → pas de /clear (déjà frais).
+  const recycling = !reuse && terminalRecycle.has(id)
+  terminalRecycle.add(id)
   let task
   if (reuse) {
     // Re-dispatch légitime (même tâche) : refresh W1, feedback, retry après "blocked". Met le titre à jour si fourni.
@@ -402,7 +411,7 @@ export async function agentAssignTask(
   // Q5 : sur un RE-DISPATCH (task ouverte réutilisée : boucle de feedback / retry), le worker a déjà le rôle en
   // contexte (system-prompt durable + 1er dispatch) → on n'envoie QUE le corps du contrat (pas le rappel de rôle
   // verbeux) pour éviter la confusion « bloc de rôle sans tâche » + le coût en tokens. Fresh task → rappel complet.
-  const roleReminder = open
+  const roleReminder = open && !recycling
     ? []
     : [
         'You are a FOCUSED IMPLEMENTATION WORKER, not an orchestrator: do ONLY the task above — never orchestrate, never ask the user what to do, never wait for further direction.',
@@ -423,30 +432,56 @@ export async function agentAssignTask(
   const fullInline = oneLinePrompt([`[task ${task.id}]`, instructions, docNote, staleNote, ...roleReminder].join(' '))
   const wtDir = isGitRepo(ws.project_path) ? worktreeDir(ws.project_path, terminalName(id)) : null
   const contractPath = wtDir ? join(wtDir, ORCHESTRATOR_TASK_FILE) : null
-  if (contractPath && fullInline.length > CONTRACT_PASTE_MAX) {
-    const body = [`# Tâche [task ${task.id}] — ${task.title ?? ''}`, '', instructions, docNote, staleNote, ...roleReminder]
-      .filter(Boolean)
-      .join('\n\n')
-    try {
-      writeFileSync(contractPath, body, 'utf8')
-      pasteLine(
-        id,
-        oneLinePrompt(
-          `[task ${task.id}] Ton contrat COMPLET est dans le fichier ${ORCHESTRATOR_TASK_FILE} à la RACINE de ton worktree — lis-le en entier et exécute-le. ${staleNote}`,
-        ),
-      )
-    } catch {
-      pasteLine(id, fullInline) // échec d'écriture (rare) → repli inline, pas pire qu'avant
-    }
-  } else {
-    if (contractPath) {
+  // Livraison du contrat, FACTORISÉE pour pouvoir la DIFFÉRER après un /clear de recyclage (sinon le filet
+  // anti-busy-zombie ci-dessous mesurerait l'écho du /clear au lieu de celui du contrat). R1 est armé ICI,
+  // APRÈS la livraison réelle, dans les deux chemins (frais ou recyclé).
+  const deliverContract = (): void => {
+    if (!hasLiveTerminal(id)) return
+    if (contractPath && fullInline.length > CONTRACT_PASTE_MAX) {
+      const body = [`# Tâche [task ${task.id}] — ${task.title ?? ''}`, '', instructions, docNote, staleNote, ...roleReminder]
+        .filter(Boolean)
+        .join('\n\n')
       try {
-        unlinkSync(contractPath)
+        writeFileSync(contractPath, body, 'utf8')
+        pasteLine(
+          id,
+          oneLinePrompt(
+            `[task ${task.id}] Ton contrat COMPLET est dans le fichier ${ORCHESTRATOR_TASK_FILE} à la RACINE de ton worktree — lis-le en entier et exécute-le. ${staleNote}`,
+          ),
+        )
       } catch {
-        /* absent : rien à nettoyer */
+        pasteLine(id, fullInline) // échec d'écriture (rare) → repli inline, pas pire qu'avant
       }
-    } // jamais de contrat PÉRIMÉ lisible
-    pasteLine(id, fullInline)
+    } else {
+      if (contractPath) {
+        try {
+          unlinkSync(contractPath)
+        } catch {
+          /* absent : rien à nettoyer */
+        }
+      } // jamais de contrat PÉRIMÉ lisible
+      pasteLine(id, fullInline)
+    }
+    // R1 : filet anti-« busy zombie », armé APRÈS la livraison. La race paste/Entrée fait que l'Entrée de
+    // pasteLine ne soumet parfois PAS → contrat collé au prompt, terminal « busy » mais rien ne tourne. On
+    // distingue l'ÉCHO du collage (flux immédiat) du DÉMARRAGE de claude (flux continu) : après l'écho, si AUCUN
+    // nouveau flux, claude est resté au prompt → on renvoie une Entrée nue (soumet le buffer correct ; inoffensif sinon).
+    setTimeout(() => {
+      if (!hasLiveTerminal(id)) return
+      const afterEcho = terminalLastData.get(id) ?? 0
+      setTimeout(() => {
+        if (hasLiveTerminal(id) && (terminalLastData.get(id) ?? 0) <= afterEcho) writeTerminal(id, '\r')
+      }, RESUBMIT_CHECK_MS)
+    }, RESUBMIT_ECHO_SETTLE_MS)
+  }
+  // Recyclage : worker réutilisé pour une NOUVELLE tâche → /clear d'abord (contexte FRAIS), puis livraison après
+  // RESET_REHYDRATE_DELAY (laisser /clear vider le contexte avant que le contrat n'arrive — pattern reset_orchestrator).
+  // L'identité de rôle (--append-system-prompt-file) SURVIT au /clear ; seule la conversation de la tâche passée part.
+  if (recycling) {
+    pasteLine(id, '/clear')
+    setTimeout(deliverContract, RESET_REHYDRATE_DELAY)
+  } else {
+    deliverContract()
   }
   // CAPTURE : événement 'assigned' (outcomes.ndjson) — essai, frais vs re-dispatch, fichiers, état worktree.
   recordOutcome(ws.project_path, {
@@ -472,17 +507,8 @@ export async function agentAssignTask(
         ),
       )
   }
-  // R1 : filet anti-« busy zombie ». La race paste/Entrée fait que l'Entrée de pasteLine ne soumet parfois PAS
-  // → le contrat reste collé au prompt, le terminal paraît busy mais rien ne tourne. On distingue l'ÉCHO du
-  // collage (flux immédiat) du DÉMARRAGE de claude (flux continu) : après l'écho, si AUCUN nouveau flux, c'est
-  // que claude est resté au prompt → on renvoie une Entrée nue (soumet le buffer déjà correct ; inoffensif sinon).
-  setTimeout(() => {
-    if (!hasLiveTerminal(id)) return
-    const afterEcho = terminalLastData.get(id) ?? 0
-    setTimeout(() => {
-      if (hasLiveTerminal(id) && (terminalLastData.get(id) ?? 0) <= afterEcho) writeTerminal(id, '\r')
-    }, RESUBMIT_CHECK_MS)
-  }, RESUBMIT_ECHO_SETTLE_MS)
+  // (R1 anti-busy-zombie est désormais armé DANS deliverContract, après la livraison réelle du contrat — sinon
+  //  le délai du /clear de recyclage fausserait la mesure de flux.)
   // Si le worktree est resté périmé, préviens l'orchestrateur (signal actionnable, pas d'échec muet — W1).
   if (refreshed === 'conflict' || refreshed === 'dirty') {
     const orchE = orchestratorTerminalId(workspaceId)
