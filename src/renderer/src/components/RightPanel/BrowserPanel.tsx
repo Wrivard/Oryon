@@ -197,24 +197,61 @@ export function BrowserPanel({ workspaceId }: { workspaceId: string }) {
   }, [browserOpenRequest?.nonce, workspaceId])
 
   // browser_screenshot (MCP) : le main demande une capture → on capture la webview et renvoie le PNG.
+  // Robustesse (rapport 85667303) : open_browser→capture est une COURSE — open_browser est fire-and-forget
+  // (il arme la navigation), donc à l'instant de la capture le webview peut venir de monter (bascule de
+  // workspace au premier plan) ou la page être encore en chargement. Au lieu de répondre instantanément
+  // « aucun site ouvert » sur cet état transitoire (coupant le poll 12 s de l'outil), on ATTEND (≤ 8 s) que
+  // le webview EXISTE et ait fini de charger, puis on capture. On lit l'état LIVE du webview (getURL/isLoading),
+  // pas le closure React `url` (qui pouvait être périmé) → dépendance d'effet réduite à [workspaceId]. En
+  // échec, message PRÉCIS (ce qu'on voit vraiment) au lieu du générique trompeur.
   useEffect(() => {
     const onCapture = async ({ workspaceId: wsId, reqId }: { workspaceId: string; reqId: string }) => {
       if (wsId !== workspaceId) return
-      const w = webviewRef.current
+      const fail = (msg: string): void => window.bridge.browser.sendCaptureResult(reqId, new Uint8Array(), msg)
       try {
-        if (!w || !url) {
-          window.bridge.browser.sendCaptureResult(reqId, new Uint8Array(), 'aucun site ouvert')
+        // Attendre webview monté ET stable (la navigation d'open_browser peut être en vol).
+        const deadline = Date.now() + 8000
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let w: any = null
+        while (Date.now() < deadline) {
+          w = webviewRef.current
+          let loading = false
+          try {
+            loading = typeof w?.isLoading === 'function' ? w.isLoading() : false
+          } catch {
+            /* webview pas prêt */
+          }
+          if (w && !loading) break
+          await new Promise((r) => setTimeout(r, 150))
+        }
+        if (!w) {
+          fail('panneau Browser sans page pour ce workspace — lance open_browser puis attends le chargement (le workspace doit être au premier plan)')
+          return
+        }
+        let liveUrl = ''
+        try {
+          liveUrl = w.getURL?.() ?? ''
+        } catch {
+          /* webview pas prêt */
+        }
+        if (!liveUrl || liveUrl === 'about:blank') {
+          fail(`aucune page chargée (url=${liveUrl || 'vide'}) — appelle open_browser, attends quelques secondes, réessaie`)
           return
         }
         const image = await w.capturePage()
-        window.bridge.browser.sendCaptureResult(reqId, image.toPNG())
+        const png = image.toPNG()
+        if (!png || !png.length) {
+          fail(`capture vide (page ${liveUrl} pas encore peinte) — réessaie dans 1-2 s`)
+          return
+        }
+        window.bridge.browser.sendCaptureResult(reqId, png)
       } catch (err) {
-        window.bridge.browser.sendCaptureResult(reqId, new Uint8Array(), String(err))
+        fail(String(err))
       }
     }
     window.bridge.browser.onCapture(onCapture)
     return () => window.bridge.browser.offCapture(onCapture)
-  }, [workspaceId, url])
+  }, [workspaceId])
 
   // Suivi de navigation de la webview : barre d'adresse en direct + persistance récents/last-url + état back/forward.
   useEffect(() => {
