@@ -54,6 +54,17 @@ const stallNotified = new Set<string>() // terminaux déjà signalés "silencieu
 const terminalAssignedAt = new Map<string, number>() // R3 : ts du dernier dispatch → détecte un worker MORT-NÉ (jamais émis)
 const attemptByTask = new Map<string, number>() // capture : nb d'essais par task (assign/re-dispatch) pour outcomes.ndjson
 const terminalRecycle = new Set<string>() // terminaux déjà servis cette session → /clear avant une NOUVELLE tâche (recyclage worker : contexte frais par tâche). Vidé à la sortie du PTY.
+
+// Auto-repli de modèle. Le modèle préféré (AGENT_MODEL = 'fable') peut être INDISPONIBLE côté Anthropic
+// (gating/outage) — claude l'affiche alors dans le PTY (« ● Claude Fable 5 is currently unavailable ») et la
+// session ne peut PLUS tourner : sans repli, toute la flotte est morte-née jusqu'à un reset manuel (vécu le
+// 2026-06-13, audit feedback bloqué). On détecte ce marqueur dans le flux et on bascule CE terminal une fois sur
+// un modèle disponible (Opus), puis on le relance. Idempotent par terminal ; vidé à la mort du PTY (un respawn
+// retente le modèle préféré, puis re-bascule si toujours indispo).
+const MODEL_FALLBACK = 'opus'
+const MODEL_UNAVAILABLE_RE = /Claude\b[^\n]{0,40}\bis currently unavailable/i
+const modelSwitched = new Set<string>() // terminaux déjà auto-basculés sur le repli (anti-boucle)
+const dataTail = new Map<string, string>() // petite queue du flux PTY par terminal (matcher le marqueur à cheval sur 2 chunks)
 const readOnlyByTask = new Map<string, boolean>() // SPEC-B : tasks de consultation (aucun commit attendu) → skip l'evidence-gate « branche vide »
 const STALL_MS = 5 * 60_000 // worker busy sans flux depuis 5 min → surfacé à l'orchestrateur (JAMAIS tué)
 const DEADBORN_DEMOTE_MS = 10 * 60_000 // mort-né (0 octet depuis le dispatch) muet > 10 min (> STALL_MS : la notif précède) → tâche rétrogradée
@@ -151,16 +162,61 @@ function resolveWorker(workspaceId: string, ref: string): string {
   return id
 }
 
+/**
+ * Auto-repli de modèle : si le flux PTY d'un terminal montre que son modèle est INDISPONIBLE
+ * (« Claude … is currently unavailable »), on le bascule UNE fois sur MODEL_FALLBACK et on le relance — au lieu
+ * de le laisser mort jusqu'à un reset de l'app. Détection à cheval sur les chunks via une petite queue (dataTail).
+ * Worker → on lui dit de réessayer sa tâche ; orchestrateur → on switche juste (il reste interactif).
+ */
+function maybeAutoSwitchModel(id: string, data: string): void {
+  if (modelSwitched.has(id)) return
+  const tail = ((dataTail.get(id) ?? '') + data).slice(-800)
+  dataTail.set(id, tail)
+  if (!MODEL_UNAVAILABLE_RE.test(tail)) return
+  modelSwitched.add(id)
+  dataTail.delete(id)
+  const row = getDb().prepare('SELECT role, workspace_id FROM terminals WHERE id = ?').get(id) as
+    | { role: string | null; workspace_id: string }
+    | undefined
+  const isOrch = row?.role === 'orchestrator'
+  const name = terminalName(id)
+  // Laisser claude revenir à son prompt après l'erreur, PUIS /model, PUIS (worker) relancer sa tâche.
+  setTimeout(() => {
+    if (!hasLiveTerminal(id)) return
+    pasteLine(id, `/model ${MODEL_FALLBACK}`)
+    if (!isOrch) {
+      setTimeout(() => {
+        if (hasLiveTerminal(id))
+          pasteLine(
+            id,
+            oneLinePrompt(
+              `Ton modèle précédent était indisponible → bascule sur ${MODEL_FALLBACK} faite. Réessaie ta tâche maintenant : si un fichier ORCHESTRATOR-TASK.md est à la racine de ton worktree, relis-le et exécute-le, puis report_task.`,
+            ),
+          )
+      }, RESET_REHYDRATE_DELAY)
+    }
+  }, INJECT_ENTER_DELAY)
+  // Prévenir l'orchestrateur du workspace (sauf si c'est lui-même le terminal basculé).
+  const orchE = row?.workspace_id ? orchestratorTerminalId(row.workspace_id) : null
+  if (orchE && orchE !== id && hasLiveTerminal(orchE))
+    pasteLine(orchE, oneLinePrompt(`[oryon] ⚠ modèle indisponible sur ${name} → auto-bascule sur ${MODEL_FALLBACK} + relance.`))
+}
+
 // ---- cycle de vie ----
 export function initOrchestrator(): void {
   if (observerInstalled) return
   observerInstalled = true
-  addDataObserver((id) => terminalLastData.set(id, Date.now()))
+  addDataObserver((id, data) => {
+    terminalLastData.set(id, Date.now())
+    maybeAutoSwitchModel(id, data) // auto-repli si le modèle de cet agent est indisponible (ex. Fable 5 down)
+  })
   addExitObserver((id) => {
     terminalBusy.delete(id)
     terminalLastData.delete(id)
     terminalAssignedAt.delete(id)
     terminalRecycle.delete(id) // PTY mort = session perdue → la prochaine tâche du futur spawn repart fraîche (pas de /clear inutile)
+    modelSwitched.delete(id) // respawn → re-tente le modèle préféré, re-bascule si toujours indispo
+    dataTail.delete(id)
     stallNotified.delete(id)
     // R7 : un terminal qui MEURT laissait sa task in-progress orpheline (zombie dans le board) ET, sur
     // restart_agent (kill→recreate), la task restait collée au worker mort (P1-4). On la REMET en todo +
@@ -777,6 +833,7 @@ export function agentApproveTask(taskId: string): { ok: boolean; message: string
         branch: branchFor(agent),
         agent,
         task: t.title ?? 'task',
+        taskId, // persisté → un merge réhydraté après crash re-lie le statut ledger (anti « mergée mais todo »)
         onDone: (m) => {
           updateTask(taskId, { status: 'complete' })
           releaseClaimsByAgent(ws.project_path, agent).catch((e) =>

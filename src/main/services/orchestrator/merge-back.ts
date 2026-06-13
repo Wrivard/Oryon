@@ -13,6 +13,7 @@ import { join, dirname } from 'path'
 import type { MergeResult } from '../../../shared/types'
 import { worktreeDir, branchFor, listAgentWorktrees, refreshWorktreeToHead, isTransientHarnessPath } from '../worktrees'
 import { verifyMain } from './green-gate'
+import { updateTask } from './task-store'
 
 const exec = promisify(execFile)
 
@@ -60,6 +61,8 @@ export interface MergeBackJob {
   agent: string
   /** Libellé de la task (numéro ou « manuel ») pour les messages. */
   task: string
+  /** id ledger de la task — sert à RE-LIER le statut après une réhydratation post-crash (cf. rehydratePendingMerges). */
+  taskId?: string
   onDone: (message: string) => void
   onConflict: (message: string) => void
 }
@@ -205,6 +208,7 @@ interface SerializedMergeJob {
   branch: string
   agent: string
   task: string
+  taskId?: string
 }
 const pendingPath = (mainPath: string): string => join(mainPath, '.oryon', 'pending-merges.json')
 // Projets pour lesquels un fichier de persistance peut exister → savePending y réécrit (même `[]` si drainé).
@@ -237,7 +241,7 @@ function savePending(): void {
   for (const j of pending.values()) {
     persistedProjects.add(j.mainPath)
     const list = byMain.get(j.mainPath) ?? []
-    list.push({ mainPath: j.mainPath, worktree: j.worktree, branch: j.branch, agent: j.agent, task: j.task })
+    list.push({ mainPath: j.mainPath, worktree: j.worktree, branch: j.branch, agent: j.agent, task: j.task, taskId: j.taskId })
     byMain.set(j.mainPath, list)
   }
   for (const [mp, list] of byMain) writeFileAtomicLocal(pendingPath(mp), JSON.stringify(list, null, 2))
@@ -262,8 +266,30 @@ export function rehydratePendingMerges(mainPath: string): void {
       branch: s.branch,
       agent: s.agent,
       task: s.task,
-      onDone: (m) => console.error('[merge-back] merge réhydraté OK :', m),
-      onConflict: (m) => console.error('[merge-back] merge réhydraté en conflit :', m),
+      taskId: s.taskId,
+      // Callbacks par défaut (les closures router d'origine sont perdues au crash). On RE-LIE le ledger via le
+      // taskId persisté → fini « tâche mergée mais affichée todo/in-review » (rapport d0736839/28bac418). Sans
+      // taskId (vieux fichier ou merge manuel) : log seul, comme avant.
+      onDone: (m) => {
+        console.error('[merge-back] merge réhydraté OK :', m)
+        if (s.taskId) {
+          try {
+            updateTask(s.taskId, { status: 'complete' })
+          } catch {
+            /* ledger best-effort : ne jamais casser le drain sur une écriture de statut */
+          }
+        }
+      },
+      onConflict: (m) => {
+        console.error('[merge-back] merge réhydraté en conflit :', m)
+        if (s.taskId) {
+          try {
+            updateTask(s.taskId, { status: 'in-review' })
+          } catch {
+            /* ledger best-effort */
+          }
+        }
+      },
     }
     const key = pendingKey(job)
     if (pending.has(key)) continue // le vivant gagne sur le persisté

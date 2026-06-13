@@ -90,10 +90,17 @@ export function isTransientHarnessPath(p: string): boolean {
 export const ORCHESTRATOR_TASK_FILE = 'ORCHESTRATOR-TASK.md'
 
 /** Lignes de `git status --porcelain` du worktree, EXCEPTÉ celle du contrat de tâche (untracked). */
+// Lignes de `git status --porcelain` qui rendent un worktree « sale » au sens du pré-dispatch ET de l'évidence :
+// UNIQUEMENT les changements TRACKÉS non commités. On EXCLUT les fichiers UNTRACKED (statut « ?? ») : `git add -u`
+// (et non `-A`) ne les stage jamais → ils n'entrent JAMAIS dans un merge-back et ne désynchronisent rien.
+// Rapport 08decfba : un rapport untracked d'une task read-only (AUDIT-*.md) re-déclenchait « worktree non
+// synchronisé » à CHAQUE dispatch, noyant les vraies alertes. ORCHESTRATOR-TASK.md (contrat injecté) reste exclu
+// explicitement au cas où il serait suivi.
 function statusLinesIgnoringContract(dir: string): string[] {
   return (tryGit(dir, ['status', '--porcelain']) ?? '')
     .split('\n')
     .filter((l) => l.trim() !== '')
+    .filter((l) => !l.startsWith('??')) // untracked = bénin (jamais mergé via add -u)
     .filter((l) => l.slice(3).trim().replace(/^"(.*)"$/, '$1') !== ORCHESTRATOR_TASK_FILE)
 }
 
