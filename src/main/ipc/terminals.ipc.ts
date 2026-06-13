@@ -1,8 +1,9 @@
-import { ipcMain } from 'electron'
+import { app, ipcMain } from 'electron'
+import { join } from 'path'
 import type { CreateTerminalInput, Terminal } from '../../shared/types'
 import { createTerminal, writeTerminal, resizeTerminal, killTerminal } from '../services/pty-manager'
 import { ensureClaudeReady, normalizeClaudeAutostart, enforceAgentSpawn } from '../services/claude-launcher'
-import { hasClaudeSessionId } from '../services/claude-session'
+import { hasClaudeSessionId, getOrchestratorResumeId } from '../services/claude-session'
 import { buildProjectMcpConfigForPath } from './settings.ipc'
 import { getDb } from '../db'
 import { ensureWorktree, isGitRepo } from '../services/worktrees'
@@ -106,7 +107,10 @@ export function registerTerminalsIpc() {
       // NB : chokepoint touché qu'au DÉMARRAGE (ou nouveau terminal/split), JAMAIS au switch de workspace.
       const isOrchestrator = env.ORYON_AGENT_ROLE === 'orchestrator'
       if (isOrchestrator && !/--(session-id|resume|continue)\b/.test(autostart)) {
-        autostart += hasClaudeSessionId(cwd, opts.id) ? ` --resume ${opts.id}` : ` --session-id ${opts.id}`
+        // Id de reprise = <termId> par défaut, mais ROTÉ vers un uuid frais par reset_orchestrator (bug
+        // 052e7397) : après un reset, on démarre une session NEUVE au lieu de ressusciter le pré-reset.
+        const resumeId = getOrchestratorResumeId(join(app.getPath('userData'), 'mcp-state'), opts.id)
+        autostart += hasClaudeSessionId(cwd, resumeId) ? ` --resume ${resumeId}` : ` --session-id ${resumeId}`
       }
     }
     const sender = makeCoalescedSender((data) => {

@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { writeFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { getDb } from '../../db'
@@ -29,6 +29,7 @@ import {
 } from '../worktrees'
 import { enqueueMergeBack } from './merge-back'
 import { verifyWorktree } from './green-gate'
+import { rotateOrchestratorResumeId } from '../claude-session'
 import { readClaims, claimFile, releaseClaimsByAgent, CLAIM_TTL_MS } from '../../../shared/memory-core.mjs'
 import type { OrchestratorEvent, TaskStatus, Workspace } from '../../../shared/types'
 
@@ -875,6 +876,12 @@ export async function agentResetOrchestrator(
   setTimeout(() => {
     if (hasLiveTerminal(orchE)) pasteLine(orchE, line)
   }, RESET_REHYDRATE_DELAY)
+  // 4) Rendre le reset DURABLE (bug 052e7397) : roter l'id de session de reprise. Le /clear ci-dessus fait
+  //    forker claude vers une nouvelle session pour CE run, mais l'épinglage de reprise restait sur <termId>
+  //    (la conversation PRÉ-reset) → au prochain redémarrage de l'app, l'ancien orchestrateur RESSUSCITAIT et
+  //    rejouait le travail. Après rotation, le restart démarre une session NEUVE, ré-hydratée depuis
+  //    git/ledger/mémoire (le but même du reset) au lieu de rejouer le passé.
+  rotateOrchestratorResumeId(join(app.getPath('userData'), 'mcp-state'), orchE)
 }
 
 /** Envoie sur un canal IPC à toutes les fenêtres (single-window en pratique) → recâble le flux d'un PTY recréé. */
